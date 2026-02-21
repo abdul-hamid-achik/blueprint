@@ -1,0 +1,17 @@
+blueprint "test-trailing-commas" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+env TYPES ["a", "b", "c",]
+
+GET /api/test {
+  -> 200 {
+    name: "test",
+    items: [1, 2, 3,],
+    nested: {
+      key: "value",
+    },
+  }
+}

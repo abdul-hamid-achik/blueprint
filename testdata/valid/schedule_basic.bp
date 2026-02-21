@@ -1,0 +1,19 @@
+blueprint "test-schedule" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model job {
+  id      uuid      primary
+  created timestamp default(now)
+}
+
+schedule cleanup {
+  cron "0 4 * * 0"
+
+  |> old = query job where(created < 90.days.ago)
+  |> delete old
+  |> log "Cleaned {old.count} expired jobs"
+}

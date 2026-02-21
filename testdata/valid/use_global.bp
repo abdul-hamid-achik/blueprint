@@ -1,0 +1,12 @@
+blueprint "test-use-global" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+
+  use request_logger
+  use cors { origins: ["https://example.com"] }
+}
+
+GET /api/health {
+  -> 200 { status: "ok" }
+}

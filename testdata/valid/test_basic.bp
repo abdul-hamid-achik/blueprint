@@ -1,0 +1,36 @@
+blueprint "test-testing" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model user {
+  id    uuid   primary
+  name  string required
+}
+
+fixture "test-data" from "testdata/seed.json"
+
+test create_user {
+  target POST /api/users
+
+  setup {
+    |> log "Setting up test"
+  }
+
+  request {
+    body {
+      name: "Test User",
+    }
+  }
+
+  expect {
+    status 200
+    body.name == "Test User"
+  }
+
+  cleanup {
+    |> log "Cleaning up test"
+  }
+}

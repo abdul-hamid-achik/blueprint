@@ -1,0 +1,12 @@
+blueprint "test-middleware" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+middleware require_auth {
+  before {
+    |> guard header.Authorization -> 401 "Missing auth"
+    |> inject token as auth
+  }
+}

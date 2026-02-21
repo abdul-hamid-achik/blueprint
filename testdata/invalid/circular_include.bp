@@ -1,0 +1,9 @@
+blueprint "test" {
+  version "0.1.0"
+  port    3000
+  runtime node
+}
+
+# This file includes itself, creating a circular include.
+# The checker should detect and report this.
+include "circular_include.bp"

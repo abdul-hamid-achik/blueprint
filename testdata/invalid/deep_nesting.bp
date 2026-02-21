@@ -1,0 +1,24 @@
+blueprint "test" {
+  version "0.1.0"
+  port    3000
+  runtime node
+}
+
+# This tests that three levels of {} nesting is rejected.
+# try/recover is the only construct allowing 2 levels.
+# The parser should reject deeper nesting.
+POST /api/test {
+  <- input string required
+
+  |> try {
+    |> try {
+      |> result = process(input)
+    } recover {
+      -> 500 "nested error"
+    }
+  } recover {
+    -> 500 "outer error"
+  }
+
+  -> 200 "ok"
+}

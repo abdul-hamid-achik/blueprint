@@ -1,0 +1,21 @@
+blueprint "test-use-per-endpoint" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+middleware require_auth {
+  before {
+    |> guard header.Authorization -> 401 "Missing auth"
+    |> inject token as auth
+  }
+}
+
+GET /api/public {
+  -> 200 { status: "ok" }
+}
+
+GET /api/private {
+  use require_auth
+  -> 200 { user: auth.name }
+}

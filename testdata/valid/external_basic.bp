@@ -1,0 +1,13 @@
+blueprint "test-external" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+secret INTERNAL_TOKEN required
+
+external "auth-service" {
+  url:     "http://auth:3001"
+  timeout: 5s
+  retry:   2
+}

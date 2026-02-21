@@ -1,0 +1,33 @@
+{
+  "name": "@blueprint/runtime",
+  "version": "0.1.0",
+  "description": "Runtime utilities for Blueprint-generated TypeScript projects",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": ["blueprint", "bp", "codegen", "runtime"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abdul-hamid-achik/blueprint.git",
+    "directory": "packages/runtime"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

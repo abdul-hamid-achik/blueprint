@@ -1,0 +1,22 @@
+blueprint "test-pipe-in-endpoint" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+pipe validate_input {
+  <- data string
+
+  |> guard data != "" -> 400 "Data cannot be empty"
+
+  -> data
+}
+
+POST /api/process {
+  <- data string required
+
+  |> validated = pipe validate_input(data)
+  |> result = transform(validated)
+
+  -> 200 { result: result }
+}

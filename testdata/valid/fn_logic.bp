@@ -1,0 +1,18 @@
+blueprint "test-fn-logic" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+fn calculate_price {
+  <- plan       string
+  <- operations int
+
+  -> float
+
+  logic {
+    |> when plan == "free"       -> 0
+    |> when plan == "pro"        -> operations * 0.01
+    |> when plan == "enterprise" -> operations * 0.005
+  }
+}

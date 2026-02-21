@@ -1,0 +1,12 @@
+blueprint "test" {
+  version "0.1.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+model product {
+  id    uuid          primary
+  name  string        required
+  price NonExistent   required
+}

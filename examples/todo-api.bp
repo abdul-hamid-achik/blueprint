@@ -1,0 +1,77 @@
+@ "A simple TODO API with CRUD operations"
+blueprint "todo-api" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model todo {
+  id        uuid      primary
+  title     string    required
+  done      bool      default(false)
+  created   timestamp default(now)
+}
+
+@ "List all todos with pagination"
+GET /api/todos {
+  <- page     int default(1) min(1)
+  <- per_page int default(20) min(1) max(100)
+
+  |> todos = query todo paginate(page, per_page)
+
+  -> 200 {
+    todos: todos.items,
+    total: todos.total,
+    page:  page,
+  }
+}
+
+@ "Create a new todo"
+POST /api/todos {
+  <- title string required
+
+  |> todo = save todo { title: title }
+
+  -> 201 { id: todo.id, title: todo.title, done: todo.done }
+}
+
+@ "Get a specific todo"
+GET /api/todos/:id {
+  <- id uuid required
+
+  |> todo = fetch todo(id)
+  |> guard todo -> 404 "Todo not found"
+
+  -> 200 {
+    id:      todo.id,
+    title:   todo.title,
+    done:    todo.done,
+    created: todo.created,
+  }
+}
+
+@ "Toggle todo completion"
+PATCH /api/todos/:id {
+  <- id   uuid required
+  <- done bool required
+
+  |> todo = fetch todo(id)
+  |> guard todo -> 404 "Todo not found"
+  |> update todo { done: done }
+
+  -> 200 { id: todo.id, done: done }
+}
+
+@ "Delete a todo"
+DELETE /api/todos/:id {
+  <- id uuid required
+
+  |> todo = fetch todo(id)
+  |> guard todo -> 404 "Todo not found"
+  |> delete todo
+
+  -> 204 "deleted"
+}

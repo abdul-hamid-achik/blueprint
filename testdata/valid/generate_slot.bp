@@ -1,0 +1,15 @@
+blueprint "test-generate" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+POST /api/process {
+  <- data string required
+
+  @> "validate the data input — check format and length"
+
+  |> result = transform(data)
+
+  -> 200 { result: result }
+}

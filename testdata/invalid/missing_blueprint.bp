@@ -1,0 +1,7 @@
+# Missing blueprint declaration
+secret API_KEY required
+
+model user {
+  id   uuid   primary
+  name string required
+}

@@ -1,0 +1,14 @@
+blueprint "test-interpolation" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+GET /api/greet/:name {
+  <- name string required
+
+  |> log "Greeting {name}"
+  |> message = "Hello {name}, welcome!"
+
+  -> 200 { message: message, detail: "User {name} greeted at {now}" }
+}

@@ -1,0 +1,14 @@
+blueprint "test-when-inline" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+POST /api/process {
+  <- mode string optional
+
+  |> when mode == "fast": log "Using fast mode"
+  |> when mode == "slow": sleep 1s
+
+  -> 200 { status: "done" }
+}

@@ -1,0 +1,17 @@
+blueprint "test-fn-impl" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+fn process_data {
+  <- input  string
+  <- format string
+
+  -> string
+
+  impl node {
+    module: "./internal/process"
+    func:   "run"
+  }
+}

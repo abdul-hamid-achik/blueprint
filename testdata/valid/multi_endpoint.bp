@@ -1,0 +1,46 @@
+blueprint "test-multi-endpoint" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model item {
+  id   uuid   primary
+  name string required
+}
+
+GET /api/items {
+  |> items = query item
+  -> 200 { items: items }
+}
+
+POST /api/items {
+  <- name string required
+  |> item = save item { name: name }
+  -> 201 { id: item.id }
+}
+
+GET /api/items/:id {
+  <- id uuid required
+  |> item = fetch item(id)
+  |> guard item -> 404 "Not found"
+  -> 200 { id: item.id, name: item.name }
+}
+
+PUT /api/items/:id {
+  <- id   uuid   required
+  <- name string required
+  |> item = fetch item(id)
+  |> guard item -> 404 "Not found"
+  |> update item { name: name }
+  -> 200 { id: item.id, name: name }
+}
+
+DELETE /api/items/:id {
+  <- id uuid required
+  |> item = fetch item(id)
+  |> guard item -> 404 "Not found"
+  |> delete item
+  -> 204 "Deleted"
+}

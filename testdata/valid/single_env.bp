@@ -1,0 +1,10 @@
+blueprint "test-env" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+env MAX_FILE_SIZE  10mb
+env LOG_LEVEL      "info"
+env FREE_MONTHLY   50
+env ALLOWED_TYPES  ["image/png", "image/jpeg"]

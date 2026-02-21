@@ -1,0 +1,17 @@
+blueprint "test-middleware-both" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+middleware request_logger {
+  before {
+    |> start = clock()
+    |> log "Request started"
+  }
+
+  after {
+    |> elapsed = clock() - start
+    |> log "Request completed in {elapsed}ms"
+  }
+}

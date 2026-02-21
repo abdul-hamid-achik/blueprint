@@ -1,0 +1,15 @@
+blueprint "test-model" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model user {
+  id       uuid      primary
+  name     string    required
+  email    string    unique
+  age      int       optional
+  active   bool      default(true)
+  created  timestamp default(now)
+}

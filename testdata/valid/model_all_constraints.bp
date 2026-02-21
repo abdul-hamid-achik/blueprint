@@ -1,0 +1,23 @@
+blueprint "test-constraints" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model user {
+  id   uuid   primary
+  name string required
+}
+
+model post {
+  id         uuid       primary
+  user_id    uuid       ref(user) index
+  title      string     required min(1) max(200)
+  slug       string     unique
+  body       string     optional
+  views      int        default(0)
+  published  bool       default(false)
+  updated    timestamp  auto
+  created    timestamp  default(now)
+}

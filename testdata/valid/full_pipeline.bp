@@ -1,0 +1,25 @@
+blueprint "test-pipeline" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model item {
+  id     uuid   primary
+  name   string required
+  status string default("active")
+}
+
+POST /api/items {
+  <- name string required
+
+  |> item = save item { name: name, status: "active" }
+  |> log "Created item {item.id}"
+
+  -> 201 {
+    id:     item.id,
+    name:   item.name,
+    status: item.status,
+  }
+}

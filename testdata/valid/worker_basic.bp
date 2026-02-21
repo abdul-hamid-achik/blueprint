@@ -1,0 +1,31 @@
+blueprint "test-worker" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+  queue    redis
+}
+
+model job {
+  id     uuid   primary
+  status string default("pending")
+}
+
+worker process_job {
+  trigger queue("jobs")
+  retry   3
+  timeout 5min
+
+  <- job_id uuid
+
+  |> job = fetch job(job_id)
+  |> guard job.status == "pending" -> 200 "Already processed"
+  |> update job { status: "processing" }
+  |> result = do_work(job)
+  |> update job { status: "done" }
+
+  on_fail {
+    |> update job { status: "failed" }
+    |> log "Job {job_id} failed"
+  }
+}

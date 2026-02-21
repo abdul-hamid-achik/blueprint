@@ -1,0 +1,21 @@
+blueprint "test" {
+  version "0.1.0"
+  port    3000
+  runtime node
+}
+
+POST /api/test {
+  <- input string required
+
+  |> try {
+    |> try {
+      |> result = process(input)
+    } recover {
+      -> 500 "inner error"
+    }
+  } recover {
+    -> 500 "outer error"
+  }
+
+  -> 200 "ok"
+}

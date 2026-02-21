@@ -1,0 +1,13 @@
+blueprint "test" {
+  version "0.1.0"
+  port    3000
+  runtime node
+}
+
+GET /api/users {
+  -> 200 "first"
+}
+
+GET /api/users {
+  -> 200 "second"
+}

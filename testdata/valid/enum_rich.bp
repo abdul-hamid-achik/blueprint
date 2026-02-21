@@ -1,0 +1,11 @@
+blueprint "test-rich-enum" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+enum Plan {
+  free       { rate_limit: 10/min,  max_file: 5mb }
+  pro        { rate_limit: 60/min,  max_file: 50mb }
+  enterprise { rate_limit: 1000/min, max_file: 500mb }
+}

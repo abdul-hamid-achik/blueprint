@@ -1,0 +1,21 @@
+blueprint "test-inputs" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model user {
+  id    uuid   primary
+  name  string required
+  email string unique
+}
+
+POST /api/users {
+  <- name  string required
+  <- email string required
+
+  |> user = save user { name: name, email: email }
+
+  -> 201 { id: user.id, name: user.name }
+}

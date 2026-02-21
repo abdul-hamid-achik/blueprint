@@ -1,0 +1,358 @@
+@ "file.cheap — Dead simple file processing API.
+   Upload images, get processed versions back.
+   Pay per request. No subscriptions."
+
+blueprint "file.cheap" {
+  version   "0.2.0"
+  port      8080
+  runtime   node
+  database  postgres
+  cache     redis
+  storage   s3
+
+  use request_logger
+  use cors { origins: ["https://file.cheap"] }
+}
+
+# --- Secrets & Environment ---
+
+secret STRIPE_KEY         required
+secret S3_BUCKET          required
+secret API_SIGNING_KEY    required
+secret REDIS_URL          required
+secret DATABASE_URL       required
+
+env MAX_FILE_SIZE   10mb
+env ALLOWED_TYPES   ["image/png", "image/jpeg", "image/webp"]
+env FREE_MONTHLY    50
+
+# --- Types ---
+
+alias Email = string format(email)
+
+enum Plan {
+  free       { rate_limit: 10/min,   max_file: 5mb,   monthly_ops: 50 }
+  pro        { rate_limit: 60/min,   max_file: 50mb,  monthly_ops: 10000 }
+  enterprise { rate_limit: 1000/min, max_file: 500mb, monthly_ops: 100000 }
+}
+
+# --- Models ---
+
+@ "API consumers identified by key"
+model api_key {
+  id           uuid       primary
+  key_hash     string     unique
+  user_email   Email      index
+  plan         string     default("free")
+  ops_used     int        default(0)
+  ops_reset_at timestamp  default(now)
+  created      timestamp  default(now)
+}
+
+@ "Tracks every processing job"
+model job {
+  id           uuid       primary
+  api_key_id   uuid       ref(api_key)
+  operation    enum(watermark, resize, compress, convert)
+  status       enum(pending, processing, done, failed)
+  input_url    string
+  output_url   string     optional
+  params       json
+  duration_ms  int        optional
+  error        string     optional
+  created      timestamp  default(now)
+  completed    timestamp  optional
+}
+
+# --- Functions ---
+
+@ "Overlay text onto an image"
+fn watermark {
+  <- file     image/*
+  <- text     string
+  <- position string
+  <- opacity  float
+
+  -> file     image/*
+
+  impl node {
+    module: "./internal/watermark"
+    func:   "apply"
+  }
+}
+
+@ "Check if user has remaining operations for the month"
+fn check_quota {
+  <- key api_key
+  -> bool
+
+  logic {
+    |> when now > key.ops_reset_at: update api_key { ops_used: 0, ops_reset_at: now + 30.days }
+    |> -> key.ops_used < Plan[key.plan].monthly_ops
+  }
+}
+
+# --- Pipes ---
+
+@ "Standard image validation"
+pipe validate_image {
+  <- file image/*
+
+  |> guard file.size < env.MAX_FILE_SIZE     -> 413 "File exceeds size limit"
+  |> guard file.type in env.ALLOWED_TYPES    -> 415 "Unsupported file type"
+
+  -> file
+}
+
+# --- Middleware ---
+
+@ "Authenticate via API key and enforce quota"
+middleware require_auth {
+  before {
+    |> guard header.Authorization            -> 401 "Missing API key"
+    |> key = query api_key where(key_hash == header.Authorization) first
+    |> guard key                             -> 401 "Invalid API key"
+    |> guard check_quota(key)                -> 429 "Monthly quota exceeded"
+    |> inject key as auth
+  }
+}
+
+@ "Log every request with timing"
+middleware request_logger {
+  before {
+    |> start = clock()
+    |> log "Request started"
+  }
+
+  after {
+    |> elapsed = clock() - start
+    |> log "Request completed in {elapsed}ms"
+  }
+}
+
+# --- Endpoints ---
+
+@ "Upload an image and get a watermarked version"
+POST /api/watermark {
+  use require_auth
+  limit 60/min
+  tags  ["processing", "core"]
+
+  <- file     image/*                            required
+  <- text     string                             required
+  <- position enum(center, corner, tile)         default(center)
+  <- opacity  float min(0.0) max(1.0)            default(0.5)
+
+  |> file = pipe validate_image(file)
+  |> job = save job {
+    api_key_id: auth.id,
+    operation:  "watermark",
+    status:     "pending",
+    params:     { text: text, position: position, opacity: opacity },
+  }
+
+  |> try {
+    |> input = upload(file, env.S3_BUCKET)
+    |> update job { status: "processing", input_url: input.url }
+    |> start = clock()
+    |> result = watermark(file, text, position, opacity)
+    |> output = upload(result, env.S3_BUCKET)
+    |> elapsed = clock() - start
+    |> update job { status: "done", output_url: output.url, duration_ms: elapsed, completed: now }
+    |> update api_key { ops_used: auth.ops_used + 1 }
+  } recover {
+    |> update job { status: "failed", error: error.message }
+    |> log "Watermark failed for job {job.id}: {error.message}" level(error)
+    -> 500 { error: "Processing failed", job_id: job.id }
+  }
+
+  -> 200 {
+    job_id: job.id,
+    url:    output.url,
+    status: "done",
+  }
+}
+
+@ "Get details of a specific job"
+GET /api/jobs/:id {
+  use require_auth
+  cache 5s
+  tags  ["jobs"]
+
+  <- id uuid required
+
+  |> job = fetch job(id)
+  |> guard job                          -> 404 "Job not found"
+  |> guard job.api_key_id == auth.id    -> 403 "Not your job"
+
+  -> 200 {
+    id:        job.id,
+    operation: job.operation,
+    status:    job.status,
+    url:       job.output_url,
+    params:    job.params,
+    duration:  job.duration_ms,
+    created:   job.created,
+    completed: job.completed,
+  }
+}
+
+@ "List jobs for the authenticated user"
+GET /api/jobs {
+  use require_auth
+  limit 30/min
+  tags  ["jobs"]
+
+  <- page     int default(1) min(1)
+  <- per_page int default(20) min(1) max(100)
+  <- status   enum(pending, processing, done, failed) optional
+
+  |> filters = { api_key_id: auth.id }
+  |> when status: filters.status = status
+  |> jobs = query job where(filters) order(created desc) paginate(page, per_page)
+
+  -> 200 {
+    jobs:     jobs.items,
+    total:    jobs.total,
+    page:     page,
+    per_page: per_page,
+  }
+}
+
+@ "Get current API key usage and limits"
+GET /api/usage {
+  use require_auth
+  cache 10s
+  tags  ["billing"]
+
+  -> 200 {
+    plan:          auth.plan,
+    ops_used:      auth.ops_used,
+    ops_limit:     Plan[auth.plan].monthly_ops,
+    ops_remaining: Plan[auth.plan].monthly_ops - auth.ops_used,
+    resets_at:     auth.ops_reset_at,
+    rate_limit:    Plan[auth.plan].rate_limit,
+  }
+}
+
+@ "Stripe webhook for payment events"
+POST /webhooks/stripe {
+  auth webhook_sig
+  tags ["billing", "webhooks"]
+
+  <- event json required
+
+  |> when event.type == "checkout.session.completed" {
+    |> email = event.data.object.customer_email
+    |> plan = event.data.object.metadata.plan
+    |> key = query api_key where(user_email == email) first
+    |> guard key -> 404 "Unknown customer"
+    |> update api_key { plan: plan }
+    |> log "Upgraded {email} to {plan}"
+  }
+
+  |> when event.type == "customer.subscription.deleted" {
+    |> email = event.data.object.customer_email
+    |> key = query api_key where(user_email == email) first
+    |> when key: update api_key { plan: Plan.free }
+    |> log "Downgraded {email} to free"
+  }
+
+  -> 200 "ok"
+}
+
+# --- Schedules ---
+
+@ "Clean up expired jobs and S3 objects older than 90 days"
+schedule cleanup {
+  cron "0 4 * * 0"
+
+  |> old = query job where(created < 90.days.ago)
+  |> map old: delete_s3_object(job.output_url)
+  |> map old: delete_s3_object(job.input_url)
+  |> delete old
+  |> log "Cleaned {old.count} expired jobs"
+}
+
+@ "Reset monthly quotas"
+schedule reset_quotas {
+  cron "0 0 1 * *"
+
+  |> expired = query api_key where(ops_reset_at < now)
+  |> map expired: update api_key { ops_used: 0, ops_reset_at: now + 30.days }
+  |> log "Reset quotas for {expired.count} keys"
+}
+
+# --- Tests ---
+
+fixture "sample.png" from "testdata/sample.png"
+fixture "huge.png" generated { type: "image/png", size: 15mb }
+
+@ "Watermark should succeed with valid input"
+test watermark_success {
+  target POST /api/watermark
+
+  setup {
+    |> key = seed api_key { plan: "pro" }
+  }
+
+  request {
+    auth api_key(key.key_hash)
+    body {
+      file:     fixture("sample.png"),
+      text:     "PREVIEW",
+      position: "center",
+      opacity:  0.5,
+    }
+  }
+
+  expect {
+    status 200
+    body.url is string
+    body.job_id is uuid
+    body.status == "done"
+    model job where(id == body.job_id, status == "done") exists
+  }
+}
+
+@ "Watermark should reject oversized files"
+test watermark_oversized {
+  target POST /api/watermark
+
+  setup {
+    |> key = seed api_key { plan: "free" }
+  }
+
+  request {
+    auth api_key(key.key_hash)
+    body {
+      file: fixture("huge.png"),
+      text: "PREVIEW",
+    }
+  }
+
+  expect {
+    status 413
+  }
+}
+
+@ "Should enforce rate limits"
+test watermark_rate_limited {
+  target POST /api/watermark
+
+  setup {
+    |> key = seed api_key { plan: "free" }
+  }
+
+  request repeat(15) {
+    auth api_key(key.key_hash)
+    body {
+      file: fixture("sample.png"),
+      text: "PREVIEW",
+    }
+  }
+
+  expect {
+    last_status 429
+  }
+}

@@ -1,0 +1,311 @@
+# Blueprint
+
+> A declarative programming language for LLMs to write web services.
+> Intent-first. Flow-visible. Flat by force.
+
+Blueprint (`.bp`) compiles to a runnable TypeScript/Node.js project. Write a spec, get a working API.
+
+```bp
+@ "A simple TODO API"
+blueprint "todo-api" {
+  version  "1.0.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model todo {
+  id      uuid      primary
+  title   string    required
+  done    bool      default(false)
+  created timestamp default(now)
+}
+
+@ "Create a new todo"
+POST /api/todos {
+  <- title string required
+
+  |> item = save todo { title: title }
+
+  -> 201 { id: item.id, title: item.title, done: item.done }
+}
+
+@ "List all todos"
+GET /api/todos {
+  <- page     int default(1) min(1)
+  <- per_page int default(20) max(100)
+
+  |> todos = query todo order(created desc) paginate(page, per_page)
+
+  -> 200 { todos: todos.items, total: todos.total }
+}
+```
+
+`bp build todo.bp` generates a working [Hono](https://hono.dev) + [Drizzle](https://orm.drizzle.team) + [Zod](https://zod.dev) project. No boilerplate. No lock-in.
+
+---
+
+## Install
+
+```bash
+# Homebrew (macOS / Linux)
+brew install abdul-hamid-achik/tap/bp
+
+# Download a release binary
+# https://github.com/abdul-hamid-achik/blueprint/releases
+
+# Build from source (requires Go 1.22+)
+git clone https://github.com/abdul-hamid-achik/blueprint
+cd blueprint
+go build -o bin/bp ./cmd/bp
+```
+
+## Usage
+
+```bash
+# Validate a .bp file (syntax + semantics)
+bp check myservice.bp
+
+# Compile to TypeScript project
+bp build myservice.bp --out ./generated
+
+# Show version
+bp version
+```
+
+After `bp build`, the output is a standard Node.js project:
+
+```bash
+cd generated
+npm install
+npm run db:push   # apply schema to postgres
+npm start         # start the server
+```
+
+---
+
+## Language at a Glance
+
+### Arrows show data flow
+
+Scanning the left margin of any block reveals the data flow shape at a glance:
+
+| Arrow | Meaning       | Example                                          |
+|-------|---------------|--------------------------------------------------|
+| `<-`  | Input         | `<- file image/* required`                       |
+| `\|>` | Step          | `\|> result = watermark(file, text, pos, 0.5)`  |
+| `->`  | Output        | `-> 200 { url: result.url }`                     |
+| `@`   | Intent        | `@ "Upload an image and watermark it"`           |
+| `@>`  | Generate slot | `@> "add rate limiting" using(redis) max_lines(3)` |
+
+### Guards — validation with early return
+
+```bp
+|> guard file.size < 10mb          -> 413 "File too large"
+|> guard file.type in env.ALLOWED_TYPES -> 415 "Unsupported type"
+|> guard job                       -> 404 "Job not found"
+```
+
+If the condition is false (or the value is null/falsy), return immediately.
+
+### When — conditional steps
+
+```bp
+|> when status: filters.status = status
+
+|> when event.type == "checkout.session.completed" {
+  |> update api_key { plan: plan }
+  |> log "Upgraded {email} to {plan}"
+}
+```
+
+### Try/recover — runtime error handling
+
+```bp
+|> try {
+  |> result = watermark(file, text, position, opacity)
+  |> output = upload(result, env.S3_BUCKET)
+  |> update job { status: "done", output_url: output.url }
+} recover {
+  |> update job { status: "failed", error: error.message }
+  |> log "Failed: {error.message}" level(error)
+  -> 500 { error: "Processing failed" }
+}
+```
+
+### Rich enums with data
+
+```bp
+enum Plan {
+  free       { rate_limit: 10/min,   max_file: 5mb,   monthly_ops: 50 }
+  pro        { rate_limit: 60/min,   max_file: 50mb,  monthly_ops: 10000 }
+  enterprise { rate_limit: 1000/min, max_file: 500mb, monthly_ops: 100000 }
+}
+```
+
+Access enum data: `Plan[user.plan].monthly_ops`, `Plan[auth.plan].rate_limit`
+
+### Middleware with inject
+
+```bp
+middleware require_auth {
+  before {
+    |> guard header.X-API-Key                -> 401 "Missing API key"
+    |> key = query api_key where(key_hash == hash(header.X-API-Key)) first
+    |> guard key                             -> 401 "Invalid API key"
+    |> guard check_quota(key)               -> 429 "Monthly quota exceeded"
+    |> inject key as auth
+  }
+}
+```
+
+Applied per-endpoint: `use require_auth`. The injected `auth` is available in the endpoint body.
+
+### Functions and pipes
+
+```bp
+fn watermark {
+  <- file     image/*
+  <- text     string
+  <- position string
+  <- opacity  float
+  -> file     image/*
+
+  impl node {
+    module: "./internal/watermark"
+    func:   "apply"
+  }
+}
+
+pipe validate_image {
+  <- file image/*
+
+  |> guard file.size < env.MAX_FILE_SIZE  -> 413 "File exceeds size limit"
+  |> guard file.type in env.ALLOWED_TYPES -> 415 "Unsupported file type"
+
+  -> file
+}
+```
+
+### Schedules
+
+```bp
+schedule cleanup {
+  cron "0 4 * * 0"
+
+  |> old = query job where(created < 90.days.ago)
+  |> delete old
+  |> log "Cleaned {old.count} expired jobs"
+}
+```
+
+---
+
+## Generated Stack
+
+| Blueprint concept | Library                    | Version |
+|-------------------|----------------------------|---------|
+| HTTP server       | [Hono](https://hono.dev)   | ^4.x    |
+| Database ORM      | [Drizzle ORM](https://orm.drizzle.team) | ^0.35.x |
+| Validation        | [Zod](https://zod.dev)     | ^3.23.x |
+| Job queue         | [BullMQ](https://bullmq.io) | ^5.x   |
+| Testing           | [Vitest](https://vitest.dev) | ^2.x  |
+| Storage           | `@aws-sdk/client-s3`       | ^3.x    |
+| Auth              | `jose`                     | ^5.x    |
+
+The generated code is clean, idiomatic TypeScript with zero Blueprint runtime dependencies.
+
+## Generated Output Structure
+
+```
+generated/
+├── package.json
+├── tsconfig.json
+├── Dockerfile
+├── .env.example
+└── src/
+    ├── index.ts                  # Hono server entrypoint
+    ├── types.ts                  # TypeScript types, enums, PlanConfig
+    ├── models/schema.ts          # Drizzle table definitions
+    ├── validation/schemas.ts     # Zod request/response schemas
+    ├── lib/
+    │   ├── db.ts                 # Database connection (Drizzle + postgres)
+    │   ├── env.ts                # Env var validation (Zod)
+    │   ├── storage.ts            # S3 upload/download helpers
+    │   ├── cache.ts              # Redis client
+    │   └── errors.ts             # BpError class
+    ├── routes/<resource>.ts      # Hono endpoint handlers
+    ├── functions/<name>.ts       # fn wrappers + stubs
+    ├── pipes/<name>.ts           # pipe functions
+    ├── middleware/<name>.ts      # Hono middleware
+    ├── schedules/<name>.ts       # Cron job handlers
+    └── workers/<name>.ts         # BullMQ worker handlers
+```
+
+---
+
+## CLI Commands
+
+| Command | Status | Description |
+|---------|--------|-------------|
+| `bp check <file>` | ✅ | Validate syntax and semantics |
+| `bp build <file> [--out <dir>]` | ✅ | Compile to TypeScript project |
+| `bp run <file> [--out <dir>]` | ✅ | Build and start the server |
+| `bp dev <file> [--out <dir>]` | ✅ | Watch mode — rebuild and restart on changes |
+| `bp init [name]` | ✅ | Scaffold a new Blueprint project |
+| `bp fmt <file> [--write]` | ✅ | Format .bp files |
+| `bp lint <file>` | ✅ | Lint for style and best practices |
+| `bp docs <file> [--out file.json]` | ✅ | Generate OpenAPI 3.1 JSON spec |
+| `bp test <file> [--out <dir>]` | ✅ | Build and run vitest |
+| `bp migrate <file> [generate\|push]` | ✅ | Build and run drizzle-kit |
+| `bp generate <file> [--write]` | ✅ | Resolve `@>` slots via LLM (needs `ANTHROPIC_API_KEY`) |
+| `bp version` | ✅ | Show version |
+
+## Implementation Status
+
+| Milestone | Status | Notes |
+|-----------|--------|-------|
+| M1: Lexer + Parser + AST | ✅ Complete | 50+ lexer tests, 61+ parser tests, all SPEC fixtures |
+| M2: Semantic Checker | ✅ Complete | 57+ tests — name resolution, type checks, structural validation |
+| M3: JavaScript Codegen | ✅ Complete | Routes, models, middleware, pipes, fns, schedules, workers, tests |
+| M4: Developer Experience | ✅ Complete | init, run, dev, fmt, lint, docs |
+| M5: Testing + Migrations | ✅ Complete | bp test (vitest), bp migrate (drizzle-kit) |
+| M6: LLM Integration | ✅ Complete | bp generate — resolves `@>` slots via Anthropic API |
+| M7: Polish + Launch | ✅ Complete | GoReleaser, release CI, `@blueprint/runtime` npm package |
+
+See [SPEC.md](./SPEC.md) for the full language specification and design rationale.
+
+---
+
+## Development
+
+```bash
+# Run all tests
+go test ./...
+
+# Build binary
+go build -o bin/bp ./cmd/bp
+
+# Check the reference example (all language features)
+./bin/bp check testdata/valid/all_features.bp
+
+# Build the reference example and verify TypeScript compiles
+./bin/bp build testdata/valid/all_features.bp --out generated
+cd generated && npm install && npx tsc --noEmit
+```
+
+Using [Task](https://taskfile.dev):
+
+```bash
+task build          # build bp binary
+task test           # run all Go tests
+task check:example  # validate all_features.bp
+task build:example  # build all_features.bp -> generated/
+task clean          # remove build artifacts
+```
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

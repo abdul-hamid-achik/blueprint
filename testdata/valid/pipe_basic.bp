@@ -1,0 +1,13 @@
+blueprint "test-pipe" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+pipe validate_input {
+  <- data string
+
+  |> guard data != "" -> 400 "Data cannot be empty"
+
+  -> data
+}

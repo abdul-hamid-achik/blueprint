@@ -1,0 +1,19 @@
+blueprint "test-try-recover" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+POST /api/process {
+  <- data string required
+
+  |> try {
+    |> result = transform(data)
+    |> log "Success: {result}"
+  } recover {
+    |> log "Failed: {error.message}"
+    -> 500 { error: "Processing failed" }
+  }
+
+  -> 200 { result: result }
+}

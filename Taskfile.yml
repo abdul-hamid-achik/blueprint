@@ -1,0 +1,76 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the bp binary
+    cmds:
+      - go build -o bin/bp ./cmd/bp
+
+  test:
+    desc: Run all Go tests
+    cmds:
+      - go test ./...
+
+  test:v:
+    desc: Run all Go tests with verbose output
+    cmds:
+      - go test -v ./...
+
+  lint:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  fmt:
+    desc: Format all .bp example and testdata files in place
+    deps: [build]
+    cmds:
+      - for f in examples/*.bp testdata/valid/*.bp; do ./bin/bp fmt "$f" --write; done
+
+  check:examples:
+    desc: Run bp check against all example .bp files
+    deps: [build]
+    cmds:
+      - ./bin/bp check examples/hello-world.bp
+      - ./bin/bp check examples/todo-api.bp
+      - ./bin/bp check testdata/valid/all_features.bp
+
+  # Legacy alias
+  check:example:
+    desc: Run bp check against the all_features test fixture
+    deps: [check:examples]
+
+  lint:examples:
+    desc: Run bp lint against all example .bp files
+    deps: [build]
+    cmds:
+      - ./bin/bp lint examples/hello-world.bp
+      - ./bin/bp lint examples/todo-api.bp
+      - ./bin/bp lint testdata/valid/all_features.bp
+
+  docs:example:
+    desc: Generate OpenAPI spec from all_features.bp
+    deps: [build]
+    cmds:
+      - ./bin/bp docs testdata/valid/all_features.bp --out generated/openapi.json
+
+  build:example:
+    desc: Build all_features.bp to generated/
+    deps: [build]
+    cmds:
+      - ./bin/bp build testdata/valid/all_features.bp --out generated
+
+  release:dry:
+    desc: Dry-run GoReleaser (local, no publish)
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  release:check:
+    desc: Validate .goreleaser.yaml config
+    cmds:
+      - goreleaser check
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf bin/ generated/

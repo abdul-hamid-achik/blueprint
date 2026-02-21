@@ -1,0 +1,22 @@
+blueprint "test-when-block" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model user {
+  id   uuid   primary
+  plan string default("free")
+}
+
+POST /api/upgrade {
+  <- plan string required
+
+  |> when plan == "pro" {
+    |> log "Upgrading to pro"
+    |> update user { plan: "pro" }
+  }
+
+  -> 200 { status: "upgraded" }
+}

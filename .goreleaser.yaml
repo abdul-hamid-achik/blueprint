@@ -1,0 +1,59 @@
+version: 2
+
+project_name: bp
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: bp
+    main: ./cmd/bp
+    binary: bp
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+brews:
+  - name: bp
+    homepage: https://github.com/abdul-hamid-achik/blueprint
+    description: "Blueprint language toolchain — compile .bp files to TypeScript/Node.js projects"
+    license: MIT
+    directory: Formula
+    repository:
+      owner: abdul-hamid-achik
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    test: |
+      system "#{bin}/bp version"

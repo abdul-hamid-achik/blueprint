@@ -1,0 +1,31 @@
+@ "A service demonstrating intent annotations everywhere"
+blueprint "test-intents" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+@ "User accounts in the system"
+model user {
+  id   uuid   primary
+  name string required
+}
+
+@ "Simple validation pipeline"
+pipe validate_name {
+  <- name string
+  |> guard name != "" -> 400 "Name required"
+  -> name
+}
+
+@ "Create a new user in the system"
+POST /api/users {
+  <- name string required
+
+  |> @ "Validate the name before saving"
+  |> name = pipe validate_name(name)
+  |> user = save user { name: name }
+
+  -> 201 { id: user.id }
+}

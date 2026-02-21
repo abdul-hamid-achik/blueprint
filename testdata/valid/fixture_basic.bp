@@ -1,0 +1,15 @@
+blueprint "test-fixtures" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model user {
+  id   uuid   primary
+  name string required
+}
+
+fixture "sample.png" from "testdata/sample.png"
+fixture "large.png" generated { type: "image/png", size: 15mb }
+fixture "test_user" seed user { name: "Test User" }

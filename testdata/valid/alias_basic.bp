@@ -1,0 +1,9 @@
+blueprint "test-alias" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+alias Email    = string format(email)
+alias Url      = string format(url)
+alias FileSize = int min(0) max(100)

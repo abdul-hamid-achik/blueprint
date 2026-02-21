@@ -1,0 +1,19 @@
+blueprint "test-types" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+type ImageFile {
+  url    string
+  width  int
+  height int
+  format string
+  size   int
+}
+
+type Pagination {
+  page     int default(1)
+  per_page int default(20)
+  total    int
+}
