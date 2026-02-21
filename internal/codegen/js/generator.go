@@ -41,6 +41,7 @@ type emitCtx struct {
 	boundVars   map[string]string // data-op binding: model name -> bound variable (e.g., "job" -> "job")
 	declared    map[string]bool   // variables already declared in current scope
 	varModels   map[string]string // reverse of boundVars: variable name -> model name (e.g., "old" -> "job")
+	singleVars  map[string]bool   // variables bound from fetch (single record, not a collection)
 	asyncFns    map[string]bool   // function/pipe names that should be awaited
 	structEnums map[string]bool   // enum names that have struct-body variants (bracket access → <Name>Config)
 }
@@ -274,24 +275,36 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		files = append(files, g.genSchedule(s))
 	}
 
-	// src/routes/<resource>.ts — stream endpoints grouped by resource
+	// src/routes/<resource>[-stream].ts — stream endpoints grouped by resource
+	// Use "-stream" suffix when the resource name collides with a REST route file.
 	streamGroups := make(map[string][]*ast.StreamEndpoint)
 	for _, se := range streams {
 		res := extractResource(se.Path)
 		streamGroups[res] = append(streamGroups[res], se)
 	}
 	for res, ses := range streamGroups {
-		files = append(files, g.genStreamRoute(res, ses))
+		fileKey := res
+		if _, conflict := routeGroups[res]; conflict {
+			fileKey = res + "-stream"
+		}
+		files = append(files, g.genStreamRoute(res, fileKey, ses))
 	}
 
-	// src/routes/<resource>.ts — ws endpoints grouped by resource
+	// src/routes/<resource>[-ws].ts — ws endpoints grouped by resource
+	// Use "-ws" suffix when the resource name collides with a REST or stream route file.
 	wsGroups := make(map[string][]*ast.WsEndpoint)
 	for _, we := range ws {
 		res := extractResource(we.Path)
 		wsGroups[res] = append(wsGroups[res], we)
 	}
 	for res, wes := range wsGroups {
-		files = append(files, g.genWsRoute(res, wes))
+		fileKey := res
+		_, restConflict := routeGroups[res]
+		_, streamConflict := streamGroups[res]
+		if restConflict || streamConflict {
+			fileKey = res + "-ws"
+		}
+		files = append(files, g.genWsRoute(res, fileKey, wes))
 	}
 
 	// src/subscriptions/<name>.ts + src/lib/events.ts
@@ -865,31 +878,49 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		}
 	}
 
-	// Import regular route files
+	// Build resource sets for conflict detection (same logic as generateAll)
 	routeResources := make(map[string]bool)
 	for _, ep := range endpoints {
 		routeResources[extractResource(ep.Path)] = true
 	}
+	streamResources := make(map[string]bool)
+	for _, se := range streams {
+		streamResources[extractResource(se.Path)] = true
+	}
+	wsResources := make(map[string]bool)
+	for _, we := range ws {
+		wsResources[extractResource(we.Path)] = true
+	}
+
+	// fileKeyForStream/Ws mirrors the suffix logic in generateAll
+	fileKeyForStream := func(res string) string {
+		if routeResources[res] {
+			return res + "-stream"
+		}
+		return res
+	}
+	fileKeyForWs := func(res string) string {
+		if routeResources[res] || streamResources[res] {
+			return res + "-ws"
+		}
+		return res
+	}
+
+	// Import regular route files
 	for res := range routeResources {
 		b.WriteString(fmt.Sprintf("import { %sRoutes } from './routes/%s.js';\n", toCamelCase(res), toKebabCase(res)))
 	}
 
 	// Import stream route files
-	streamResources := make(map[string]bool)
-	for _, se := range streams {
-		streamResources[extractResource(se.Path)] = true
-	}
 	for res := range streamResources {
-		b.WriteString(fmt.Sprintf("import { %sRoutes } from './routes/%s.js';\n", toCamelCase(res), toKebabCase(res)))
+		fk := fileKeyForStream(res)
+		b.WriteString(fmt.Sprintf("import { %sRoutes } from './routes/%s.js';\n", toCamelCase(fk), toKebabCase(fk)))
 	}
 
 	// Import WS route files
-	wsResources := make(map[string]bool)
-	for _, we := range ws {
-		wsResources[extractResource(we.Path)] = true
-	}
 	for res := range wsResources {
-		b.WriteString(fmt.Sprintf("import { %sRoutes } from './routes/%s.js';\n", toCamelCase(res), toKebabCase(res)))
+		fk := fileKeyForWs(res)
+		b.WriteString(fmt.Sprintf("import { %sRoutes } from './routes/%s.js';\n", toCamelCase(fk), toKebabCase(fk)))
 	}
 
 	// Import subscription handlers and event emitter
@@ -946,12 +977,14 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 
 	// Mount stream routes
 	for res := range streamResources {
-		b.WriteString(fmt.Sprintf("app.route('/', %sRoutes);\n", toCamelCase(res)))
+		fk := fileKeyForStream(res)
+		b.WriteString(fmt.Sprintf("app.route('/', %sRoutes);\n", toCamelCase(fk)))
 	}
 
 	// Mount WS routes
 	for res := range wsResources {
-		b.WriteString(fmt.Sprintf("app.route('/', %sRoutes);\n", toCamelCase(res)))
+		fk := fileKeyForWs(res)
+		b.WriteString(fmt.Sprintf("app.route('/', %sRoutes);\n", toCamelCase(fk)))
 	}
 
 	b.WriteString("\n")
@@ -967,11 +1000,13 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	}
 
 	b.WriteString(fmt.Sprintf(`console.log('%%s listening on port %%d', '%s', %d);`+"\n", bp.Name, port))
-	b.WriteString(fmt.Sprintf("serve({ fetch: app.fetch, port: %d });\n\n", port))
 
-	// If WS, inject the websocket after server starts
+	// If WS: use injectWebSocket(serve(...)), otherwise plain serve(...)
 	if len(ws) > 0 {
-		b.WriteString("injectWebSocket(serve({ fetch: app.fetch, port: " + fmt.Sprintf("%d", port) + " }));\n\n")
+		b.WriteString(fmt.Sprintf("const server = serve({ fetch: app.fetch, port: %d });\n", port))
+		b.WriteString("injectWebSocket(server);\n\n")
+	} else {
+		b.WriteString(fmt.Sprintf("serve({ fetch: app.fetch, port: %d });\n\n", port))
 	}
 
 	b.WriteString("export default app;\n")
@@ -1300,6 +1335,9 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 	if ctx.varModels == nil {
 		ctx.varModels = make(map[string]string)
 	}
+	if ctx.singleVars == nil {
+		ctx.singleVars = make(map[string]bool)
+	}
 
 	// Pre-scan: find input variables that are later reassigned (for let vs const)
 	reassigned := collectStepBindingsReassigned(stmts)
@@ -1363,20 +1401,30 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 							name := toCamelCase(s.Binding)
 							ctx.boundVars[ident.Name] = name
 							ctx.varModels[s.Binding] = ident.Name
+							// fetch returns a single record; query returns a collection
+							if fn.Name == "fetch" {
+								ctx.singleVars[s.Binding] = true
+							}
 						}
 					}
 				}
 			}
 
-			// Special-case: delete <variable> where variable holds query results (bulk delete)
+			// Special-case: delete <variable> where variable holds tracked model records
 			if fn, ok := s.Expr.(*ast.FnCall); ok && fn.Name == "delete" && len(fn.Args) > 0 {
 				if ident, ok := fn.Args[0].(*ast.Ident); ok {
 					if modelName, tracked := ctx.varModels[ident.Name]; tracked {
 						varName := toCamelCase(ident.Name)
 						schemaTable := "schema." + toCamelCase(modelName)
-						// Use sql template for bulk delete — avoids needing inArray import
-						b.WriteString(fmt.Sprintf("%sawait db.delete(%s).where(sql`id = ANY(ARRAY[${%s.map((r: any) => r.id)}])`);\n",
-							indent, schemaTable, varName))
+						if ctx.singleVars[ident.Name] {
+							// Single record from fetch — use eq
+							b.WriteString(fmt.Sprintf("%sawait db.delete(%s).where(eq(%s.id, %s.id));\n",
+								indent, schemaTable, schemaTable, varName))
+						} else {
+							// Collection from query — bulk delete
+							b.WriteString(fmt.Sprintf("%sawait db.delete(%s).where(sql`id = ANY(ARRAY[${%s.map((r: any) => r.id)}])`);\n",
+								indent, schemaTable, varName))
+						}
 						continue
 					}
 				}
@@ -1897,6 +1945,7 @@ func (g *Generator) genFunction(fn *ast.Fn) []codegen.OutputFile {
 			kind:        "function",
 			boundVars:   make(map[string]string),
 			varModels:   make(map[string]string),
+			singleVars:  make(map[string]bool),
 			asyncFns:    g.buildAsyncFns(),
 			structEnums: g.structEnums,
 		}
@@ -2078,7 +2127,8 @@ func (g *Generator) genSchedule(s *ast.Schedule) codegen.OutputFile {
 // --- Stream Endpoints ---
 
 // genStreamRoute generates a route file for a group of stream (SSE) endpoints sharing the same resource.
-func (g *Generator) genStreamRoute(resource string, endpoints []*ast.StreamEndpoint) codegen.OutputFile {
+// fileKey is the filename stem (may have "-stream" suffix when conflicting with a REST route).
+func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.StreamEndpoint) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { Hono } from 'hono';\n")
@@ -2115,7 +2165,7 @@ func (g *Generator) genStreamRoute(resource string, endpoints []*ast.StreamEndpo
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
 
-	routeVar := toCamelCase(resource) + "Routes"
+	routeVar := toCamelCase(fileKey) + "Routes"
 	b.WriteString(fmt.Sprintf("export const %s = new Hono();\n\n", routeVar))
 
 	for _, ep := range endpoints {
@@ -2171,7 +2221,7 @@ func (g *Generator) genStreamRoute(resource string, endpoints []*ast.StreamEndpo
 	}
 
 	return codegen.OutputFile{
-		Path:    fmt.Sprintf("src/routes/%s.ts", toKebabCase(resource)),
+		Path:    fmt.Sprintf("src/routes/%s.ts", toKebabCase(fileKey)),
 		Content: []byte(b.String()),
 	}
 }
@@ -2179,7 +2229,8 @@ func (g *Generator) genStreamRoute(resource string, endpoints []*ast.StreamEndpo
 // --- WebSocket Endpoints ---
 
 // genWsRoute generates a route file for a group of WebSocket endpoints sharing the same resource.
-func (g *Generator) genWsRoute(resource string, endpoints []*ast.WsEndpoint) codegen.OutputFile {
+// fileKey is the filename stem (may have "-ws" suffix when conflicting with REST/stream route files).
+func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndpoint) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { Hono } from 'hono';\n")
@@ -2209,7 +2260,7 @@ func (g *Generator) genWsRoute(resource string, endpoints []*ast.WsEndpoint) cod
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
 
-	routeVar := toCamelCase(resource) + "Routes"
+	routeVar := toCamelCase(fileKey) + "Routes"
 	b.WriteString(fmt.Sprintf("export const %s = new Hono();\n\n", routeVar))
 
 	for _, ep := range endpoints {
@@ -2260,7 +2311,7 @@ func (g *Generator) genWsRoute(resource string, endpoints []*ast.WsEndpoint) cod
 	}
 
 	return codegen.OutputFile{
-		Path:    fmt.Sprintf("src/routes/%s.ts", toKebabCase(resource)),
+		Path:    fmt.Sprintf("src/routes/%s.ts", toKebabCase(fileKey)),
 		Content: []byte(b.String()),
 	}
 }
@@ -2476,10 +2527,11 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 	// emits plain assignments instead of const declarations.
 	if len(t.Setup) > 0 {
 		ctx := emitCtx{
-			kind:      "function",
-			declared:  hoistedVarNames,
-			boundVars: make(map[string]string),
-			varModels: make(map[string]string),
+			kind:       "function",
+			declared:   hoistedVarNames,
+			boundVars:  make(map[string]string),
+			varModels:  make(map[string]string),
+			singleVars: make(map[string]bool),
 		}
 		b.WriteString("  beforeAll(async () => {\n")
 		g.emitArrowStmts(&b, t.Setup, "    ", ctx)

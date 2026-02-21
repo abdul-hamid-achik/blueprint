@@ -10,6 +10,9 @@ import (
 
 // toCamelCase converts snake_case to camelCase.
 func toCamelCase(s string) string {
+	// Split on both underscores and hyphens so that file keys like "rooms-stream"
+	// produce valid JS identifiers like "roomsStream".
+	s = strings.ReplaceAll(s, "-", "_")
 	parts := strings.Split(s, "_")
 	for i := 1; i < len(parts); i++ {
 		if len(parts[i]) > 0 {
