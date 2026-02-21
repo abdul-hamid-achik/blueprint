@@ -1,0 +1,44 @@
+{
+  "name": "blueprint-language",
+  "displayName": "Blueprint Language",
+  "description": "Syntax highlighting for Blueprint (.bp) — the declarative web service language",
+  "version": "0.1.0",
+  "publisher": "abdul-hamid-achik",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abdul-hamid-achik/blueprint"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "blueprint",
+    "bp",
+    "web services",
+    "api",
+    "declarative"
+  ],
+  "activationEvents": [],
+  "main": "",
+  "contributes": {
+    "languages": [
+      {
+        "id": "blueprint",
+        "aliases": ["Blueprint", "bp"],
+        "extensions": [".bp"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "blueprint",
+        "scopeName": "source.bp",
+        "path": "./syntaxes/bp.tmLanguage.json"
+      }
+    ]
+  }
+}

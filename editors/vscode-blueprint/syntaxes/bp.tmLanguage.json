@@ -1,0 +1,144 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Blueprint",
+  "scopeName": "source.bp",
+  "fileTypes": ["bp"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#arrows" },
+    { "include": "#strings" },
+    { "include": "#http_methods" },
+    { "include": "#declarations" },
+    { "include": "#sections" },
+    { "include": "#control_flow" },
+    { "include": "#realtime" },
+    { "include": "#data_ops" },
+    { "include": "#types" },
+    { "include": "#constraints" },
+    { "include": "#modifiers" },
+    { "include": "#config" },
+    { "include": "#operators" },
+    { "include": "#runtime" },
+    { "include": "#literals" },
+    { "include": "#mime_types" },
+    { "include": "#numbers" },
+    { "include": "#path_params" }
+  ],
+  "repository": {
+    "comments": {
+      "name": "comment.line.number-sign.blueprint",
+      "match": "#.*$"
+    },
+    "arrows": {
+      "patterns": [
+        {
+          "name": "keyword.operator.llm-slot.blueprint",
+          "match": "@>"
+        },
+        {
+          "name": "keyword.operator.intent.blueprint",
+          "match": "@(?!>)"
+        },
+        {
+          "name": "keyword.operator.input.blueprint",
+          "match": "<-"
+        },
+        {
+          "name": "keyword.operator.step.blueprint",
+          "match": "\\|>"
+        },
+        {
+          "name": "keyword.operator.output.blueprint",
+          "match": "->"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.blueprint",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "variable.other.interpolated.blueprint",
+          "match": "\\{[^}]*\\}"
+        }
+      ]
+    },
+    "http_methods": {
+      "name": "support.function.http-method.blueprint",
+      "match": "\\b(GET|POST|PUT|PATCH|DELETE|STREAM|WS)\\b"
+    },
+    "declarations": {
+      "name": "keyword.declaration.blueprint",
+      "match": "\\b(blueprint|model|fn|pipe|middleware|worker|schedule|secret|env|type|alias|enum|include|external|subscribe|test|fixture|test_group)\\b"
+    },
+    "sections": {
+      "name": "keyword.other.section.blueprint",
+      "match": "\\b(before|after|stream|logic|impl|setup|request|expect|cleanup|on_error|on_fail|on_connect|on_message|on_disconnect)\\b"
+    },
+    "control_flow": {
+      "name": "keyword.control.blueprint",
+      "match": "\\b(guard|when|try|recover|skip)\\b"
+    },
+    "realtime": {
+      "name": "support.function.realtime.blueprint",
+      "match": "\\b(close|join|leave|broadcast|whisper|on)\\b"
+    },
+    "data_ops": {
+      "name": "support.function.data-operation.blueprint",
+      "match": "\\b(fetch|query|save|update|delete|count|upload|download|emit|call|log|map|seed|inject|pipe)\\b"
+    },
+    "types": {
+      "name": "storage.type.blueprint",
+      "match": "\\b(string|int|float|bool|uuid|timestamp|json|file|money)\\b"
+    },
+    "constraints": {
+      "name": "storage.modifier.constraint.blueprint",
+      "match": "\\b(required|optional|primary|unique|index|default|ref|format|min|max|auto)\\b"
+    },
+    "modifiers": {
+      "name": "storage.modifier.query.blueprint",
+      "match": "\\b(where|paginate|order|first|asc|desc)\\b"
+    },
+    "config": {
+      "name": "keyword.other.config.blueprint",
+      "match": "\\b(version|port|runtime|database|cache|storage|queue|cron|retry|timeout|trigger|limit|tags|auth|use|from|as|with|using|level|backoff|exponential|linear|event|timeout)\\b"
+    },
+    "operators": {
+      "name": "keyword.operator.word.blueprint",
+      "match": "\\b(and|or|not|in)\\b"
+    },
+    "runtime": {
+      "name": "constant.other.runtime.blueprint",
+      "match": "\\b(node|postgres|redis|s3|mysql|sqlite|mongo|memcached|sqs|rabbitmq|gcs|local|bearer|api_key|session|webhook_sig)\\b"
+    },
+    "literals": {
+      "name": "constant.language.blueprint",
+      "match": "\\b(true|false|null|now)\\b"
+    },
+    "mime_types": {
+      "name": "constant.other.mime-type.blueprint",
+      "match": "\\b(image|video|audio|text|application)/(\\*|[a-zA-Z0-9+\\-.]+)\\b"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.rate.blueprint",
+          "match": "\\b\\d+/(min|hour|day)\\b"
+        },
+        {
+          "name": "constant.numeric.quantity.blueprint",
+          "match": "\\b\\d+(ms|s|min|hour|hours|day|days|kb|mb|gb|b)\\b"
+        },
+        {
+          "name": "constant.numeric.blueprint",
+          "match": "\\b\\d+(\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "path_params": {
+      "name": "variable.other.path-parameter.blueprint",
+      "match": ":\\w+"
+    }
+  }
+}
