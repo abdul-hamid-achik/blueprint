@@ -68,7 +68,7 @@ GET /api/products {
   <- per_page int    default(20) min(1) max(100)
   <- search   string optional
 
-  |> products = query product where(active == true) paginate(page, per_page) order(name, asc)
+  |> products = query product where(active == true) order(name, asc) paginate(page, per_page)
 
   -> 200 {
     products: products.items,
@@ -204,7 +204,7 @@ GET /api/orders {
   <- session_id string required
   <- page       int    default(1) min(1)
 
-  |> orders = query order where(session_id == session_id) paginate(page, 10) order(created, desc)
+  |> orders = query order where(session_id == session_id) order(created, desc) paginate(page, 10)
 
   -> 200 { orders: orders.items, total: orders.total }
 }

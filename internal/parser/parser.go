@@ -1063,6 +1063,13 @@ func (p *Parser) parseStepExpr() ast.Expr {
 		return p.parseInjectOperation()
 	case lexer.TokenPipe:
 		return p.parsePipeCall()
+	case lexer.TokenJoin, lexer.TokenLeave:
+		return p.parseRoomTargetOp()
+	case lexer.TokenBroadcast, lexer.TokenWhisper:
+		return p.parseBroadcastOp()
+	case lexer.TokenClose:
+		loc := p.advance().Loc
+		return &ast.Ident{Loc: loc, Name: "close"}
 	default:
 		expr := p.parseExpr()
 		// Check for field assignment: expr = value (e.g., filters.status = status)
@@ -1073,6 +1080,40 @@ func (p *Parser) parseStepExpr() ast.Expr {
 		}
 		return expr
 	}
+}
+
+// parseRoomTargetOp parses: join room(id)  or  leave room(id)
+func (p *Parser) parseRoomTargetOp() ast.Expr {
+	loc := p.peek().Loc
+	op := p.advance().Value // "join" or "leave"
+	target := p.expectIdent() // "room" or "connection"
+	var targetArgs []ast.Expr
+	if p.check(lexer.TokenLParen) {
+		p.advance()
+		targetArgs = append(targetArgs, p.parseExpr())
+		p.expect(lexer.TokenRParen)
+	}
+	return &ast.FnCall{Loc: loc, Name: op, Args: []ast.Expr{
+		&ast.FnCall{Loc: loc, Name: target, Args: targetArgs},
+	}}
+}
+
+// parseBroadcastOp parses: broadcast room(id) { data }  or  whisper connection(id) { data }
+func (p *Parser) parseBroadcastOp() ast.Expr {
+	loc := p.peek().Loc
+	op := p.advance().Value // "broadcast" or "whisper"
+	target := p.expectIdent() // "room" or "connection"
+	var targetArgs []ast.Expr
+	if p.check(lexer.TokenLParen) {
+		p.advance()
+		targetArgs = append(targetArgs, p.parseExpr())
+		p.expect(lexer.TokenRParen)
+	}
+	args := []ast.Expr{&ast.FnCall{Loc: loc, Name: target, Args: targetArgs}}
+	if p.check(lexer.TokenLBrace) {
+		args = append(args, p.parseBlockExpr())
+	}
+	return &ast.FnCall{Loc: loc, Name: op, Args: args}
 }
 
 func (p *Parser) parseDataOperation() ast.Expr {

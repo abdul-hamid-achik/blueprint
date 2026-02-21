@@ -87,7 +87,7 @@ GET /api/rooms/:id/messages {
   |> room = fetch room(id)
   |> guard room -> 404 "Room not found"
 
-  |> messages = query message where(room_id == id) paginate(page, per_page) order(created, desc)
+  |> messages = query message where(room_id == id) order(created, desc) paginate(page, per_page)
 
   -> 200 {
     messages: messages.items,
@@ -101,8 +101,6 @@ GET /api/rooms/:id/messages {
 @ "Join a room and chat in real time"
 WS /ws/rooms/:id {
   auth bearer
-
-  <- id uuid required
 
   on_connect {
     |> room = fetch room(id)
@@ -120,17 +118,18 @@ WS /ws/rooms/:id {
   }
 
   on_message {
-    |> guard message.type == "message" -> skip "Unknown message type"
     |> guard message.body              -> 400 "Empty message"
     |> guard message.body.length < 2000 -> 400 "Message too long (max 2000 chars)"
 
-    |> save message { room_id: id, sender: sender, body: message.body }
-    |> emit new_message { room_id: id, sender: sender, body: message.body }
-    |> broadcast room(id) {
-      type:    "message",
-      sender:  sender,
-      body:    message.body,
-      created: now,
+    |> when message.type == "message" {
+      |> save message { room_id: id, sender: sender, body: message.body }
+      |> emit new_message { room_id: id, sender: sender, body: message.body }
+      |> broadcast room(id) {
+        type:    "message",
+        sender:  sender,
+        body:    message.body,
+        created: now,
+      }
     }
   }
 
