@@ -7,6 +7,9 @@ hero:
   name: Blueprint
   text: A declarative language for web services
   tagline: Describe what your service does. Blueprint compiles it to production-ready TypeScript.
+  image:
+    src: /logo.svg
+    alt: Blueprint
   actions:
     - theme: brand
       text: Get Started

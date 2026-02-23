@@ -1,7 +1,13 @@
-# Blueprint
+<p align="center">
+  <img src="docs/public/logo.svg" width="120" alt="Blueprint">
+</p>
 
-> A declarative programming language for LLMs to write web services.
-> Intent-first. Flow-visible. Flat by force.
+<h1 align="center">Blueprint</h1>
+
+<p align="center">
+  A declarative programming language for LLMs to write web services.<br>
+  Intent-first. Flow-visible. Flat by force.
+</p>
 
 Blueprint (`.bp`) compiles to a runnable TypeScript/Node.js project. Write a spec, get a working API.
 

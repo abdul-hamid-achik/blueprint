@@ -19,10 +19,12 @@ export default defineConfig({
 
   // Head metadata
   head: [
-    ['meta', { name: 'theme-color', content: '#3c8cff' }],
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+    ['meta', { name: 'theme-color', content: '#2563EB' }],
     ['meta', { name: 'og:type', content: 'website' }],
     ['meta', { name: 'og:title', content: 'Blueprint' }],
     ['meta', { name: 'og:description', content: 'A declarative language for web services' }],
+    ['meta', { name: 'og:image', content: '/logo.svg' }],
   ],
 
   // Markdown configuration
@@ -38,6 +40,11 @@ export default defineConfig({
 
   themeConfig: {
     // Site logo and title
+    logo: {
+      light: '/logo.svg',
+      dark: '/logo-dark.svg',
+      alt: 'Blueprint',
+    },
     siteTitle: 'Blueprint',
 
     // Navigation bar

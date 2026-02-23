@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <rect x="1" y="1" width="30" height="30" rx="6" fill="#2563EB"/>
+  <!-- Pipe "|" -->
+  <rect x="8" y="8.5" width="3" height="15" rx="1.5" fill="#93C5FD"/>
+  <!-- Chevron ">" -->
+  <path d="M 14 9 L 24 16 L 14 23" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
