@@ -306,6 +306,33 @@ task build:example  # build all_features.bp -> generated/
 task clean          # remove build artifacts
 ```
 
+## Documentation
+
+Full documentation is available in the `docs/` directory and can be served locally using [VitePress](https://vitepress.dev):
+
+```bash
+cd docs
+bun install
+bun run docs:dev
+```
+
+This starts a local dev server at `http://localhost:5173` with:
+
+- [Getting Started](./docs/getting-started.md) -- Installation, quickstart, first project
+- [Language Reference](./docs/language-reference.md) -- Complete BP syntax, every construct
+- [CLI Reference](./docs/cli-reference.md) -- All `bp` commands with flags and examples
+- [Examples](./docs/examples.md) -- Worked examples from hello-world to production API
+- [Generated Output](./docs/generated-output.md) -- What gets generated and how to use it
+- [Architecture](./docs/architecture.md) -- Toolchain internals for contributors
+
+To build the static site for deployment:
+
+```bash
+cd docs
+bun run docs:build    # output in docs/.vitepress/dist/
+bun run docs:preview  # preview the built site
+```
+
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT -- see [LICENSE](./LICENSE).

@@ -1,19 +1,35 @@
-# Blueprint Documentation
+---
+layout: home
+title: Blueprint
+titleTemplate: A declarative language for web services
 
-Blueprint is a declarative language for writing web services. You describe what your service does — Blueprint compiles it to production-ready TypeScript (Hono + Drizzle + Zod).
+hero:
+  name: Blueprint
+  text: A declarative language for web services
+  tagline: Describe what your service does. Blueprint compiles it to production-ready TypeScript.
+  actions:
+    - theme: brand
+      text: Get Started
+      link: /getting-started
+    - theme: alt
+      text: Language Reference
+      link: /language-reference
+    - theme: alt
+      text: View on GitHub
+      link: https://github.com/abdul-hamid-achik/blueprint
 
-## Documentation
+features:
+  - title: Intent-First Design
+    details: Every block starts with what it should do. Arrows show data flow at a glance -- inputs, steps, outputs.
+  - title: Zero Runtime Lock-In
+    details: Generated code uses Hono, Drizzle ORM, and Zod -- standard libraries you already know. No Blueprint runtime dependency.
+  - title: LLM-Native
+    details: Intent blocks and generation slots make the codebase navigable by AI. Use bp generate to fill in implementation details.
+  - title: One Way to Do Things
+    details: No if/else, no loops, no deep nesting. Guards for validation, when for conditions, map for iteration. Flat by force.
+---
 
-| Document | What it covers |
-|----------|---------------|
-| [Getting Started](./getting-started.md) | Installation, quickstart, first project |
-| [Language Reference](./language-reference.md) | Complete BP syntax — every construct |
-| [CLI Reference](./cli-reference.md) | All `bp` commands with flags and examples |
-| [Generated Output](./generated-output.md) | What gets generated and how to use it |
-| [Examples](./examples.md) | Worked examples from hello-world to production API |
-| [Architecture](./architecture.md) | Toolchain internals (for contributors) |
-
-## What Blueprint Is
+## What Blueprint Looks Like
 
 Write this:
 
@@ -43,9 +59,9 @@ todosRoutes.post('/api/todos',
 );
 ```
 
-## Core Concepts
+## The Arrow System
 
-**Arrows show data flow:**
+Arrows on the left margin show data flow at a glance:
 
 | Arrow | Meaning | Example |
 |-------|---------|---------|
@@ -99,7 +115,7 @@ cd generated && npm install && npm start
 
 ## Philosophy
 
-1. **Describe intent, not implementation** — Blueprint is read by humans and LLMs alike
-2. **Zero runtime lock-in** — Generated code uses standard libraries you already know
-3. **One way to do things** — The language has opinions; complexity has nowhere to hide
-4. **LLM-native** — Intent blocks and `@>` slots make the codebase navigable by AI
+1. **Describe intent, not implementation** -- Blueprint is read by humans and LLMs alike
+2. **Zero runtime lock-in** -- Generated code uses standard libraries you already know
+3. **One way to do things** -- The language has opinions; complexity has nowhere to hide
+4. **LLM-native** -- Intent blocks and `@>` slots make the codebase navigable by AI

@@ -34,3 +34,8 @@ Thumbs.db
 
 # Blueprint config (user-specific)
 .bpconfig
+
+# Documentation site
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/

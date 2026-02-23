@@ -1370,7 +1370,7 @@ test upload_success {
 		t.Errorf("setup should assign hoisted var; got:\n%s", ts)
 	}
 	// Fixture resolved to readFileSync
-	if !strings.Contains(ts, "readFileSync(join(__dirname, '..', 'testdata/sample.png'))") {
+	if !strings.Contains(ts, "readFileSync(join(import.meta.dirname, '..', 'testdata/sample.png'))") {
 		t.Errorf("fixture should resolve to readFileSync; got:\n%s", ts)
 	}
 	// Auth header
@@ -1464,16 +1464,16 @@ test create_job_exists {
 	if !strings.Contains(ts, "import { eq, and } from 'drizzle-orm';") {
 		t.Errorf("should import drizzle operators; got:\n%s", ts)
 	}
-	// Should emit db.select() query
-	if !strings.Contains(ts, "db.select().from(schema.jobs)") {
-		t.Errorf("should emit db.select().from(schema.jobs); got:\n%s", ts)
+	// Should emit db.select() query — schema exports use singular model name
+	if !strings.Contains(ts, "db.select().from(schema.job)") {
+		t.Errorf("should emit db.select().from(schema.job); got:\n%s", ts)
 	}
 	// Should include eq conditions
-	if !strings.Contains(ts, "eq(schema.jobs.id") {
-		t.Errorf("should emit eq(schema.jobs.id, ...); got:\n%s", ts)
+	if !strings.Contains(ts, "eq(schema.job.id") {
+		t.Errorf("should emit eq(schema.job.id, ...); got:\n%s", ts)
 	}
-	if !strings.Contains(ts, "eq(schema.jobs.status, 'pending')") {
-		t.Errorf("should emit eq(schema.jobs.status, 'pending'); got:\n%s", ts)
+	if !strings.Contains(ts, "eq(schema.job.status, 'pending')") {
+		t.Errorf("should emit eq(schema.job.status, 'pending'); got:\n%s", ts)
 	}
 	// Should check length > 0 for exists
 	if !strings.Contains(ts, "expect(_row.length).toBeGreaterThan(0);") {

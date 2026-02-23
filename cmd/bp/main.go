@@ -29,12 +29,24 @@ func main() {
 
 	switch os.Args[1] {
 	case "check":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("check", "check <file.bp>",
+				"Validate a .bp file for syntax and semantic errors.",
+				nil)
+			os.Exit(0)
+		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp check <file.bp>")
 			os.Exit(1)
 		}
 		os.Exit(cmdCheck(os.Args[2]))
 	case "build":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("build", "build <file.bp> [--out <dir>]",
+				"Compile a .bp file to JavaScript/TypeScript.",
+				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+			os.Exit(0)
+		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>]")
 			os.Exit(1)
@@ -48,24 +60,49 @@ func main() {
 		}
 		os.Exit(cmdBuild(os.Args[2], outDir))
 	case "fmt":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("fmt", "fmt <file.bp> [--write] [--check]",
+				"Format a .bp file. Prints formatted output to stdout by default.",
+				[][2]string{
+					{"--write", "Write formatted output back to the file"},
+					{"--check", "Check if file is formatted; exit 1 if not (for CI)"},
+				})
+			os.Exit(0)
+		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp fmt <file.bp> [--write]")
+			fmt.Fprintln(os.Stderr, "Usage: bp fmt <file.bp> [--write] [--check]")
 			os.Exit(1)
 		}
 		write := false
+		check := false
 		for _, arg := range os.Args[3:] {
 			if arg == "--write" {
 				write = true
 			}
+			if arg == "--check" {
+				check = true
+			}
 		}
-		os.Exit(cmdFmt(os.Args[2], write))
+		os.Exit(cmdFmt(os.Args[2], write, check))
 	case "lint":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("lint", "lint <file.bp>",
+				"Lint a .bp file for best practice violations.",
+				nil)
+			os.Exit(0)
+		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp lint <file.bp>")
 			os.Exit(1)
 		}
 		os.Exit(cmdLint(os.Args[2]))
 	case "docs":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("docs", "docs <file.bp> [--out <file.json>]",
+				"Generate an OpenAPI 3.1 JSON specification from a .bp file.",
+				[][2]string{{"--out <file>", "Write to file instead of stdout"}})
+			os.Exit(0)
+		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp docs <file.bp> [--out file.json]")
 			os.Exit(1)
@@ -79,6 +116,12 @@ func main() {
 		}
 		os.Exit(cmdDocs(os.Args[2], outFile))
 	case "test":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("test", "test <file.bp> [--out <dir>]",
+				"Build and run the Vitest test suite.",
+				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+			os.Exit(0)
+		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp test <file.bp> [--out <dir>]")
 			os.Exit(1)
@@ -92,6 +135,12 @@ func main() {
 		}
 		os.Exit(cmdTest(os.Args[2], outDir))
 	case "migrate":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("migrate", "migrate <file.bp> [generate|push|studio] [--out <dir>]",
+				"Build and run Drizzle Kit database migrations.",
+				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+			os.Exit(0)
+		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp migrate <file.bp> [generate|push|studio] [--out <dir>]")
 			os.Exit(1)
@@ -111,6 +160,12 @@ func main() {
 		}
 		os.Exit(cmdMigrate(os.Args[2], outDir, subCmd))
 	case "generate":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("generate", "generate <file.bp> [--write]",
+				"Resolve @> LLM generation slots using the Anthropic API.\nRequires ANTHROPIC_API_KEY environment variable.",
+				[][2]string{{"--write", "Write resolved code back to the file"}})
+			os.Exit(0)
+		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp generate <file.bp> [--write]")
 			os.Exit(1)
@@ -123,12 +178,56 @@ func main() {
 		}
 		os.Exit(cmdGenerate(os.Args[2], write))
 	case "init":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("init", "init [name]",
+				"Scaffold a new Blueprint project with a starter .bp file.\nIf name is omitted, uses the current directory name.",
+				nil)
+			os.Exit(0)
+		}
 		name := ""
 		if len(os.Args) >= 3 {
 			name = os.Args[2]
 		}
 		os.Exit(cmdInit(name))
-	case "version":
+	case "run":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("run", "run <file.bp> [--out <dir>]",
+				"Build and start the server. Runs npm install if needed.",
+				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+			os.Exit(0)
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp run <file.bp> [--out <dir>]")
+			os.Exit(1)
+		}
+		outDir := "generated"
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "--out" && i+1 < len(os.Args) {
+				outDir = os.Args[i+1]
+				i++
+			}
+		}
+		os.Exit(cmdRun(os.Args[2], outDir))
+	case "dev":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("dev", "dev <file.bp> [--out <dir>]",
+				"Watch mode -- rebuild and restart the server on file changes.",
+				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+			os.Exit(0)
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp dev <file.bp> [--out <dir>]")
+			os.Exit(1)
+		}
+		outDir := "generated"
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "--out" && i+1 < len(os.Args) {
+				outDir = os.Args[i+1]
+				i++
+			}
+		}
+		os.Exit(cmdDev(os.Args[2], outDir))
+	case "version", "--version", "-v":
 		fmt.Printf("bp version %s\n", version)
 	case "help", "--help", "-h":
 		printUsage()
@@ -206,7 +305,7 @@ func cmdBuild(filename, outDir string) int {
 	return 0
 }
 
-func cmdFmt(filename string, write bool) int {
+func cmdFmt(filename string, write, check bool) int {
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
@@ -223,6 +322,14 @@ func cmdFmt(filename string, write bool) int {
 	}
 
 	formatted := ast.Print(file)
+
+	if check {
+		if formatted != string(src) {
+			fmt.Println(filename)
+			return 1
+		}
+		return 0
+	}
 
 	if write {
 		if err := os.WriteFile(filename, []byte(formatted), 0644); err != nil {
@@ -620,6 +727,25 @@ POST /api/items {
   -> 201 { id: item.id, name: item.name }
 }
 `, displayName+" — describe your service here", safeName)
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func printCommandHelp(cmd, usage, desc string, flags [][2]string) {
+	fmt.Fprintf(os.Stderr, "Usage: bp %s\n\n%s\n", usage, desc)
+	if len(flags) > 0 {
+		fmt.Fprintf(os.Stderr, "\nFlags:\n")
+		for _, f := range flags {
+			fmt.Fprintf(os.Stderr, "  %-16s %s\n", f[0], f[1])
+		}
+	}
 }
 
 func printUsage() {

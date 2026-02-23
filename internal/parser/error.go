@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/lexer"
@@ -22,11 +23,22 @@ func (e ParseError) Error() string {
 	return s
 }
 
+// useColor returns true if ANSI color output should be used.
+func useColor() bool {
+	return os.Getenv("NO_COLOR") == ""
+}
+
 // FormatError formats a parse error with source context for display.
 func FormatError(err ParseError, src []byte) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "Error: %s\n\n", err.Loc)
+	color := useColor()
+	red, cyan, yellow, reset := "\033[31m", "\033[36m", "\033[33m", "\033[0m"
+	if !color {
+		red, cyan, yellow, reset = "", "", "", ""
+	}
+
+	fmt.Fprintf(&b, "%serror:%s %s%s%s\n\n", red, reset, cyan, err.Loc, reset)
 
 	// Extract the source line
 	line := getSourceLine(src, err.Loc.Line)
@@ -41,7 +53,7 @@ func FormatError(err ParseError, src []byte) string {
 
 	fmt.Fprintf(&b, "\n  %s\n", err.Message)
 	if err.Hint != "" {
-		fmt.Fprintf(&b, "  %s\n", err.Hint)
+		fmt.Fprintf(&b, "  %s%s%s\n", yellow, err.Hint, reset)
 	}
 
 	return b.String()

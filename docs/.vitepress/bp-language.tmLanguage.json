@@ -1,0 +1,179 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "blueprint",
+  "aliases": ["bp"],
+  "scopeName": "source.bp",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#arrows" },
+    { "include": "#keywords" },
+    { "include": "#http-methods" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#operators" },
+    { "include": "#paths" },
+    { "include": "#annotations" },
+    { "include": "#braces" }
+  ],
+  "repository": {
+    "comments": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.bp"
+    },
+    "strings": {
+      "patterns": [
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.bp",
+          "patterns": [
+            {
+              "match": "\\{[^}]+\\}",
+              "name": "variable.other.interpolation.bp"
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "match": "\\b\\d+(\\.\\d+)?(mb|kb|gb|b|ms|s|min|h|d|days?)\\b",
+          "name": "constant.numeric.unit.bp"
+        },
+        {
+          "match": "\\b\\d+/\\w+\\b",
+          "name": "constant.numeric.rate.bp"
+        },
+        {
+          "match": "\\b\\d+(\\.\\d+)?\\b",
+          "name": "constant.numeric.bp"
+        }
+      ]
+    },
+    "arrows": {
+      "patterns": [
+        {
+          "match": "<-",
+          "name": "keyword.operator.arrow.input.bp"
+        },
+        {
+          "match": "\\|>",
+          "name": "keyword.operator.arrow.step.bp"
+        },
+        {
+          "match": "->",
+          "name": "keyword.operator.arrow.output.bp"
+        },
+        {
+          "match": "@>",
+          "name": "keyword.operator.arrow.llm.bp"
+        },
+        {
+          "match": "@(?!>)",
+          "name": "keyword.operator.annotation.bp"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(blueprint|model|middleware|worker|schedule|pipe|fn|external|subscribe|test|fixture|include|type|alias|enum)\\b",
+          "name": "keyword.declaration.bp"
+        },
+        {
+          "match": "\\b(secret|env)\\b",
+          "name": "keyword.other.bp"
+        },
+        {
+          "match": "\\b(use|auth|limit|cache|tags|timeout|cron|trigger|retry|backoff)\\b",
+          "name": "keyword.control.meta.bp"
+        },
+        {
+          "match": "\\b(guard|when|try|recover|on_error|on_fail|on_connect|on_message|on_disconnect)\\b",
+          "name": "keyword.control.flow.bp"
+        },
+        {
+          "match": "\\b(fetch|query|save|update|delete|count|upload|download|emit|call|log|sleep|hash|clock|map|pipe|seed|inject|join|leave|broadcast|whisper|close|stream)\\b",
+          "name": "support.function.builtin.bp"
+        },
+        {
+          "match": "\\b(where|order|paginate|first|from|on|event|room|connection|as|to|level|using|before|after|logic|impl|setup|request|expect|cleanup|repeat|body|headers)\\b",
+          "name": "keyword.other.modifier.bp"
+        },
+        {
+          "match": "\\b(required|optional|unique|primary|index|auto|default|min|max|format|ref)\\b",
+          "name": "storage.modifier.bp"
+        }
+      ]
+    },
+    "http-methods": {
+      "match": "\\b(GET|POST|PUT|PATCH|DELETE|STREAM|WS)\\b",
+      "name": "keyword.other.http-method.bp"
+    },
+    "types": {
+      "match": "\\b(string|int|float|bool|uuid|timestamp|json|money|file)\\b",
+      "name": "support.type.bp"
+    },
+    "constants": {
+      "patterns": [
+        {
+          "match": "\\b(true|false|null|now)\\b",
+          "name": "constant.language.bp"
+        },
+        {
+          "match": "\\b(node|postgres|mysql|sqlite|mongo|redis|memcached|memory|s3|gcs|local|sqs|rabbitmq)\\b",
+          "name": "constant.other.runtime.bp"
+        },
+        {
+          "match": "\\b(asc|desc|email|url|ip|date|info|warn|error|exponential)\\b",
+          "name": "constant.other.bp"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "match": "==|!=|<=|>=|<|>",
+          "name": "keyword.operator.comparison.bp"
+        },
+        {
+          "match": "\\b(and|or|not|in|is|exists)\\b",
+          "name": "keyword.operator.logical.bp"
+        },
+        {
+          "match": "\\+|-|\\*|/",
+          "name": "keyword.operator.arithmetic.bp"
+        }
+      ]
+    },
+    "paths": {
+      "match": "(?<=GET|POST|PUT|PATCH|DELETE|STREAM|WS)\\s+(/[\\w/:.-]+)",
+      "captures": {
+        "1": { "name": "string.other.path.bp" }
+      }
+    },
+    "annotations": {
+      "match": "(?<=@)\\s*\"[^\"]*\"",
+      "name": "string.quoted.double.annotation.bp"
+    },
+    "braces": {
+      "patterns": [
+        {
+          "match": "[{}]",
+          "name": "punctuation.definition.block.bp"
+        },
+        {
+          "match": "[\\[\\]]",
+          "name": "punctuation.definition.array.bp"
+        },
+        {
+          "match": "[()]",
+          "name": "punctuation.definition.parameters.bp"
+        }
+      ]
+    }
+  }
+}

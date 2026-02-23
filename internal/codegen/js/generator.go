@@ -323,6 +323,14 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// Dockerfile
 	files = append(files, g.genDockerfile())
 
+	// .gitignore
+	files = append(files, g.genGitignore())
+
+	// drizzle.config.ts (if database)
+	if hasDB {
+		files = append(files, g.genDrizzleConfig())
+	}
+
 	// test/<name>.test.ts
 	for _, t := range tests {
 		files = append(files, g.genTest(t, fixtures))
@@ -376,7 +384,7 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 
 	var b strings.Builder
 	b.WriteString("{\n")
-	b.WriteString(fmt.Sprintf(`  "name": "%s",`+"\n", name))
+	b.WriteString(fmt.Sprintf("  \"name\": %s,\n", fmt.Sprintf("%q", name)))
 	b.WriteString(`  "version": "0.1.0",` + "\n")
 	b.WriteString(`  "private": true,` + "\n")
 	b.WriteString(`  "type": "module",` + "\n")
@@ -862,6 +870,7 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		b.WriteString("import { createNodeWebSocket } from '@hono/node-ws';\n")
 	}
 
+	b.WriteString("import { secureHeaders } from 'hono/secure-headers';\n")
 	b.WriteString("import { env } from './lib/env.js';\n")
 
 	// Collect global middleware imports
@@ -937,6 +946,9 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 
 	b.WriteString("const app = new Hono();\n\n")
 
+	// Security headers (X-Content-Type-Options, X-Frame-Options, etc.)
+	b.WriteString("app.use('*', secureHeaders());\n\n")
+
 	// If there are WS endpoints, set up upgradeWebSocket + injectWebSocket
 	if len(ws) > 0 {
 		b.WriteString("const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });\n\n")
@@ -999,6 +1011,12 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		b.WriteString("\n")
 	}
 
+	// Global error handler — suppress internal details
+	b.WriteString("app.onError((err, c) => {\n")
+	b.WriteString("  console.error(err);\n")
+	b.WriteString("  return c.json({ error: 'Internal server error' }, 500);\n")
+	b.WriteString("});\n\n")
+
 	b.WriteString(fmt.Sprintf(`console.log('%%s listening on port %%d', '%s', %d);`+"\n", bp.Name, port))
 
 	// If WS: use injectWebSocket(serve(...)), otherwise plain serve(...)
@@ -1026,6 +1044,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	middlewareNames := make(map[string]bool)
 	needsZValidator := false
 	needsWebhookAuth := false
+	needsZodPathParam := false
 
 	// Check if any endpoint in this route file uses data operations (local check).
 	// This supplements the global hasDB flag so that routes with data ops always
@@ -1047,6 +1066,12 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 				if !isPathParam(inp.Name, ep.Path) {
 					needsZValidator = true
 					schemaNames[endpointSchemaName(ep.Method, ep.Path)] = true
+				} else {
+					// Check if typed path param needs Zod validation
+					tn := pathParamTypeName(inp.Type)
+					if tn == "uuid" || tn == "int" {
+						needsZodPathParam = true
+					}
 				}
 			}
 		}
@@ -1063,6 +1088,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 
 	if needsZValidator {
 		b.WriteString("import { zValidator } from '@hono/zod-validator';\n")
+	}
+	if needsZodPathParam {
+		b.WriteString("import { z } from 'zod';\n")
 	}
 	if needsDB {
 		b.WriteString("import { db } from '../lib/db.js';\n")
@@ -1138,7 +1166,22 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		for _, meta := range ep.Meta {
 			switch meta.Kind {
 			case "limit":
-				b.WriteString(fmt.Sprintf("  // rate limit: %s\n", exprToJS(meta.Value)))
+				rateStr := exprToJS(meta.Value)
+				rateLimit, rateWindowMS := parseRateLimit(rateStr)
+				b.WriteString(fmt.Sprintf("  // rate limit: %s\n", rateStr))
+				b.WriteString(fmt.Sprintf("  const _rateLimitStore = new Map<string, { count: number, resetAt: number }>();\n"))
+				b.WriteString(fmt.Sprintf("  const _clientIp = c.req.header('x-forwarded-for') || 'unknown';\n"))
+				b.WriteString(fmt.Sprintf("  const _now = Date.now();\n"))
+				b.WriteString(fmt.Sprintf("  const _rateKey = `${_clientIp}:${c.req.path}`;\n"))
+				b.WriteString(fmt.Sprintf("  const _rateEntry = _rateLimitStore.get(_rateKey);\n"))
+				b.WriteString(fmt.Sprintf("  if (_rateEntry && _rateEntry.resetAt > _now) {\n"))
+				b.WriteString(fmt.Sprintf("    if (_rateEntry.count >= %d) {\n", rateLimit))
+				b.WriteString(fmt.Sprintf("      return c.json({ error: 'Rate limit exceeded' }, 429);\n"))
+				b.WriteString(fmt.Sprintf("    }\n"))
+				b.WriteString(fmt.Sprintf("    _rateEntry.count++;\n"))
+				b.WriteString(fmt.Sprintf("  } else {\n"))
+				b.WriteString(fmt.Sprintf("    _rateLimitStore.set(_rateKey, { count: 1, resetAt: _now + %d });\n", rateWindowMS))
+				b.WriteString(fmt.Sprintf("  }\n"))
 			case "cache":
 				b.WriteString(fmt.Sprintf("  // cache: %s\n", exprToJS(meta.Value)))
 			case "auth":
@@ -1393,8 +1436,18 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 					decl = "let"
 				}
 				if isPathParam(s.Name, ctx.path) {
-					b.WriteString(fmt.Sprintf("%s%s %s = c.req.param('%s');\n",
-						indent, decl, name, s.Name))
+					typeName := pathParamTypeName(s.Type)
+					switch typeName {
+					case "uuid":
+						b.WriteString(fmt.Sprintf("%s%s %s = z.string().uuid().parse(c.req.param('%s'));\n",
+							indent, decl, name, s.Name))
+					case "int":
+						b.WriteString(fmt.Sprintf("%s%s %s = z.coerce.number().int().parse(c.req.param('%s'));\n",
+							indent, decl, name, s.Name))
+					default:
+						b.WriteString(fmt.Sprintf("%s%s %s = c.req.param('%s');\n",
+							indent, decl, name, s.Name))
+					}
 				} else if ctx.method == "GET" || ctx.method == "DELETE" {
 					b.WriteString(fmt.Sprintf("%s%s %s = c.req.valid('query').%s;\n",
 						indent, decl, name, name))
@@ -2462,7 +2515,11 @@ func (g *Generator) genExternal(externals []*ast.External) codegen.OutputFile {
 // --- Dockerfile ---
 
 func (g *Generator) genDockerfile() codegen.OutputFile {
-	content := `FROM node:22-slim AS base
+	port := blueprintEntryInt(g.file.Blueprint, "port")
+	if port == 0 {
+		port = 3000
+	}
+	content := fmt.Sprintf(`FROM node:22-slim AS base
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
@@ -2470,10 +2527,41 @@ RUN npm ci --production
 
 COPY . .
 
-EXPOSE 3000
+RUN addgroup --system app && adduser --system --ingroup app app
+USER app
+
+EXPOSE %d
 CMD ["npx", "tsx", "src/index.ts"]
-`
+`, port)
 	return codegen.OutputFile{Path: "Dockerfile", Content: []byte(content)}
+}
+
+// --- .gitignore ---
+
+func (g *Generator) genGitignore() codegen.OutputFile {
+	content := `node_modules/
+dist/
+.env
+*.log
+`
+	return codegen.OutputFile{Path: ".gitignore", Content: []byte(content)}
+}
+
+// --- drizzle.config.ts ---
+
+func (g *Generator) genDrizzleConfig() codegen.OutputFile {
+	content := `import { defineConfig } from 'drizzle-kit';
+
+export default defineConfig({
+  schema: './src/models/schema.ts',
+  out: './drizzle',
+  dialect: 'postgresql',
+  dbCredentials: {
+    url: process.env.DATABASE_URL!,
+  },
+});
+`
+	return codegen.OutputFile{Path: "drizzle.config.ts", Content: []byte(content)}
 }
 
 // --- Tests ---
@@ -2664,7 +2752,7 @@ func testResolveExpr(expr ast.Expr, fixtures map[string]*ast.Fixture) string {
 			if s, ok := v.Args[0].(*ast.StringLit); ok {
 				if f, ok := fixtures[s.Value]; ok {
 					if f.FromPath != "" {
-						return fmt.Sprintf("readFileSync(join(__dirname, '..', '%s'))", f.FromPath)
+						return fmt.Sprintf("readFileSync(join(import.meta.dirname, '..', '%s'))", f.FromPath)
 					}
 					if f.Generated != nil {
 						// Extract size if present (e.g. size: 15mb → Buffer.alloc(15 * 1024 * 1024)).
@@ -2832,7 +2920,6 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 		return
 	}
 	modelName := fields[1]
-	tableName := pluralize(modelName)
 
 	// Find where-clause: scan for "(" and ")"
 	start := -1
@@ -2876,7 +2963,7 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 	var current []string
 	for _, f := range condFields {
 		if f == "," {
-			cond := parseModelCondition(current, tableName)
+			cond := parseModelCondition(current, modelName)
 			if cond == "" {
 				parseErrors = append(parseErrors, strings.Join(current, " "))
 			} else {
@@ -2888,7 +2975,7 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 		}
 	}
 	if len(current) > 0 {
-		cond := parseModelCondition(current, tableName)
+		cond := parseModelCondition(current, modelName)
 		if cond == "" {
 			parseErrors = append(parseErrors, strings.Join(current, " "))
 		} else {
@@ -2908,8 +2995,8 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 		return
 	}
 
-	// Emit the query
-	schemaTable := "schema." + toCamelCase(tableName)
+	// Emit the query — use singular model name for schema reference (matches schema.ts exports)
+	schemaTable := "schema." + toCamelCase(modelName)
 	b.WriteString(fmt.Sprintf("%sconst _row = await db.select().from(%s)", indent, schemaTable))
 	if len(conditions) == 1 {
 		b.WriteString(fmt.Sprintf(".where(%s)", conditions[0]))
@@ -2933,10 +3020,11 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 }
 
 // parseModelCondition converts a condition token slice into a Drizzle eq() call.
-// e.g. ["id", "==", "body", ".", "job_id"] → `eq(schema.jobs.id, body.jobId)`
+// e.g. ["id", "==", "body", ".", "job_id"] → `eq(schema.job.id, body.jobId)`
+// modelName should be the singular model name matching the schema.ts export.
 // Returns an error comment if the condition cannot be parsed, so tests fail visibly
 // instead of silently dropping assertions.
-func parseModelCondition(tokens []string, tableName string) string {
+func parseModelCondition(tokens []string, modelName string) string {
 	if len(tokens) < 3 {
 		return fmt.Sprintf("/* ERROR: malformed condition, expected at least 3 tokens, got %d: %s */", len(tokens), strings.Join(tokens, " "))
 	}
@@ -2972,7 +3060,7 @@ func parseModelCondition(tokens []string, tableName string) string {
 	}
 
 	lhsField := toCamelCase(lhsParts[len(lhsParts)-1])
-	schemaTable := "schema." + toCamelCase(tableName)
+	schemaTable := "schema." + toCamelCase(modelName)
 	lhsJS := schemaTable + "." + lhsField
 
 	// Build RHS JS expression

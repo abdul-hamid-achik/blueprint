@@ -23,8 +23,11 @@ func toCamelCase(s string) string {
 	return strings.Join(parts, "")
 }
 
-// toPascalCase converts snake_case to PascalCase.
+// toPascalCase converts snake_case or kebab-case to PascalCase.
 func toPascalCase(s string) string {
+	// Split on both underscores and hyphens so that names like "user-profile"
+	// produce "UserProfile".
+	s = strings.ReplaceAll(s, "-", "_")
 	parts := strings.Split(s, "_")
 	for i := range parts {
 		if len(parts[i]) > 0 {
@@ -197,7 +200,7 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			}
 			return "`" + result.String() + "`"
 		}
-		return fmt.Sprintf(`"%s"`, s)
+		return fmt.Sprintf(`"%s"`, jsEscapeString(s))
 	case *ast.IntLit:
 		return v.Value
 	case *ast.FloatLit:
@@ -422,6 +425,29 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 	}
 }
 
+// jsEscapeString escapes special characters for use inside a JavaScript double-quoted string.
+func jsEscapeString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // typeToZod converts a Blueprint type expression to a Zod schema call.
 func typeToZod(t ast.TypeExpr) string {
 	switch v := t.(type) {
@@ -637,6 +663,45 @@ func sizeToBytes(s string) string {
 		return s
 	}
 	return fmt.Sprintf("/* INVALID SIZE: %s */ 0", s)
+}
+
+// pathParamTypeName extracts the type name string from a TypeExpr for path parameter validation.
+// Returns "uuid", "int", "string", etc., or empty string if type is nil.
+func pathParamTypeName(t ast.TypeExpr) string {
+	if t == nil {
+		return ""
+	}
+	if nt, ok := t.(*ast.NamedType); ok {
+		return nt.Name
+	}
+	return ""
+}
+
+// parseRateLimit parses a rate string like "60/min" and returns the limit and window in ms.
+// Supported units: min (60s), hour (3600s), day (86400s).
+// If parsing fails, returns a default of 60 requests per 60000ms (1 minute).
+func parseRateLimit(rate string) (int, int) {
+	// Remove surrounding quotes if present
+	rate = strings.Trim(rate, "\"'")
+	parts := strings.SplitN(rate, "/", 2)
+	if len(parts) != 2 {
+		return 60, 60000
+	}
+	limit, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 60, 60000
+	}
+	unit := strings.TrimSpace(parts[1])
+	switch unit {
+	case "min":
+		return limit, 60 * 1000
+	case "hour":
+		return limit, 60 * 60 * 1000
+	case "day":
+		return limit, 24 * 60 * 60 * 1000
+	default:
+		return limit, 60 * 1000
+	}
 }
 
 // extractResource extracts the resource name from an endpoint path.

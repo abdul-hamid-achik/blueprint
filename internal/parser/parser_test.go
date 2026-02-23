@@ -1510,8 +1510,8 @@ func TestFormatError(t *testing.T) {
 		t.Skip("no errors to format")
 	}
 	formatted := FormatError(errs[0], src)
-	if !strings.Contains(formatted, "Error:") {
-		t.Error("formatted error should contain 'Error:'")
+	if !strings.Contains(formatted, "error:") {
+		t.Error("formatted error should contain 'error:'")
 	}
 }
 

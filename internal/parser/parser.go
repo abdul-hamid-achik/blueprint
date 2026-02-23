@@ -46,6 +46,8 @@ func (p *Parser) parseFile() *ast.File {
 				if r := recover(); r != nil {
 					if err, ok := r.(ParseError); ok {
 						p.errors = append(p.errors, err)
+					} else {
+						panic(r) // re-panic programming errors
 					}
 					p.recoverToNextBlock()
 				}
@@ -74,6 +76,8 @@ func (p *Parser) parseTopLevelBlock() (block ast.TopLevel) {
 		if r := recover(); r != nil {
 			if err, ok := r.(ParseError); ok {
 				p.errors = append(p.errors, err)
+			} else {
+				panic(r) // re-panic programming errors
 			}
 			p.recoverToNextBlock()
 			block = nil

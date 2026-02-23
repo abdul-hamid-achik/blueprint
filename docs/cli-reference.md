@@ -239,7 +239,7 @@ bp docs my-service.bp | npx @redocly/cli lint /dev/stdin
 Format a `.bp` file.
 
 ```bash
-bp fmt <file.bp> [--write]
+bp fmt <file.bp> [--write] [--check]
 ```
 
 **Flags:**
@@ -247,6 +247,7 @@ bp fmt <file.bp> [--write]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--write` | false | Write formatted output back to the file |
+| `--check` | false | Check if file is already formatted; exit 1 if not (for CI) |
 
 **Example:**
 
@@ -256,6 +257,9 @@ bp fmt my-service.bp
 
 # Format in place
 bp fmt my-service.bp --write
+
+# CI check (exits 1 if not formatted)
+bp fmt my-service.bp --check
 ```
 
 **Formatting rules:**
@@ -274,24 +278,21 @@ Lint a `.bp` file for best practice violations.
 bp lint <file.bp>
 ```
 
-**What it checks:**
+**Rules:**
 
-| Rule | Example |
-|------|---------|
-| Every endpoint should have an `@` intent | `POST /api/items { ... }` with no `@` |
-| No TODO comments in production blocks | `|> # TODO: fix this` |
-| Overly large endpoints | Endpoint with 20+ steps |
-| Missing error handling | No `guard`, `try/recover`, or `on_error` |
-| Unused secrets | `secret FOO required` never referenced |
-| Unused fixtures | `fixture "x" from "..."` not referenced in tests |
+| Rule | Level | Description |
+|------|-------|-------------|
+| `block-ordering` | warning | Top-level blocks should follow canonical order (blueprint, secret, model, endpoint, ...) |
+| `intent-on-endpoints` | warning | Every endpoint (REST, STREAM, WS) should have an `@` intent annotation |
+| `empty-endpoint` | warning | Endpoints with no inputs or statements are flagged |
 
 **Example:**
 
 ```bash
 bp lint my-service.bp
-# my-service.bp:45: warning: endpoint POST /api/items has no intent (@)
-# my-service.bp:67: warning: secret UNUSED_KEY is declared but never referenced
-# 2 warnings
+# my-service.bp:45:1 [warning] intent-on-endpoints: Endpoint POST /api/items is missing an @ intent description
+#   hint: Add `@ "describe what this endpoint does"` before `POST /api/items`
+# 1 issue(s): 0 error(s), 1 warning(s)
 ```
 
 ---
@@ -304,18 +305,16 @@ Scaffold a new Blueprint project.
 bp init [name]
 ```
 
-Creates a new directory with a starter `.bp` file and `.env.example`.
+Creates a new directory with a starter `.bp` file.
 
 **Example:**
 
 ```bash
 bp init my-service
-# Created my-service/
 # Created my-service/my-service.bp
-# Created my-service/.env.example
 
 cd my-service
-bp dev my-service.bp
+bp build my-service.bp
 ```
 
 If `name` is omitted, uses the current directory name.
@@ -328,7 +327,7 @@ Print the installed Blueprint version.
 
 ```bash
 bp version
-# Blueprint v0.3.0
+# bp version 0.1.0
 ```
 
 ---

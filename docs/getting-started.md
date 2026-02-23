@@ -41,7 +41,7 @@ sudo mv bin/bp /usr/local/bin/
 
 ```bash
 bp version
-# Blueprint v0.3.0
+# bp version 0.1.0
 ```
 
 ## Your First Service
@@ -49,37 +49,53 @@ bp version
 ### 1. Scaffold a new project
 
 ```bash
-bp init hello-world
-cd hello-world
+bp init my-service
+cd my-service
 ```
 
 This creates:
 
 ```
-hello-world/
-├── hello-world.bp      # your Blueprint source file
-└── .env.example        # environment variables template
+my-service/
+└── my-service.bp      # your Blueprint source file
 ```
 
 ### 2. Look at the generated `.bp` file
 
 ```bp
-@ "A simple hello world API"
-blueprint "hello-world" {
-  version "1.0.0"
-  port    3000
-  runtime node
+@ "my-service — describe your service here"
+blueprint "my-service" {
+  version  "0.1.0"
+  port     8080
+  runtime  node
+  database postgres
 }
 
-@ "Health check"
-GET /api/health {
-  -> 200 { status: "ok" }
+secret DATABASE_URL required
+
+model item {
+  id      uuid      primary
+  name    string    required
+  created timestamp default(now)
 }
 
-@ "Greeting"
-GET /api/hello/:name {
+@ "List all items"
+GET /api/items {
+  <- page     int default(1) min(1)
+  <- per_page int default(20) max(100)
+
+  |> items = query item order(created desc) paginate(page, per_page)
+
+  -> 200 { items: items.items, total: items.total }
+}
+
+@ "Create an item"
+POST /api/items {
   <- name string required
-  -> 200 { message: "Hello, {name}!" }
+
+  |> item = save item { name: name }
+
+  -> 201 { id: item.id, name: item.name }
 }
 ```
 
@@ -87,10 +103,10 @@ GET /api/hello/:name {
 
 ```bash
 # Check for errors
-bp check hello-world.bp
+bp check my-service.bp
 
 # Compile to TypeScript
-bp build hello-world.bp
+bp build my-service.bp
 ```
 
 ### 4. Run the generated service
@@ -99,12 +115,12 @@ bp build hello-world.bp
 cd generated
 npm install
 npm start
-# Listening on port 3000
+# Listening on port 8080
 ```
 
 ```bash
-curl http://localhost:3000/api/hello/world
-# {"message":"Hello, world!"}
+curl http://localhost:8080/api/items
+# {"items":[],"total":0}
 ```
 
 ## Building a Service with a Database

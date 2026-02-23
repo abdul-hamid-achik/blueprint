@@ -2,6 +2,7 @@ package checker
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"unicode"
 
@@ -604,7 +605,14 @@ func (c *Checker) checkPascalCase(name, what string, loc lexer.Loc) {
 // FormatCheckError formats a check error with source context for display.
 func FormatCheckError(err CheckError, src []byte) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Error: %s\n\n", err.Loc)
+
+	color := os.Getenv("NO_COLOR") == ""
+	red, cyan, yellow, reset := "\033[31m", "\033[36m", "\033[33m", "\033[0m"
+	if !color {
+		red, cyan, yellow, reset = "", "", "", ""
+	}
+
+	fmt.Fprintf(&b, "%serror:%s %s%s%s\n\n", red, reset, cyan, err.Loc, reset)
 
 	line := getSourceLine(src, err.Loc.Line)
 	if line != "" {
@@ -616,7 +624,7 @@ func FormatCheckError(err CheckError, src []byte) string {
 
 	fmt.Fprintf(&b, "\n  %s\n", err.Message)
 	if err.Hint != "" {
-		fmt.Fprintf(&b, "  %s\n", err.Hint)
+		fmt.Fprintf(&b, "  %s%s%s\n", yellow, err.Hint, reset)
 	}
 	return b.String()
 }
