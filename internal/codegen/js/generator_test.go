@@ -1389,8 +1389,8 @@ test upload_success {
 	if !strings.Contains(ts, "expect(typeof body.url).toBe('string');") {
 		t.Errorf("should emit typeof body.url assertion; got:\n%s", ts)
 	}
-	if !strings.Contains(ts, "expect(typeof body.id).toBe('string');") {
-		t.Errorf("should emit typeof body.id (uuid→string) assertion; got:\n%s", ts)
+	if !strings.Contains(ts, "expect(body.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);") {
+		t.Errorf("should emit uuid regex assertion for body.id; got:\n%s", ts)
 	}
 	// Equality assertion with string value
 	if !strings.Contains(ts, "expect(body.name).toBe('test');") {
@@ -1515,9 +1515,9 @@ POST /webhooks/stripe {
 	}
 	ts := string(content)
 
-	// Should import createHmac
-	if !strings.Contains(ts, "import { createHmac } from 'node:crypto';") {
-		t.Errorf("should import createHmac; got:\n%s", ts)
+	// Should import createHmac and timingSafeEqual
+	if !strings.Contains(ts, "import { createHmac, timingSafeEqual } from 'node:crypto';") {
+		t.Errorf("should import createHmac and timingSafeEqual; got:\n%s", ts)
 	}
 	// Should emit payload reading
 	if !strings.Contains(ts, "const _payload = await c.req.text();") {
@@ -1527,12 +1527,16 @@ POST /webhooks/stripe {
 	if !strings.Contains(ts, "process.env.STRIPE_KEY!") {
 		t.Errorf("should use STRIPE_KEY env var; got:\n%s", ts)
 	}
-	// Should emit signature comparison
-	if !strings.Contains(ts, "_sig !== _expected") {
-		t.Errorf("should compare signatures; got:\n%s", ts)
+	// Should emit timing-safe signature comparison
+	if !strings.Contains(ts, "timingSafeEqual(Buffer.from(_sig, 'hex'), Buffer.from(_expected, 'hex'))") {
+		t.Errorf("should use timingSafeEqual for comparison; got:\n%s", ts)
 	}
 	// Should return 401 on bad signature
 	if !strings.Contains(ts, "return c.json({ error: 'Invalid signature' }, 401);") {
 		t.Errorf("should return 401 on bad signature; got:\n%s", ts)
+	}
+	// Should wrap JSON.parse in try/catch
+	if !strings.Contains(ts, "try { data = JSON.parse(_payload); } catch { return c.json({ error: 'Invalid payload' }, 400); }") {
+		t.Errorf("should wrap JSON.parse in try/catch; got:\n%s", ts)
 	}
 }

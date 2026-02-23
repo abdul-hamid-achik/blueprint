@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"strconv"
+
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/lexer"
 )
@@ -837,7 +839,11 @@ func (p *Parser) parseTest(intent *ast.Intent) *ast.Test {
 			p.expect(lexer.TokenLParen)
 			rpt := p.expect(lexer.TokenInt)
 			p.expect(lexer.TokenRParen)
-			repeat = parseInt(rpt.Value)
+			var err error
+			repeat, err = strconv.Atoi(rpt.Value)
+			if err != nil {
+				panic("invalid integer for repeat(): " + rpt.Value)
+			}
 		}
 		p.expect(lexer.TokenLBrace)
 		var entries []ast.KVPair
@@ -2182,14 +2188,6 @@ func (p *Parser) expectIdent() string {
 }
 
 // --- Utilities ---
-
-func parseInt(s string) int {
-	n := 0
-	for _, ch := range s {
-		n = n*10 + int(ch-'0')
-	}
-	return n
-}
 
 func joinStrings(ss []string) string {
 	result := ""

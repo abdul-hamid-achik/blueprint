@@ -1027,6 +1027,19 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	needsZValidator := false
 	needsWebhookAuth := false
 
+	// Check if any endpoint in this route file uses data operations (local check).
+	// This supplements the global hasDB flag so that routes with data ops always
+	// get db/schema imports, even if the check is done per-file rather than globally.
+	needsDB := hasDB
+	if !needsDB {
+		for _, ep := range endpoints {
+			if stmtsHaveDataOps(ep.Stmts) {
+				needsDB = true
+				break
+			}
+		}
+	}
+
 	for _, ep := range endpoints {
 		// Check for non-path-param inputs
 		for _, s := range ep.Stmts {
@@ -1051,7 +1064,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	if needsZValidator {
 		b.WriteString("import { zValidator } from '@hono/zod-validator';\n")
 	}
-	if hasDB {
+	if needsDB {
 		b.WriteString("import { db } from '../lib/db.js';\n")
 		b.WriteString("import * as schema from '../models/schema.js';\n")
 		b.WriteString("import { eq, and, or, lt, gt, lte, gte, ne, sql, desc, asc, inArray } from 'drizzle-orm';\n")
@@ -1069,7 +1082,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	}
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
 	if needsWebhookAuth {
-		b.WriteString("import { createHmac } from 'node:crypto';\n")
+		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
 	}
 
 	// Collect additional imports from endpoint bodies (pipes, functions, storage, env, enums)
@@ -1133,8 +1146,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 					b.WriteString(fmt.Sprintf("  const _payload = await c.req.text();\n"))
 					b.WriteString(fmt.Sprintf("  const _sig = c.req.header('X-Webhook-Signature') ?? '';\n"))
 					b.WriteString(fmt.Sprintf("  const _expected = createHmac('sha256', process.env.%s!).update(_payload).digest('hex');\n", secretKey))
-					b.WriteString(fmt.Sprintf("  if (_sig !== _expected) return c.json({ error: 'Invalid signature' }, 401);\n"))
-					b.WriteString(fmt.Sprintf("  const data = JSON.parse(_payload);\n"))
+					b.WriteString("  if (_sig.length !== _expected.length || !timingSafeEqual(Buffer.from(_sig, 'hex'), Buffer.from(_expected, 'hex'))) return c.json({ error: 'Invalid signature' }, 401);\n")
+					b.WriteString("  let data: any;\n")
+					b.WriteString("  try { data = JSON.parse(_payload); } catch { return c.json({ error: 'Invalid payload' }, 400); }\n")
 				}
 			}
 		}
@@ -1422,8 +1436,8 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 								indent, schemaTable, schemaTable, varName))
 						} else {
 							// Collection from query — bulk delete
-							b.WriteString(fmt.Sprintf("%sawait db.delete(%s).where(sql`id = ANY(ARRAY[${%s.map((r: any) => r.id)}])`);\n",
-								indent, schemaTable, varName))
+							b.WriteString(fmt.Sprintf("%sawait db.delete(%s).where(inArray(%s.id, %s.map((r: any) => r.id)));\n",
+								indent, schemaTable, schemaTable, varName))
 						}
 						continue
 					}
@@ -1586,12 +1600,26 @@ func exprHasDataOp(e ast.Expr) bool {
 		if isDataOp(v.Name) {
 			return true
 		}
+		// Recurse into function arguments to find nested data ops
+		// e.g. map(items, save(...)) or pipe(query(...))
+		for _, arg := range v.Args {
+			if exprHasDataOp(arg) {
+				return true
+			}
+		}
 	case *ast.BinaryExpr:
 		return exprHasDataOp(v.Left) || exprHasDataOp(v.Right)
 	case *ast.UnaryExpr:
 		return exprHasDataOp(v.Operand)
 	case *ast.ParenExpr:
 		return exprHasDataOp(v.Expr)
+	case *ast.BlockExpr:
+		// Recurse into block expression entries for nested data ops
+		for _, kv := range v.Entries {
+			if exprHasDataOp(kv.Value) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -2642,7 +2670,8 @@ func testResolveExpr(expr ast.Expr, fixtures map[string]*ast.Fixture) string {
 						// Extract size if present (e.g. size: 15mb → Buffer.alloc(15 * 1024 * 1024)).
 						for _, kv := range f.Generated.Entries {
 							if kv.Key == "size" {
-								return fmt.Sprintf("Buffer.alloc(%s)", exprToJS(kv.Value))
+								sizeExpr := exprToJS(kv.Value)
+								return fmt.Sprintf("((_s) => { if (_s <= 0) throw new RangeError('Buffer size must be positive'); return Buffer.alloc(_s); })(%s)", sizeExpr)
 							}
 						}
 						return "Buffer.alloc(0)"
@@ -2690,9 +2719,48 @@ func testAuthHeader(authExpr ast.Expr) string {
 	return ""
 }
 
+// tokenizeAssertion splits an assertion raw string into tokens, keeping quoted
+// strings (including those with spaces) as single tokens. This prevents fragile
+// whitespace-based splitting from breaking assertions like: status == "hello world"
+func tokenizeAssertion(raw string) []string {
+	var tokens []string
+	i := 0
+	for i < len(raw) {
+		// Skip whitespace
+		if raw[i] == ' ' || raw[i] == '\t' {
+			i++
+			continue
+		}
+		// Quoted string — collect until closing quote
+		if raw[i] == '"' {
+			j := i + 1
+			for j < len(raw) && raw[j] != '"' {
+				if raw[j] == '\\' && j+1 < len(raw) {
+					j++ // skip escaped char
+				}
+				j++
+			}
+			if j < len(raw) {
+				j++ // include closing quote
+			}
+			tokens = append(tokens, raw[i:j])
+			i = j
+			continue
+		}
+		// Regular token — collect until whitespace
+		j := i
+		for j < len(raw) && raw[j] != ' ' && raw[j] != '\t' {
+			j++
+		}
+		tokens = append(tokens, raw[i:j])
+		i = j
+	}
+	return tokens
+}
+
 // emitTestAssertion emits a single expect() call for a test assertion.
 func emitTestAssertion(b *strings.Builder, a *ast.Assertion, indent string) {
-	fields := strings.Fields(a.Raw)
+	fields := tokenizeAssertion(a.Raw)
 	switch a.Kind {
 	case "status":
 		// "status 200" — second field is the numeric code.
@@ -2754,10 +2822,13 @@ func emitTestAssertion(b *strings.Builder, a *ast.Assertion, indent string) {
 
 // emitModelAssertion emits a db query assertion for model existence checks.
 // Raw format: "model job where ( id == body . job_id , status == \"done\" ) exists"
+// On parse failure, emits expect(true).toBe(false) so tests fail loudly.
 func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
+	raw := strings.Join(fields, " ")
+
 	// fields[0] == "model", fields[1] == model name
 	if len(fields) < 2 {
-		b.WriteString(fmt.Sprintf("%s// TODO: model assertion (parse error)\n", indent))
+		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: could not parse model assertion: %s\n", indent, raw))
 		return
 	}
 	modelName := fields[1]
@@ -2775,37 +2846,66 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 		}
 	}
 
+	// Validate: must have matching parens with content
+	if start < 0 || end_ < 0 || end_ <= start {
+		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: missing or empty where clause in model assertion: %s\n", indent, raw))
+		return
+	}
+
 	// Determine exists/not_exists — last meaningful token after ")"
 	exists := true
-	if end_ >= 0 && end_+1 < len(fields) {
-		if fields[end_+1] == "not" {
+	tailValid := false
+	if end_+1 < len(fields) {
+		tail := fields[end_+1]
+		if tail == "exists" {
+			tailValid = true
+		} else if tail == "not" {
 			exists = false
+			tailValid = true
 		}
+	}
+	if !tailValid {
+		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: missing exists/not after where in model assertion: %s\n", indent, raw))
+		return
 	}
 
 	// Parse conditions between ( and )
+	condFields := fields[start:end_]
 	var conditions []string
-	if start >= 0 && end_ > start {
-		condFields := fields[start:end_]
-		// Split by "," to get individual conditions
-		var current []string
-		for _, f := range condFields {
-			if f == "," {
-				cond := parseModelCondition(current, tableName)
-				if cond != "" {
-					conditions = append(conditions, cond)
-				}
-				current = nil
-			} else {
-				current = append(current, f)
-			}
-		}
-		if len(current) > 0 {
+	var parseErrors []string
+	var current []string
+	for _, f := range condFields {
+		if f == "," {
 			cond := parseModelCondition(current, tableName)
-			if cond != "" {
+			if cond == "" {
+				parseErrors = append(parseErrors, strings.Join(current, " "))
+			} else {
 				conditions = append(conditions, cond)
 			}
+			current = nil
+		} else {
+			current = append(current, f)
 		}
+	}
+	if len(current) > 0 {
+		cond := parseModelCondition(current, tableName)
+		if cond == "" {
+			parseErrors = append(parseErrors, strings.Join(current, " "))
+		} else {
+			conditions = append(conditions, cond)
+		}
+	}
+
+	// If any conditions failed to parse, emit a failing assertion
+	if len(parseErrors) > 0 {
+		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: could not parse model condition(s): %s\n", indent, strings.Join(parseErrors, "; ")))
+		return
+	}
+
+	// Must have at least one condition
+	if len(conditions) == 0 {
+		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: no conditions found in model assertion: %s\n", indent, raw))
+		return
 	}
 
 	// Emit the query
@@ -2834,9 +2934,11 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 
 // parseModelCondition converts a condition token slice into a Drizzle eq() call.
 // e.g. ["id", "==", "body", ".", "job_id"] → `eq(schema.jobs.id, body.jobId)`
+// Returns an error comment if the condition cannot be parsed, so tests fail visibly
+// instead of silently dropping assertions.
 func parseModelCondition(tokens []string, tableName string) string {
 	if len(tokens) < 3 {
-		return ""
+		return fmt.Sprintf("/* ERROR: malformed condition, expected at least 3 tokens, got %d: %s */", len(tokens), strings.Join(tokens, " "))
 	}
 	// Find operator
 	opIdx := -1
@@ -2847,7 +2949,7 @@ func parseModelCondition(tokens []string, tableName string) string {
 		}
 	}
 	if opIdx < 0 {
-		return ""
+		return fmt.Sprintf("/* ERROR: no operator found in condition: %s */", strings.Join(tokens, " "))
 	}
 
 	// LHS: join tokens before op, strip dots → field name
@@ -2866,7 +2968,7 @@ func parseModelCondition(tokens []string, tableName string) string {
 	}
 
 	if len(lhsParts) == 0 || len(rhsParts) == 0 {
-		return ""
+		return fmt.Sprintf("/* ERROR: empty LHS or RHS in condition: %s */", strings.Join(tokens, " "))
 	}
 
 	lhsField := toCamelCase(lhsParts[len(lhsParts)-1])
@@ -2936,11 +3038,17 @@ func parseAssertionFields(fields []string) (path, op, rhs string) {
 	return path, op, rhs
 }
 
-// emitTypeExpect emits an expect(typeof x).toBe('type') assertion.
+// emitTypeExpect emits a type assertion for test output.
 func emitTypeExpect(b *strings.Builder, jsPath, typeName, indent string) {
 	switch typeName {
-	case "string", "uuid", "email", "url":
+	case "string":
 		b.WriteString(fmt.Sprintf("%sexpect(typeof %s).toBe('string');\n", indent, jsPath))
+	case "uuid":
+		b.WriteString(fmt.Sprintf("%sexpect(%s).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);\n", indent, jsPath))
+	case "email":
+		b.WriteString(fmt.Sprintf(`%sexpect(%s).toMatch(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);`+"\n", indent, jsPath))
+	case "url":
+		b.WriteString(fmt.Sprintf("%sexpect(() => new URL(%s)).not.toThrow();\n", indent, jsPath))
 	case "number", "int", "float":
 		b.WriteString(fmt.Sprintf("%sexpect(typeof %s).toBe('number');\n", indent, jsPath))
 	case "bool", "boolean":

@@ -2,6 +2,7 @@ package js
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -40,6 +41,31 @@ func toKebabCase(s string) string {
 
 // pluralize naively pluralizes a model name for table names.
 func pluralize(s string) string {
+	// Irregular forms
+	irregulars := map[string]string{
+		"person": "people",
+		"man":    "men",
+		"woman":  "women",
+		"child":  "children",
+		"tooth":  "teeth",
+		"foot":   "feet",
+		"mouse":  "mice",
+		"goose":  "geese",
+	}
+	lower := strings.ToLower(s)
+	if plural, ok := irregulars[lower]; ok {
+		// Preserve case of first letter
+		if len(s) > 0 && s[0] >= 'A' && s[0] <= 'Z' {
+			return strings.ToUpper(plural[:1]) + plural[1:]
+		}
+		return plural
+	}
+
+	// All-caps acronyms (e.g., "API" -> "APIs", not "APIes")
+	if strings.ToUpper(s) == s && len(s) > 1 {
+		return s + "s"
+	}
+
 	if strings.HasSuffix(s, "s") || strings.HasSuffix(s, "x") || strings.HasSuffix(s, "z") ||
 		strings.HasSuffix(s, "sh") || strings.HasSuffix(s, "ch") {
 		return s + "es"
@@ -583,7 +609,11 @@ func durationToMS(s string) string {
 		num := strings.TrimSuffix(s, "h")
 		return num + " * 60 * 60 * 1000"
 	}
-	return s
+	// Check if the value is purely numeric (no unit) — pass through as-is
+	if _, err := strconv.Atoi(s); err == nil {
+		return s
+	}
+	return fmt.Sprintf("/* INVALID DURATION: %s */ 0", s)
 }
 
 // sizeToBytes converts a size string like "10mb" to bytes.
@@ -602,7 +632,11 @@ func sizeToBytes(s string) string {
 		num := s[:len(s)-2]
 		return num + " * 1024 * 1024 * 1024"
 	}
-	return s
+	// Check if the value is purely numeric (no unit) — pass through as-is
+	if _, err := strconv.Atoi(s); err == nil {
+		return s
+	}
+	return fmt.Sprintf("/* INVALID SIZE: %s */ 0", s)
 }
 
 // extractResource extracts the resource name from an endpoint path.
@@ -763,8 +797,8 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 				varName := toCamelCase(ident.Name)
 				if _, isVar := ctx.varModels[varName]; isVar {
 					// It's a collection variable — generate bulk delete
-					return fmt.Sprintf("await db.delete(%s).where(sql`id = ANY(ARRAY[${%s.map((r: any) => r.id)}])`)",
-						schemaTable, varName)
+					return fmt.Sprintf("await db.delete(%s).where(inArray(%s.id, %s.map((r: any) => r.id)))",
+						schemaTable, schemaTable, varName)
 				}
 			}
 		}
