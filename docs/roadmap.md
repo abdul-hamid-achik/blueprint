@@ -44,7 +44,7 @@ Model fields with `enum(a, b, c)` inline enums fall back to `text` column type i
 
 ### `version` Constant vs Variable
 
-`cmd/bp/main.go` declares `version` as a `const "0.1.0"` but GoReleaser uses `-ldflags -X main.version={{.Version}}`, which requires a `var`. The version flag is silently ignored at build time.
+`cmd/bp/main.go` declares `version` as a `const "0.1.0"` but GoReleaser uses ldflags to inject the version at build time, which requires a `var` not a `const`. The version flag is silently ignored.
 
 ---
 
