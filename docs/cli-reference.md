@@ -132,7 +132,7 @@ bp test my-service.bp
 Run Drizzle Kit database migrations.
 
 ```bash
-bp migrate <file.bp> [generate|push|drop|studio] [--out <dir>]
+bp migrate <file.bp> [generate|push|studio] [--out <dir>]
 ```
 
 Builds the service first, then delegates to `drizzle-kit`.
@@ -143,7 +143,6 @@ Builds the service first, then delegates to `drizzle-kit`.
 |------------|-------------|
 | `generate` | Generate SQL migration files from schema changes |
 | `push` | Push schema directly to the database (no migration files) |
-| `drop` | Drop all tables (destructive) |
 | `studio` | Open Drizzle Studio (visual database UI) |
 
 **Examples:**

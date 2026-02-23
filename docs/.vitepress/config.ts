@@ -79,12 +79,16 @@ export default defineConfig({
         items: [
           { text: 'Examples', link: '/examples' },
           { text: 'Generated Output', link: '/generated-output' },
+          { text: 'Testing Guide', link: '/testing-guide' },
+          { text: 'Deployment', link: '/deployment' },
+          { text: 'LLM Generation', link: '/llm-generation' },
         ],
       },
       {
         text: 'Contributing',
         items: [
           { text: 'Architecture', link: '/architecture' },
+          { text: 'Roadmap', link: '/roadmap' },
         ],
       },
     ],
@@ -102,7 +106,7 @@ export default defineConfig({
     // Footer
     footer: {
       message: 'Released under the MIT License.',
-      copyright: 'Copyright 2024-present Blueprint contributors',
+      copyright: 'Copyright 2024-2026 Blueprint contributors',
     },
 
     // Edit link

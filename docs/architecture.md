@@ -22,15 +22,19 @@ Each pass is a separate package under `internal/`. They communicate through shar
 ## Package Map
 
 ```
-cmd/bp/             CLI entry point
+cmd/bp/             CLI entry point (check, build, fmt, lint, docs, dev, run, test, migrate, generate, init)
 internal/
-  lexer/            Tokenizer
-  parser/           Recursive-descent parser
-  ast/              AST node types (no logic)
-  checker/          Semantic validation
+  lexer/            Tokenizer (~95 token kinds)
+  parser/           Recursive-descent parser with Pratt expressions
+  ast/              AST node types + printer (bp fmt)
+  checker/          Semantic validation (scopes, naming, refs)
   codegen/
     js/             JavaScript/TypeScript code generator
-  docs/             OpenAPI generator
+  linter/           Style linter (intent annotations, block ordering, empty endpoints)
+  docs/             OpenAPI 3.1 JSON generator
+  generate/         LLM code generation (@> slots via Anthropic API)
+packages/
+  runtime/          npm package for Blueprint runtime helpers
 ```
 
 ---
@@ -366,6 +370,79 @@ WS endpoints compile to a GET path with `101 Switching Protocols` and an extensi
   }
 }
 ```
+
+---
+
+## `internal/linter`
+
+A style linter that checks for best-practice violations beyond what the semantic checker enforces.
+
+### Entry point
+
+```go
+l := linter.New()
+issues := l.Lint(file)
+```
+
+### Rules
+
+| Rule | Level | Description |
+|------|-------|-------------|
+| `block-ordering` | warning | Top-level blocks should follow canonical order: blueprint, secret/env, model, type/alias/enum, fn/pipe/middleware, endpoints, worker/schedule, external/subscribe, test/fixture |
+| `intent-on-endpoints` | warning | Every endpoint (REST, STREAM, WS) should have an `@` intent annotation |
+| `empty-endpoint` | warning | Endpoints with no inputs or statements |
+
+### Adding a lint rule
+
+1. Add a method `checkXxxRule` on `*Linter`
+2. Define the rule name and default severity
+3. Add test cases in `linter_test.go`
+
+---
+
+## `internal/generate`
+
+Resolves `@>` generation slots by calling the Anthropic API (Claude).
+
+### Entry point
+
+```go
+g := generate.New(apiKey)
+results, err := g.Generate(file)
+```
+
+### How it works
+
+1. Walks the AST looking for `@>` (GenerateSlot) nodes inside `fn` blocks
+2. Builds a prompt from the function signature (inputs, output type) + the `@>` text
+3. Calls the Anthropic Messages API with Claude
+4. Parses the response and writes the implementation to `src/functions/<name>-impl.ts`
+
+### Configuration
+
+- Requires `ANTHROPIC_API_KEY` environment variable
+- Uses Claude as the default model
+- The `--write` flag controls whether resolved code is written to disk
+
+---
+
+## `internal/ast/printer.go`
+
+Pretty-printer for `bp fmt`. Converts an AST back to formatted `.bp` source text.
+
+### Entry point
+
+```go
+formatted := ast.Print(file)
+```
+
+### Formatting rules
+
+- 2-space indentation
+- Aligned field declarations within blocks
+- Normalized whitespace around arrows (`<-`, `|>`, `->`)
+- Consistent double-quote style
+- Trailing newline
 
 ---
 
