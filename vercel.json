@@ -1,0 +1,5 @@
+{
+  "buildCommand": "cd docs && npm install && npm run docs:build",
+  "outputDirectory": "docs/.vitepress/dist",
+  "installCommand": "echo 'skipping root install'"
+}
