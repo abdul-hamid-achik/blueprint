@@ -219,6 +219,77 @@ git init && git add -A && git commit -m "Initial deploy"
 
 Set environment variables in the Railway dashboard under **Variables**.
 
+### Vercel
+
+Vercel works best for serverless deployments. The generated Hono app runs on Vercel's Node.js runtime.
+
+```bash
+bp build my-service.bp
+cd generated
+```
+
+Add a `vercel.json` to the generated directory:
+
+```json
+{
+  "builds": [{ "src": "src/index.ts", "use": "@vercel/node" }],
+  "routes": [{ "src": "/(.*)", "dest": "src/index.ts" }]
+}
+```
+
+Then deploy:
+
+```bash
+npm i -g vercel
+vercel
+```
+
+Set environment variables in the Vercel dashboard under **Settings > Environment Variables**, or via CLI:
+
+```bash
+vercel env add DATABASE_URL
+vercel env add STRIPE_KEY
+```
+
+### Netlify
+
+For Netlify, use the `@hono/netlify` adapter. After building:
+
+```bash
+bp build my-service.bp
+cd generated
+npm install @hono/netlify
+```
+
+Add a `netlify.toml`:
+
+```toml
+[build]
+  command = "npm install"
+  publish = "."
+
+[functions]
+  directory = "netlify/functions"
+```
+
+Create `netlify/functions/api.ts`:
+
+```typescript
+import { handle } from '@hono/netlify'
+import app from '../../src/index.js'
+
+export default handle(app)
+```
+
+Deploy:
+
+```bash
+npm i -g netlify-cli
+netlify deploy --prod
+```
+
+Set environment variables in the Netlify dashboard under **Site settings > Environment variables**.
+
 ### Render
 
 1. Push your `generated/` directory to a Git repository

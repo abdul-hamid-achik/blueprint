@@ -37,13 +37,27 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
 changelog:
   sort: asc
   filters:
     exclude:
       - "^docs:"
       - "^test:"
+      - "^ci:"
       - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: abdul-hamid-achik
+    name: blueprint
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
 
 brews:
   - name: bp
@@ -55,5 +69,8 @@ brews:
       owner: abdul-hamid-achik
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    install: |
+      bin.install "bp"
     test: |
-      system "#{bin}/bp version"
+      system "#{bin}/bp", "version"
+    skip_upload: "{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}"
