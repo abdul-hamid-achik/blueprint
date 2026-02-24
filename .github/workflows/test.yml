@@ -56,9 +56,12 @@ jobs:
 
       - name: Validate generated TypeScript
         run: |
-          cd /tmp/hello
-          npm install --save-dev typescript
-          npx tsc --noEmit --skipLibCheck 2>&1 || echo "TypeScript validation found issues"
+          for dir in /tmp/hello /tmp/todo /tmp/auth /tmp/ecommerce /tmp/chat /tmp/full; do
+            echo "=== Validating TypeScript in $dir ==="
+            cd "$dir"
+            npm install --save-dev typescript @types/node @types/pg
+            npx tsc --noEmit --skipLibCheck
+          done
 
       - name: Lint examples
         run: |
@@ -67,7 +70,7 @@ jobs:
 
       - name: Format check examples
         run: |
-          ./bin/bp fmt examples/hello-world.bp --check || echo "hello-world.bp needs formatting"
+          ./bin/bp fmt examples/hello-world.bp --check
 
       - name: Generate docs
         run: |

@@ -10,7 +10,7 @@ import (
 
 // --- Static files ---
 
-func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorage, hasQueue, hasEndpoints bool) codegen.OutputFile {
+func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorage, hasQueue, hasEndpoints, hasWS bool) codegen.OutputFile {
 	name := bp.Name
 	port := blueprintEntryInt(bp, "port")
 	if port == 0 {
@@ -38,6 +38,9 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 	}
 	if hasQueue {
 		deps["bullmq"] = "^5.30.0"
+	}
+	if hasWS {
+		deps["@hono/node-ws"] = "^1.0.0"
 	}
 
 	devDeps := map[string]string{
@@ -133,17 +136,29 @@ func (g *Generator) genEnvExample(secrets []*ast.Secret, envs []*ast.Env) codege
 	return codegen.OutputFile{Path: ".env.example", Content: []byte(b.String())}
 }
 
-func (g *Generator) genEnvTS(secrets []*ast.Secret, envs []*ast.Env) codegen.OutputFile {
+func (g *Generator) genEnvTS(secrets []*ast.Secret, envs []*ast.Env, extraEnvVars ...string) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { z } from 'zod';\nimport 'dotenv/config';\n\n")
 	b.WriteString("const envSchema = z.object({\n")
+
+	// Track which env vars are already declared by secrets/envs to avoid duplicates
+	declared := make(map[string]bool)
 	for _, s := range secrets {
+		declared[s.Name] = true
 		req := ".optional()"
 		if s.Required {
 			req = ""
 		}
 		b.WriteString(fmt.Sprintf("  %s: z.string()%s,\n", s.Name, req))
+	}
+
+	// Add extra infra env vars (e.g., REDIS_URL for cache) that aren't already declared
+	for _, name := range extraEnvVars {
+		if !declared[name] {
+			declared[name] = true
+			b.WriteString(fmt.Sprintf("  %s: z.string(),\n", name))
+		}
 	}
 	for _, e := range envs {
 		zodType := "z.string()"
@@ -179,9 +194,11 @@ func (g *Generator) genEnvTS(secrets []*ast.Secret, envs []*ast.Env) codegen.Out
 func (g *Generator) genErrors() codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
-	b.WriteString(`export class BpError extends Error {
+	b.WriteString(`import type { ContentfulStatusCode } from 'hono/utils/http-status';
+
+export class BpError extends Error {
   constructor(
-    public statusCode: number,
+    public statusCode: ContentfulStatusCode,
     message: string,
   ) {
     super(message);
@@ -288,19 +305,28 @@ func (g *Generator) genDockerfile() codegen.OutputFile {
 	if port == 0 {
 		port = 3000
 	}
-	content := fmt.Sprintf(`FROM node:22-slim AS base
+	content := fmt.Sprintf(`FROM node:22-slim AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm ci --production
+RUN npm ci
 
 COPY . .
+RUN npx tsc
+
+FROM node:22-slim
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
+
+COPY --from=builder /app/dist ./dist
 
 RUN addgroup --system app && adduser --system --ingroup app app
 USER app
 
 EXPOSE %d
-CMD ["npx", "tsx", "src/index.ts"]
+CMD ["node", "dist/index.js"]
 `, port)
 	return codegen.OutputFile{Path: "Dockerfile", Content: []byte(content)}
 }

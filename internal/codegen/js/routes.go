@@ -84,10 +84,10 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		b.WriteString(fmt.Sprintf("import { %sRoutes } from './routes/%s.js';\n", toCamelCase(fk), toKebabCase(fk)))
 	}
 
-	// Import WS route files
+	// Import WS route factory functions
 	for _, res := range sortedKeys2(wsResources) {
 		fk := fileKeyForWs(res)
-		b.WriteString(fmt.Sprintf("import { %sRoutes } from './routes/%s.js';\n", toCamelCase(fk), toKebabCase(fk)))
+		b.WriteString(fmt.Sprintf("import { create%sRoutes } from './routes/%s.js';\n", toPascalCase(fk), toKebabCase(fk)))
 	}
 
 	// Import subscription handlers and event emitter
@@ -173,10 +173,10 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		b.WriteString(fmt.Sprintf("app.route('/', %sRoutes);\n", toCamelCase(fk)))
 	}
 
-	// Mount WS routes
+	// Mount WS routes (created via factory with runtime upgradeWebSocket)
 	for _, res := range sortedKeys2(wsResources) {
 		fk := fileKeyForWs(res)
-		b.WriteString(fmt.Sprintf("app.route('/', %sRoutes);\n", toCamelCase(fk)))
+		b.WriteString(fmt.Sprintf("app.route('/', create%sRoutes(upgradeWebSocket));\n", toPascalCase(fk)))
 	}
 
 	b.WriteString("\n")
@@ -222,10 +222,10 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	// Global error handler — suppress internal details
 	b.WriteString("app.onError((err, c) => {\n")
 	b.WriteString("  console.error(err);\n")
-	b.WriteString("  return c.json({ error: 'Internal server error' }, 500);\n")
+	b.WriteString("  return c.json({ error: 'Internal server error' }, 500 as const);\n")
 	b.WriteString("});\n\n")
 
-	b.WriteString(fmt.Sprintf(`console.log('%%s listening on port %%d', '%s', %d);`+"\n", bp.Name, port))
+	b.WriteString(fmt.Sprintf("console.log('%%s listening on port %%d', %q, %d);\n", bp.Name, port))
 
 	// If WS: use injectWebSocket(serve(...)), otherwise capture server ref for graceful shutdown
 	if len(ws) > 0 {
@@ -239,7 +239,7 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	b.WriteString("// Graceful shutdown\n")
 	b.WriteString("const shutdown = async () => {\n")
 	b.WriteString("  console.log('Shutting down gracefully...');\n")
-	b.WriteString("  server.close();\n")
+	b.WriteString("  await new Promise<void>((resolve) => server.close(() => resolve()));\n")
 	if hasDB {
 		b.WriteString("  // Close database pool\n")
 		b.WriteString("  await db.$client.end();\n")
@@ -347,13 +347,42 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
 
+	// Collect context variables injected by middleware for Hono type parameter
+	allCtxVars := make(map[string]bool)
+	for _, ep := range endpoints {
+		for _, meta := range ep.Meta {
+			if meta.Kind == "use" && meta.Use != nil {
+				if mw, ok := g.middlewares[meta.Use.Name]; ok {
+					for k := range extractInjectedVars(mw.Before) {
+						allCtxVars[toCamelCase(k)] = true
+					}
+					for k := range extractInjectedVars(mw.After) {
+						allCtxVars[toCamelCase(k)] = true
+					}
+				}
+			}
+		}
+	}
+
 	routeVar := toCamelCase(resource) + "Routes"
-	b.WriteString(fmt.Sprintf("export const %s = new Hono();\n\n", routeVar))
+	if len(allCtxVars) > 0 {
+		// Type the Hono app with Variables so c.get()/c.set() are type-safe
+		varKeys := sortedKeys2(allCtxVars)
+		var fields []string
+		for _, k := range varKeys {
+			fields = append(fields, k+": any")
+		}
+		b.WriteString(fmt.Sprintf("export const %s = new Hono<{ Variables: { %s } }>();\n\n",
+			routeVar, strings.Join(fields, "; ")))
+	} else {
+		b.WriteString(fmt.Sprintf("export const %s = new Hono();\n\n", routeVar))
+	}
 
 	// Module-level rate limit store (shared across all handlers in this file)
 	if needsRateLimit {
-		b.WriteString("// Module-level rate limit store\n")
-		b.WriteString("const _rateLimitStore = new Map<string, { count: number, resetAt: number }>();\n\n")
+		b.WriteString("// Module-level rate limit store with periodic cleanup\n")
+		b.WriteString("const _rateLimitStore = new Map<string, { count: number, resetAt: number }>();\n")
+		b.WriteString("setInterval(() => { const now = Date.now(); for (const [k, v] of _rateLimitStore) { if (v.resetAt <= now) _rateLimitStore.delete(k); } }, 60000);\n\n")
 	}
 
 	for _, ep := range endpoints {
@@ -408,7 +437,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 				b.WriteString("  const _rateEntry = _rateLimitStore.get(_rateKey);\n")
 				b.WriteString("  if (_rateEntry && _rateEntry.resetAt > _now) {\n")
 				b.WriteString(fmt.Sprintf("    if (_rateEntry.count >= %d) {\n", rateLimit))
-				b.WriteString("      return c.json({ error: 'Rate limit exceeded' }, 429);\n")
+				b.WriteString("      return c.json({ error: 'Rate limit exceeded' }, 429 as const);\n")
 				b.WriteString("    }\n")
 				b.WriteString("    _rateEntry.count++;\n")
 				b.WriteString("  } else {\n")
@@ -420,10 +449,11 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 				if secretKey := webhookAuthSecretKey(meta.Value); secretKey != "" {
 					b.WriteString(fmt.Sprintf("  const _payload = await c.req.text();\n"))
 					b.WriteString(fmt.Sprintf("  const _sig = c.req.header('X-Webhook-Signature') ?? '';\n"))
-					b.WriteString(fmt.Sprintf("  const _expected = createHmac('sha256', process.env.%s!).update(_payload).digest('hex');\n", secretKey))
-					b.WriteString("  if (_sig.length !== _expected.length || !timingSafeEqual(Buffer.from(_sig, 'hex'), Buffer.from(_expected, 'hex'))) return c.json({ error: 'Invalid signature' }, 401);\n")
+					b.WriteString(fmt.Sprintf("  const _expected = createHmac('sha256', env.%s).update(_payload).digest('hex');\n", secretKey))
+					b.WriteString("  let _sigBuf: Buffer; try { _sigBuf = Buffer.from(_sig, 'hex'); } catch { return c.json({ error: 'Invalid signature' }, 401 as const); }\n")
+					b.WriteString("  if (_sigBuf.length !== Buffer.from(_expected, 'hex').length || !timingSafeEqual(_sigBuf, Buffer.from(_expected, 'hex'))) return c.json({ error: 'Invalid signature' }, 401 as const);\n")
 					b.WriteString("  let data: any;\n")
-					b.WriteString("  try { data = JSON.parse(_payload); } catch { return c.json({ error: 'Invalid payload' }, 400); }\n")
+					b.WriteString("  try { data = JSON.parse(_payload); } catch { return c.json({ error: 'Invalid payload' }, 400 as const); }\n")
 				}
 			}
 		}
@@ -433,6 +463,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		// Build context vars from middleware inject statements
 		ctxVars := make(map[string]bool)
 		boundVars := make(map[string]string)
+		varModels := make(map[string]string)
 		for _, meta := range ep.Meta {
 			if meta.Kind == "use" && meta.Use != nil {
 				if mw, ok := g.middlewares[meta.Use.Name]; ok {
@@ -443,12 +474,26 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 						ctxVars[k] = v
 					}
 					// Map model names to their context variable names
-					// e.g., api_key -> auth (from "inject key as auth" where key was queried from api_key)
+					// e.g., user -> c.get('currentUser') (from "inject user as current_user")
 					for modelName, ctxName := range extractInjectedModelMap(mw.Before) {
-						boundVars[modelName] = "c.get('" + toCamelCase(ctxName) + "')"
+						ctxRef := "c.get('" + toCamelCase(ctxName) + "')"
+						boundVars[modelName] = ctxRef
+						// Also map the context variable name back to the real model
+						// so "update current_user { ... }" resolves to schema.user
+						boundVars[ctxName] = ctxRef
+						camelCtx := toCamelCase(ctxName)
+						boundVars[camelCtx] = ctxRef
+						varModels[ctxName] = modelName
+						varModels[camelCtx] = modelName
 					}
 					for modelName, ctxName := range extractInjectedModelMap(mw.After) {
-						boundVars[modelName] = "c.get('" + toCamelCase(ctxName) + "')"
+						ctxRef := "c.get('" + toCamelCase(ctxName) + "')"
+						boundVars[modelName] = ctxRef
+						boundVars[ctxName] = ctxRef
+						camelCtx := toCamelCase(ctxName)
+						boundVars[camelCtx] = ctxRef
+						varModels[ctxName] = modelName
+						varModels[camelCtx] = modelName
 					}
 				}
 			}
@@ -461,6 +506,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 			path:        ep.Path,
 			ctxVars:     ctxVars,
 			boundVars:   boundVars,
+			varModels:   varModels,
 			declared:    make(map[string]bool),
 			asyncFns:    g.buildAsyncFns(),
 			structEnums: g.structEnums,
@@ -518,6 +564,20 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 	}
 
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
+
+	// Check if any handler uses event subscriptions (needs events lib)
+	hasEventHandlers := false
+	for _, ep := range endpoints {
+		for _, h := range ep.Handlers {
+			if h.EventName != "" && h.Timeout == "" {
+				hasEventHandlers = true
+				break
+			}
+		}
+	}
+	if hasEventHandlers {
+		b.WriteString("import { on } from '../lib/events.js';\n")
+	}
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
 
@@ -531,6 +591,13 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 		}
 
 		b.WriteString(fmt.Sprintf("%s.get('%s', async (c) => {\n", routeVar, ep.Path))
+
+		// Extract path params at the start of the handler
+		pathParams := extractPathParams(ep.Path)
+		for _, param := range pathParams {
+			b.WriteString(fmt.Sprintf("  const %s = c.req.param('%s');\n", toCamelCase(param), param))
+		}
+
 		b.WriteString("  return streamSSE(c, async (stream) => {\n")
 
 		ctx := emitCtx{
@@ -539,39 +606,64 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 			asyncFns:    g.buildAsyncFns(),
 			structEnums: g.structEnums,
 		}
+		// Mark path params as declared so emitArrowStmts doesn't re-declare them
+		for _, param := range pathParams {
+			ctx.declared[toCamelCase(param)] = true
+		}
 
 		// Emit setup statements
 		if len(ep.Stmts) > 0 {
 			g.emitArrowStmts(&b, ep.Stmts, "    ", ctx)
 		}
 
-		// Emit each handler block
+		// Emit each handler block as an event subscription or timeout
 		for _, h := range ep.Handlers {
-			if h.EventName != "" {
+			if h.Timeout != "" {
+				// Timeout handler: setInterval that sends a periodic SSE message
+				ms := durationToMS(h.Timeout)
+				sseData := extractOutputValue(h.Body, &ctx)
+				b.WriteString(fmt.Sprintf("    // on timeout: %s\n", h.Timeout))
+				b.WriteString("    const _interval = setInterval(async () => {\n")
+				b.WriteString(fmt.Sprintf("      await stream.writeSSE({ event: 'ping', data: JSON.stringify(%s) });\n", sseData))
+				b.WriteString(fmt.Sprintf("    }, %s);\n", ms))
+				b.WriteString("    stream.onAbort(() => clearInterval(_interval));\n")
+			} else if h.EventName != "" {
+				// Event subscription: on('event_name', async (eventData) => { ... })
 				b.WriteString(fmt.Sprintf("    // on event: %s\n", h.EventName))
-			}
-			if h.Condition != nil {
-				cond := exprToJSWithCtx(h.Condition, &ctx)
-				b.WriteString(fmt.Sprintf("    if (%s) {\n", cond))
+				b.WriteString(fmt.Sprintf("    on('%s', async (eventData: any) => {\n", h.EventName))
 
+				// Build handler context with eventData available
 				handlerCtx := ctx
 				handlerCtx.declared = make(map[string]bool)
 				for k, v := range ctx.declared {
 					handlerCtx.declared[k] = v
 				}
-				// Emit the handler body statements
-				g.emitArrowStmts(&b, h.Body, "      ", handlerCtx)
-				// Emit a stream.writeSSE call for the event
-				b.WriteString(fmt.Sprintf("      await stream.writeSSE({ event: '%s', data: JSON.stringify({}) });\n", h.EventName))
-				b.WriteString("    }\n")
-			} else {
-				// Emit the handler body statements
-				g.emitArrowStmts(&b, h.Body, "    ", ctx)
-				// Emit stream.writeSSE call
-				b.WriteString(fmt.Sprintf("    await stream.writeSSE({ event: '%s', data: JSON.stringify({}) });\n", h.EventName))
+				handlerCtx.declared["eventData"] = true
+				// Map 'event' -> 'eventData' so event.sender becomes eventData.sender
+				if handlerCtx.boundVars == nil {
+					handlerCtx.boundVars = make(map[string]string)
+				}
+				handlerCtx.boundVars["event"] = "eventData"
+
+				// Emit condition with eventData prefix for event fields
+				if h.Condition != nil {
+					condCtx := handlerCtx
+					cond := streamCondToJS(h.Condition, &condCtx)
+					b.WriteString(fmt.Sprintf("      if (%s) {\n", cond))
+					// Get the output value from the handler body for writeSSE data
+					sseData := extractOutputValue(h.Body, &handlerCtx)
+					b.WriteString(fmt.Sprintf("        await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData))
+					b.WriteString("      }\n")
+				} else {
+					sseData := extractOutputValue(h.Body, &handlerCtx)
+					b.WriteString(fmt.Sprintf("      await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData))
+				}
+				b.WriteString("    });\n")
 			}
 		}
 
+		// Keep the stream open (await abort signal)
+		b.WriteString("    await new Promise<void>((resolve) => stream.onAbort(resolve));\n")
 		b.WriteString("  });\n")
 		b.WriteString("});\n\n")
 	}
@@ -590,7 +682,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { Hono } from 'hono';\n")
-	b.WriteString("import { upgradeWebSocket } from 'hono/ws';\n")
+	b.WriteString("import type { UpgradeWebSocket, WSContext, WSMessageReceive } from 'hono/ws';\n")
 
 	// Collect imports from all endpoint bodies
 	ic := newImportCollector()
@@ -613,11 +705,25 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	}
 
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
+	// Import emit from events lib if any handler uses it
+	needsEmit := false
+	for _, ep := range endpoints {
+		if stmtsHaveCall(ep.OnConnect, "emit") || stmtsHaveCall(ep.OnMessage, "emit") || stmtsHaveCall(ep.OnDisconnect, "emit") {
+			needsEmit = true
+			break
+		}
+	}
+	if needsEmit {
+		b.WriteString("import { emit } from '../lib/events.js';\n")
+	}
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
 
+	// Use a factory function so index.ts can pass the Node.js upgradeWebSocket at runtime
 	routeVar := toCamelCase(fileKey) + "Routes"
-	b.WriteString(fmt.Sprintf("export const %s = new Hono();\n\n", routeVar))
+	b.WriteString(fmt.Sprintf("export function create%sRoutes(upgradeWebSocket: UpgradeWebSocket) {\n",
+		toPascalCase(fileKey)))
+	b.WriteString(fmt.Sprintf("  const %s = new Hono();\n\n", routeVar))
 
 	for _, ep := range endpoints {
 		b.WriteString(fmt.Sprintf("// WS %s\n", ep.Path))
@@ -625,49 +731,150 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 			b.WriteString(fmt.Sprintf("// %s\n", ep.Intent.Text))
 		}
 
-		b.WriteString(fmt.Sprintf("%s.get('%s', upgradeWebSocket((c) => ({\n", routeVar, ep.Path))
+		// Extract path params for this endpoint
+		pathParams := extractPathParams(ep.Path)
 
-		ctx := emitCtx{
-			kind:        "function",
+		b.WriteString(fmt.Sprintf("%s.get('%s', upgradeWebSocket((c) => {\n", routeVar, ep.Path))
+
+		// Extract path params into closure-scoped variables so all handlers can access them
+		for _, param := range pathParams {
+			b.WriteString(fmt.Sprintf("  const %s = c.req.param('%s');\n", toCamelCase(param), param))
+		}
+
+		// Hoist variables from onConnect that are used across handlers.
+		// Variables assigned in onConnect (step bindings + inject) need to be
+		// accessible in onMessage and onClose, so we declare them in the outer scope.
+		hoistedVars := collectBindings(ep.OnConnect)
+		// Also collect inject-as names
+		for _, name := range collectInjectNames(ep.OnConnect) {
+			hoistedVars[name] = true
+		}
+		// Emit hoisted let declarations in the outer closure scope
+		for _, name := range sortedKeys2(hoistedVars) {
+			b.WriteString(fmt.Sprintf("  let %s: any;\n", name))
+		}
+		b.WriteString("\n")
+
+		b.WriteString("  return {\n")
+
+		// Build base context with WS kind, path params, and hoisted vars marked as declared
+		baseCtx := emitCtx{
+			kind:        "ws",
 			declared:    make(map[string]bool),
 			asyncFns:    g.buildAsyncFns(),
 			structEnums: g.structEnums,
 		}
+		for _, param := range pathParams {
+			baseCtx.declared[toCamelCase(param)] = true
+		}
+		// Mark hoisted vars as declared so emitArrowStmts emits assignments, not const declarations
+		for name := range hoistedVars {
+			baseCtx.declared[name] = true
+		}
 
 		// onOpen handler
-		b.WriteString("  onOpen(event, ws) {\n")
+		b.WriteString("    async onOpen(evt: Event, ws: WSContext) {\n")
 		if len(ep.OnConnect) > 0 {
-			onConnectCtx := ctx
+			onConnectCtx := baseCtx
 			onConnectCtx.declared = make(map[string]bool)
-			g.emitArrowStmts(&b, ep.OnConnect, "    ", onConnectCtx)
+			for k, v := range baseCtx.declared {
+				onConnectCtx.declared[k] = v
+			}
+			g.emitArrowStmts(&b, ep.OnConnect, "      ", onConnectCtx)
 		}
-		b.WriteString("  },\n")
+		b.WriteString("    },\n")
 
 		// onMessage handler
-		b.WriteString("  onMessage(event, ws) {\n")
-		b.WriteString("    const message = event.data;\n")
+		b.WriteString("    async onMessage(event: MessageEvent<WSMessageReceive>, ws: WSContext) {\n")
+		b.WriteString("      const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;\n")
 		if len(ep.OnMessage) > 0 {
-			onMessageCtx := ctx
+			onMessageCtx := baseCtx
 			onMessageCtx.declared = make(map[string]bool)
+			for k, v := range baseCtx.declared {
+				onMessageCtx.declared[k] = v
+			}
 			onMessageCtx.declared["message"] = true
-			g.emitArrowStmts(&b, ep.OnMessage, "    ", onMessageCtx)
+			g.emitArrowStmts(&b, ep.OnMessage, "      ", onMessageCtx)
 		}
-		b.WriteString("  },\n")
+		b.WriteString("    },\n")
 
 		// onClose handler
-		b.WriteString("  onClose(event, ws) {\n")
+		b.WriteString("    async onClose(evt: CloseEvent, ws: WSContext) {\n")
 		if len(ep.OnDisconnect) > 0 {
-			onDisconnectCtx := ctx
+			onDisconnectCtx := baseCtx
 			onDisconnectCtx.declared = make(map[string]bool)
-			g.emitArrowStmts(&b, ep.OnDisconnect, "    ", onDisconnectCtx)
+			for k, v := range baseCtx.declared {
+				onDisconnectCtx.declared[k] = v
+			}
+			g.emitArrowStmts(&b, ep.OnDisconnect, "      ", onDisconnectCtx)
 		}
-		b.WriteString("  },\n")
+		b.WriteString("    },\n")
 
-		b.WriteString("}))));\n\n")
+		b.WriteString("  };\n")
+		b.WriteString("  }));\n\n")
 	}
+
+	b.WriteString(fmt.Sprintf("  return %s;\n", routeVar))
+	b.WriteString("}\n")
 
 	return codegen.OutputFile{
 		Path:    fmt.Sprintf("src/routes/%s.ts", toKebabCase(fileKey)),
 		Content: []byte(b.String()),
+	}
+}
+
+// collectInjectNames scans arrow statements for inject calls and returns
+// the camelCase names of injected variables.
+func collectInjectNames(stmts []ast.ArrowStmt) []string {
+	var names []string
+	for _, s := range stmts {
+		if step, ok := s.(*ast.StepStmt); ok {
+			if fn, ok := step.Expr.(*ast.FnCall); ok && fn.Name == "inject" && len(fn.Args) >= 2 {
+				names = append(names, toCamelCase(exprToString(fn.Args[1])))
+			}
+		}
+	}
+	return names
+}
+
+// extractOutputValue finds the first OutputStmt in a list of arrow statements
+// and returns its value as a JS expression. Returns "{}" if no output is found.
+func extractOutputValue(stmts []ast.ArrowStmt, ctx *emitCtx) string {
+	for _, s := range stmts {
+		if out, ok := s.(*ast.OutputStmt); ok {
+			return exprToJSWithCtx(out.Value, ctx)
+		}
+	}
+	return "{}"
+}
+
+// streamCondToJS converts a STREAM event handler condition to JavaScript.
+// Identifiers not in the declared context are prefixed with "eventData."
+// since they refer to fields on the event payload.
+func streamCondToJS(e ast.Expr, ctx *emitCtx) string {
+	switch v := e.(type) {
+	case *ast.BinaryExpr:
+		left := streamCondToJS(v.Left, ctx)
+		right := streamCondToJS(v.Right, ctx)
+		op := v.Op
+		if op == "==" {
+			op = "==="
+		}
+		if op == "!=" {
+			op = "!=="
+		}
+		return fmt.Sprintf("%s %s %s", left, op, right)
+	case *ast.Ident:
+		name := toCamelCase(v.Name)
+		if ctx != nil && ctx.declared[name] {
+			return name
+		}
+		// Not in scope — it's an event field
+		return "eventData." + name
+	case *ast.FieldAccess:
+		obj := streamCondToJS(v.Base, ctx)
+		return fmt.Sprintf("%s.%s", obj, toCamelCase(v.Field))
+	default:
+		return exprToJSWithCtx(e, ctx)
 	}
 }

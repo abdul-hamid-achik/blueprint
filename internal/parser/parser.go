@@ -1,11 +1,15 @@
 package parser
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/lexer"
 )
+
+const maxExprDepth = 256
+const maxErrors = 50
 
 // Parser parses a token stream into an AST.
 type Parser struct {
@@ -13,6 +17,7 @@ type Parser struct {
 	pos    int
 	errors []ParseError
 	file   string
+	depth  int
 }
 
 // ParseFile tokenizes and parses a .bp source file, returning the AST and any errors.
@@ -31,6 +36,49 @@ func ParseFile(filename string, src []byte) (*ast.File, []ParseError) {
 
 	file := p.parseFile()
 	return file, p.errors
+}
+
+// ParsePartialFile tokenizes and parses a .bp fragment (e.g., an included file)
+// that does not require a leading blueprint block. Returns only the top-level blocks.
+func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
+	tokens, lexErrors := lexer.Tokenize(filename, src)
+
+	p := &Parser{
+		tokens: tokens,
+		file:   filename,
+	}
+
+	for _, le := range lexErrors {
+		p.errors = append(p.errors, ParseError{Loc: le.Loc, Message: le.Message})
+	}
+
+	f := &ast.File{Loc: p.peek().Loc}
+
+	// If included file starts with a blueprint block, parse and attach it
+	// but don't require it (unlike ParseFile).
+	if p.check(lexer.TokenBlueprint) {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if err, ok := r.(ParseError); ok {
+						p.errors = append(p.errors, err)
+					} else {
+						panic(r)
+					}
+					p.recoverToNextBlock()
+				}
+			}()
+			f.Blueprint = p.parseBlueprintBlock(nil)
+		}()
+	}
+
+	for !p.atEnd() {
+		block := p.parseTopLevelBlock()
+		if block != nil {
+			f.Blocks = append(f.Blocks, block)
+		}
+	}
+	return f, p.errors
 }
 
 func (p *Parser) parseFile() *ast.File {
@@ -196,6 +244,9 @@ func (p *Parser) atEnd() bool {
 
 func (p *Parser) addError(loc lexer.Loc, msg, hint string) {
 	p.errors = append(p.errors, ParseError{Loc: loc, Message: msg, Hint: hint})
+	if len(p.errors) >= maxErrors {
+		panic(ParseError{Loc: loc, Message: "too many errors, stopping"})
+	}
 }
 
 func (p *Parser) recoverToNextBlock() {
@@ -846,7 +897,11 @@ func (p *Parser) parseTest(intent *ast.Intent) *ast.Test {
 			var err error
 			repeat, err = strconv.Atoi(rpt.Value)
 			if err != nil {
-				panic("invalid integer for repeat(): " + rpt.Value)
+				panic(ParseError{
+					Loc:     rpt.Loc,
+					Message: fmt.Sprintf("invalid integer for repeat(): %s", rpt.Value),
+					Hint:    "repeat() expects a positive integer",
+				})
 			}
 		}
 		p.expect(lexer.TokenLBrace)
@@ -951,21 +1006,26 @@ func (p *Parser) parseFixture() *ast.Fixture {
 }
 
 func (p *Parser) parseGenerateTopLevel() ast.TopLevel {
-	loc := p.advance().Loc // consume @>
-	text := p.expect(lexer.TokenString)
-	step := &ast.GenerateStep{Loc: loc, Text: text.Value}
-	// Parse hints
-	for p.check(lexer.TokenIdent) {
-		hLoc := p.peek().Loc
-		hName := p.advance().Value
-		p.expect(lexer.TokenLParen)
-		hVal := p.parseExpr()
-		p.expect(lexer.TokenRParen)
-		step.Hints = append(step.Hints, ast.Hint{Loc: hLoc, Name: hName, Value: hVal})
+	loc := p.peek().Loc
+	p.addError(loc,
+		"@> generate steps can only appear inside endpoint or function bodies",
+		"Move this @> step inside a route, function, or pipe block",
+	)
+	p.advance() // consume @>
+	// Skip the string and any hint arguments to recover gracefully
+	if p.check(lexer.TokenString) {
+		p.advance()
 	}
-	// Wrap in a dummy top-level, returned as nil since generate steps aren't really top-level blocks
-	// Actually, per spec they can appear at top level too
-	// We'll return nil for now — the parser handles this gracefully
+	for p.check(lexer.TokenIdent) {
+		p.advance()
+		if p.check(lexer.TokenLParen) {
+			p.advance()
+			p.parseExpr()
+			if p.check(lexer.TokenRParen) {
+				p.advance()
+			}
+		}
+	}
 	return nil
 }
 
@@ -1447,6 +1507,14 @@ func (p *Parser) parseGenerateStepStmt() *ast.GenerateStep {
 // --- Expressions (Pratt parsing) ---
 
 func (p *Parser) parseExpr() ast.Expr {
+	p.depth++
+	defer func() { p.depth-- }()
+	if p.depth > maxExprDepth {
+		panic(ParseError{
+			Loc:     p.peek().Loc,
+			Message: "expression nesting too deep",
+		})
+	}
 	return p.parseBinaryExpr(1) // start at lowest precedence
 }
 

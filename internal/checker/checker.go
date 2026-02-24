@@ -101,6 +101,24 @@ func (c *Checker) validateBlueprint() {
 			"missing blueprint block",
 			"Every .bp file must start with: blueprint \"name\" { ... }",
 		)
+		return
+	}
+
+	bp := c.file.Blueprint
+	if bp.Name == "" {
+		c.addError(bp.Loc, "blueprint name is empty", "Provide a name: blueprint \"my-app\" { ... }")
+	}
+
+	// Check required fields
+	found := map[string]bool{}
+	for _, e := range bp.Entries {
+		found[e.Key] = true
+	}
+	if !found["version"] {
+		c.addError(bp.Loc, "blueprint block missing required field 'version'", `Add: version "0.1.0"`)
+	}
+	if !found["runtime"] {
+		c.addError(bp.Loc, "blueprint block missing required field 'runtime'", "Add: runtime node")
 	}
 }
 
@@ -155,8 +173,18 @@ func (c *Checker) validateBlocks() {
 
 func (c *Checker) checkModel(n *ast.Model) {
 	c.checkSnakeCase(n.Name, "model", n.Loc)
+	// Detect duplicate fields
+	seen := map[string]lexer.Loc{}
 	for _, f := range n.Fields {
 		c.checkSnakeCase(f.Name, "field", f.Loc)
+		if prevLoc, dup := seen[f.Name]; dup {
+			c.addError(f.Loc,
+				fmt.Sprintf("duplicate field '%s' in model '%s'", f.Name, n.Name),
+				fmt.Sprintf("First defined at %s", prevLoc),
+			)
+		} else {
+			seen[f.Name] = f.Loc
+		}
 		c.checkTypeRef(f.Type)
 		for _, con := range f.Constraints {
 			if con.Kind == "ref" && con.Value != nil {

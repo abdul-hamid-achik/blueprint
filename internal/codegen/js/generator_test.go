@@ -529,9 +529,9 @@ DELETE /api/items/:id {
 		t.Error("delete should generate db.delete()")
 	}
 
-	// Check 204 uses c.body(null, 204) instead of c.json
-	if !strings.Contains(routeStr, "c.body(null, 204)") {
-		t.Error("204 response should use c.body(null, 204)")
+	// Check 204 uses c.body(null, 204 as const) instead of c.json
+	if !strings.Contains(routeStr, "c.body(null, 204 as const)") {
+		t.Error("204 response should use c.body(null, 204 as const)")
 	}
 
 	// Check drizzle-orm imports
@@ -662,11 +662,14 @@ func TestDockerfileCMD(t *testing.T) {
 	dockerfile, _ := os.ReadFile(filepath.Join(outDir, "Dockerfile"))
 	dfStr := string(dockerfile)
 
-	if !strings.Contains(dfStr, `CMD ["npx", "tsx", "src/index.ts"]`) {
-		t.Error("Dockerfile should use npx tsx, not node --import tsx")
+	if !strings.Contains(dfStr, `CMD ["node", "dist/index.js"]`) {
+		t.Error("Dockerfile should use node dist/index.js with compiled TypeScript")
 	}
-	if strings.Contains(dfStr, `node --import`) {
-		t.Error("Dockerfile should NOT use node --import tsx")
+	if !strings.Contains(dfStr, "FROM node:22-slim AS builder") {
+		t.Error("Dockerfile should use multi-stage build")
+	}
+	if !strings.Contains(dfStr, "RUN npx tsc") {
+		t.Error("Dockerfile should compile TypeScript during build")
 	}
 }
 
@@ -888,9 +891,13 @@ WS /ws/chat {
 	}
 	routeStr := string(routeContent)
 
-	// Check upgradeWebSocket import
-	if !strings.Contains(routeStr, "import { upgradeWebSocket } from 'hono/ws'") {
-		t.Error("ws route should import upgradeWebSocket from hono/ws")
+	// Check type-only imports (upgradeWebSocket is passed at runtime via factory)
+	if !strings.Contains(routeStr, "import type { UpgradeWebSocket, WSContext, WSMessageReceive } from 'hono/ws'") {
+		t.Error("ws route should import UpgradeWebSocket, WSContext and WSMessageReceive types from hono/ws")
+	}
+	// Check factory function export
+	if !strings.Contains(routeStr, "export function create") {
+		t.Error("ws route should export a factory function")
 	}
 
 	// Check route uses upgradeWebSocket
@@ -903,20 +910,20 @@ WS /ws/chat {
 		t.Error("ws route should register GET handler at /ws/chat")
 	}
 
-	// Check lifecycle handlers
-	if !strings.Contains(routeStr, "onOpen(event, ws)") {
-		t.Error("ws route should have onOpen handler")
+	// Check lifecycle handlers with type annotations
+	if !strings.Contains(routeStr, "onOpen(evt: Event, ws: WSContext)") {
+		t.Error("ws route should have typed onOpen handler")
 	}
-	if !strings.Contains(routeStr, "onMessage(event, ws)") {
-		t.Error("ws route should have onMessage handler")
+	if !strings.Contains(routeStr, "onMessage(event: MessageEvent<WSMessageReceive>, ws: WSContext)") {
+		t.Error("ws route should have typed onMessage handler")
 	}
-	if !strings.Contains(routeStr, "onClose(event, ws)") {
-		t.Error("ws route should have onClose handler")
+	if !strings.Contains(routeStr, "onClose(evt: CloseEvent, ws: WSContext)") {
+		t.Error("ws route should have typed onClose handler")
 	}
 
-	// Check message binding
-	if !strings.Contains(routeStr, "const message = event.data") {
-		t.Error("ws route onMessage should bind event.data to message")
+	// Check message binding with JSON parse
+	if !strings.Contains(routeStr, "const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data") {
+		t.Error("ws route onMessage should parse event.data as JSON")
 	}
 
 	// Check index.ts imports node-ws adapter
@@ -925,11 +932,205 @@ WS /ws/chat {
 		t.Fatal("src/index.ts should exist")
 	}
 	indexStr := string(indexContent)
-	if !strings.Contains(indexStr, "createNodeWebSocket") {
-		t.Error("index.ts should import createNodeWebSocket for WS endpoints")
+
+	// 1. Check index.ts imports createNodeWebSocket from @hono/node-ws
+	if !strings.Contains(indexStr, "import { createNodeWebSocket } from '@hono/node-ws'") {
+		t.Error("index.ts should import createNodeWebSocket from @hono/node-ws")
 	}
-	if !strings.Contains(indexStr, "injectWebSocket") {
-		t.Error("index.ts should set up injectWebSocket")
+
+	// 2. Check index.ts creates upgradeWebSocket via createNodeWebSocket({ app })
+	if !strings.Contains(indexStr, "createNodeWebSocket({ app })") {
+		t.Error("index.ts should create upgradeWebSocket via createNodeWebSocket({ app })")
+	}
+
+	// 3. Check that index.ts imports the factory function (e.g., createWsRoutes)
+	if !strings.Contains(indexStr, "createWsRoutes") {
+		t.Error("index.ts should import createWsRoutes factory function")
+	}
+
+	// 4. Check that index.ts calls createWsRoutes(upgradeWebSocket) to mount WS routes
+	if !strings.Contains(indexStr, "createWsRoutes(upgradeWebSocket)") {
+		t.Error("index.ts should call createWsRoutes(upgradeWebSocket)")
+	}
+
+	// 5. Check that index.ts calls injectWebSocket(server) after starting the server
+	if !strings.Contains(indexStr, "injectWebSocket(server)") {
+		t.Error("index.ts should call injectWebSocket(server) after starting the server")
+	}
+
+	// Check package.json includes @hono/node-ws dependency
+	pkgContent, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal("package.json should exist")
+	}
+	pkgStr := string(pkgContent)
+	if !strings.Contains(pkgStr, "@hono/node-ws") {
+		t.Error("package.json should include @hono/node-ws dependency for WS endpoints")
+	}
+}
+
+func TestGenerateWsPathParams(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+WS /ws/rooms/:id {
+  on_connect {
+    |> log "connected to room"
+  }
+  on_message {
+    |> log "received message"
+  }
+  on_disconnect {
+    |> log "disconnected"
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	// extractResource("/ws/rooms/:id") returns "ws" (first non-api, non-param segment)
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/ws.ts"))
+	if err != nil {
+		t.Fatal("src/routes/ws.ts should exist for WS /ws/rooms/:id endpoint")
+	}
+	routeStr := string(routeContent)
+
+	// Check path params are extracted from closure
+	if !strings.Contains(routeStr, "const id = c.req.param('id')") {
+		t.Error("ws route should extract path param 'id' via c.req.param('id')")
+	}
+
+	// Check the handler signature includes types
+	if !strings.Contains(routeStr, "onOpen(evt: Event, ws: WSContext)") {
+		t.Error("ws route onOpen should have typed parameters")
+	}
+
+	// Check path is registered with param
+	if !strings.Contains(routeStr, ".get('/ws/rooms/:id'") {
+		t.Error("ws route should register GET handler at /ws/rooms/:id")
+	}
+}
+
+func TestGenerateStreamPathParams(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model room {
+  id   uuid   primary
+  name string required
+}
+
+STREAM /api/rooms/:id/live {
+  stream {
+    |> on event(update) {
+      |> log "sending update"
+    }
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/rooms.ts"))
+	if err != nil {
+		t.Fatal("src/routes/rooms.ts should exist for STREAM /api/rooms/:id/live endpoint")
+	}
+	routeStr := string(routeContent)
+
+	// Check path params are extracted
+	if !strings.Contains(routeStr, "const id = c.req.param('id')") {
+		t.Error("stream route should extract path param 'id' via c.req.param('id')")
+	}
+
+	// Check streamSSE is still used
+	if !strings.Contains(routeStr, "streamSSE(c, async (stream) =>") {
+		t.Error("stream route should use streamSSE")
+	}
+}
+
+func TestGenerateEnvRedisURL(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  cache   redis
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	envContent, err := os.ReadFile(filepath.Join(outDir, "src/lib/env.ts"))
+	if err != nil {
+		t.Fatal("src/lib/env.ts should exist")
+	}
+	envStr := string(envContent)
+
+	if !strings.Contains(envStr, "REDIS_URL: z.string()") {
+		t.Error("env.ts should include REDIS_URL in the env schema when cache is redis")
+	}
+}
+
+func TestGenerateEnvRedisURLNotDuplicated(t *testing.T) {
+	// When REDIS_URL is already declared as a secret, it should not appear twice
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  cache   redis
+}
+
+secret REDIS_URL required`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	envContent, err := os.ReadFile(filepath.Join(outDir, "src/lib/env.ts"))
+	if err != nil {
+		t.Fatal("src/lib/env.ts should exist")
+	}
+	envStr := string(envContent)
+
+	// Count occurrences of REDIS_URL — should appear exactly once
+	count := strings.Count(envStr, "REDIS_URL")
+	if count != 1 {
+		t.Errorf("REDIS_URL should appear exactly once in env schema when also declared as secret, got %d", count)
 	}
 }
 
@@ -1523,20 +1724,20 @@ POST /webhooks/stripe {
 	if !strings.Contains(ts, "const _payload = await c.req.text();") {
 		t.Errorf("should read raw payload; got:\n%s", ts)
 	}
-	// Should emit HMAC verification with secret key
-	if !strings.Contains(ts, "process.env.STRIPE_KEY!") {
-		t.Errorf("should use STRIPE_KEY env var; got:\n%s", ts)
+	// Should emit HMAC verification with validated env secret key
+	if !strings.Contains(ts, "env.STRIPE_KEY") {
+		t.Errorf("should use validated env.STRIPE_KEY; got:\n%s", ts)
 	}
 	// Should emit timing-safe signature comparison
-	if !strings.Contains(ts, "timingSafeEqual(Buffer.from(_sig, 'hex'), Buffer.from(_expected, 'hex'))") {
+	if !strings.Contains(ts, "timingSafeEqual(_sigBuf, Buffer.from(_expected, 'hex'))") {
 		t.Errorf("should use timingSafeEqual for comparison; got:\n%s", ts)
 	}
 	// Should return 401 on bad signature
-	if !strings.Contains(ts, "return c.json({ error: 'Invalid signature' }, 401);") {
+	if !strings.Contains(ts, "return c.json({ error: 'Invalid signature' }, 401 as const)") {
 		t.Errorf("should return 401 on bad signature; got:\n%s", ts)
 	}
 	// Should wrap JSON.parse in try/catch
-	if !strings.Contains(ts, "try { data = JSON.parse(_payload); } catch { return c.json({ error: 'Invalid payload' }, 400); }") {
+	if !strings.Contains(ts, "try { data = JSON.parse(_payload); } catch { return c.json({ error: 'Invalid payload' }, 400 as const); }") {
 		t.Errorf("should wrap JSON.parse in try/catch; got:\n%s", ts)
 	}
 }

@@ -447,7 +447,7 @@ func isIdentChar(ch byte) bool {
 
 func isDurationUnit(s string) bool {
 	switch s {
-	case "ms", "s", "h", "min", "hour", "hours", "day", "days":
+	case "ms", "s", "h", "min", "hour", "hours", "d", "day", "days":
 		return true
 	}
 	return false

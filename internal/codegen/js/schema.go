@@ -153,6 +153,17 @@ func (g *Generator) writeFieldConstraints(b *strings.Builder, f *ast.Field) {
 		}
 	}
 
+	hasDefault := false
+	isRequired := false
+	for _, c := range f.Constraints {
+		if c.Kind == "default" {
+			hasDefault = true
+		}
+		if c.Kind == "required" {
+			isRequired = true
+		}
+	}
+
 	for _, c := range f.Constraints {
 		switch c.Kind {
 		case "primary":
@@ -161,6 +172,11 @@ func (g *Generator) writeFieldConstraints(b *strings.Builder, f *ast.Field) {
 			} else {
 				b.WriteString(".primaryKey()")
 			}
+		case "required":
+			// Emit .notNull() unless field has a default (Drizzle sets notNull implicitly with defaults)
+			if !hasDefault {
+				b.WriteString(".notNull()")
+			}
 		case "unique":
 			b.WriteString(".unique()")
 		case "default":
@@ -168,7 +184,15 @@ func (g *Generator) writeFieldConstraints(b *strings.Builder, f *ast.Field) {
 				b.WriteString(".defaultNow()")
 			} else {
 				val := exprToJS(c.Value)
+				// Ident values (e.g., enum variant names like "pending") must be quoted as strings
+				if _, ok := c.Value.(*ast.Ident); ok {
+					val = fmt.Sprintf(`"%s"`, exprToString(c.Value))
+				}
 				b.WriteString(fmt.Sprintf(".default(%s)", val))
+			}
+			// Fields with defaults are implicitly not-null in Drizzle
+			if isRequired {
+				b.WriteString(".notNull()")
 			}
 		case "ref":
 			if ref := exprToString(c.Value); ref != "" {

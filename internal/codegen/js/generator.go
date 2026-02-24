@@ -34,7 +34,7 @@ func New() *Generator {
 
 // emitCtx carries context for arrow statement code generation.
 type emitCtx struct {
-	kind        string            // "endpoint", "function", "middleware"
+	kind        string            // "endpoint", "function", "middleware", "ws"
 	method      string            // HTTP method for endpoints (e.g., "GET", "POST")
 	path        string            // URL path for endpoints (e.g., "/api/todos/:id")
 	ctxVars     map[string]bool   // identifiers injected via middleware (e.g., "auth" -> c.get('auth'))
@@ -44,6 +44,8 @@ type emitCtx struct {
 	singleVars  map[string]bool   // variables bound from fetch (single record, not a collection)
 	asyncFns    map[string]bool   // function/pipe names that should be awaited
 	structEnums map[string]bool   // enum names that have struct-body variants (bracket access → <Name>Config)
+	fkAliases   map[string]string // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
+	generator   *Generator        // back-reference for FK model lookups
 }
 
 // Generate implements codegen.Generator.
@@ -84,6 +86,150 @@ func (g *Generator) buildAsyncFns() map[string]bool {
 		fns[toCamelCase(name)] = true
 	}
 	return fns
+}
+
+// getModelFieldRef checks if a model has a field named fieldName+"_id" with a ref(target) constraint.
+// If found, returns the target model name. This is used to resolve FK relation access patterns
+// like item.product.stock where cart_item has product_id ref(product).
+func (g *Generator) getModelFieldRef(modelName, fieldName string) (targetModel string, ok bool) {
+	for _, block := range g.file.Blocks {
+		if m, isModel := block.(*ast.Model); isModel && m.Name == modelName {
+			for _, f := range m.Fields {
+				if f.Name == fieldName+"_id" {
+					for _, c := range f.Constraints {
+						if c.Kind == "ref" {
+							if ident, isIdent := c.Value.(*ast.Ident); isIdent {
+								return ident.Name, true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// fkAccessInfo describes a foreign key access pattern found in an expression.
+type fkAccessInfo struct {
+	varName     string // camelCase variable name (e.g., "item")
+	fieldName   string // FK field name without _id (e.g., "product")
+	targetModel string // target model name (e.g., "product")
+	fkColumn    string // camelCase FK column name (e.g., "productId")
+}
+
+// scanFKAccessInExpr finds all FK access patterns in an expression tree.
+// Returns deduplicated results keyed by "varName.fieldName".
+func (g *Generator) scanFKAccessInExpr(e ast.Expr, ctx *emitCtx) []fkAccessInfo {
+	seen := make(map[string]bool)
+	var result []fkAccessInfo
+	walkExpr(e, func(node ast.Expr) {
+		fa, isFA := node.(*ast.FieldAccess)
+		if !isFA {
+			return
+		}
+		// We want the intermediate FieldAccess: X.Y where X is a model var
+		baseIdent, isIdent := fa.Base.(*ast.Ident)
+		if !isIdent {
+			return
+		}
+		varNameRaw := baseIdent.Name
+		varNameCamel := toCamelCase(varNameRaw)
+		// Look up the model for this variable
+		modelName := ""
+		if m, found := ctx.varModels[varNameRaw]; found {
+			modelName = m
+		} else if m, found := ctx.varModels[varNameCamel]; found {
+			modelName = m
+		}
+		if modelName == "" {
+			return
+		}
+		// Check if the field access matches a FK ref
+		targetModel, hasRef := g.getModelFieldRef(modelName, fa.Field)
+		if !hasRef {
+			return
+		}
+		key := varNameCamel + "." + fa.Field
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		result = append(result, fkAccessInfo{
+			varName:     varNameCamel,
+			fieldName:   fa.Field,
+			targetModel: targetModel,
+			fkColumn:    toCamelCase(fa.Field + "_id"),
+		})
+	})
+	return result
+}
+
+// scanFKAccessInStmt finds all FK access patterns in a single arrow statement.
+func (g *Generator) scanFKAccessInStmt(stmt ast.ArrowStmt, ctx *emitCtx) []fkAccessInfo {
+	var exprs []ast.Expr
+	switch s := stmt.(type) {
+	case *ast.StepStmt:
+		exprs = append(exprs, s.Expr)
+	case *ast.GuardStmt:
+		exprs = append(exprs, s.Condition)
+	case *ast.WhenStmt:
+		exprs = append(exprs, s.Condition)
+		if s.Inline != nil {
+			exprs = append(exprs, s.Inline)
+		}
+	case *ast.OutputStmt:
+		if s.Value != nil {
+			exprs = append(exprs, s.Value)
+		}
+	}
+	seen := make(map[string]bool)
+	var result []fkAccessInfo
+	for _, e := range exprs {
+		for _, fk := range g.scanFKAccessInExpr(e, ctx) {
+			key := fk.varName + "." + fk.fieldName
+			if !seen[key] {
+				seen[key] = true
+				result = append(result, fk)
+			}
+		}
+	}
+	return result
+}
+
+// emitFKSubQuery emits a sub-query to fetch a related record for an FK access pattern.
+// Returns the alias variable name (e.g., "_product").
+func (g *Generator) emitFKSubQuery(b *strings.Builder, fk fkAccessInfo, indent string) string {
+	alias := "_" + toCamelCase(fk.fieldName)
+	schemaTable := "schema." + toCamelCase(fk.targetModel)
+	b.WriteString(fmt.Sprintf("%sconst %s = (await db.select().from(%s).where(eq(%s.id, %s.%s)))[0];\n",
+		indent, alias, schemaTable, schemaTable, fk.varName, fk.fkColumn))
+	return alias
+}
+
+// inferMapResultBinding checks if a map body produces records of a model,
+// and if subsequent statements reference the pluralized model name.
+// Returns the inferred binding name if found, or empty string.
+// Example: map items: save order_item { ... } -> checks if later stmts use "orderItems"
+func (g *Generator) inferMapResultBinding(bodyExpr ast.Expr, laterStmts []ast.ArrowStmt) string {
+	// Extract the model name from the map body (must be a save/data op)
+	bodyFn, ok := bodyExpr.(*ast.FnCall)
+	if !ok || !isDataOp(bodyFn.Name) || len(bodyFn.Args) == 0 {
+		return ""
+	}
+	modelIdent, ok := bodyFn.Args[0].(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	// The inferred name is the pluralized camelCase model name
+	inferredName := toCamelCase(pluralize(modelIdent.Name))
+
+	// Check if any later statement references this name
+	laterRefs := collectReferencedIdents(laterStmts)
+	if laterRefs[inferredName] {
+		return inferredName
+	}
+	return ""
 }
 
 // generateAll produces all output files from the AST.
@@ -192,7 +338,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	g.hasStorage = hasStorage
 
 	// package.json
-	files = append(files, g.genPackageJSON(bp, hasDB, hasCache, hasStorage, len(workers)+len(schedules) > 0, len(endpoints) > 0))
+	files = append(files, g.genPackageJSON(bp, hasDB, hasCache, hasStorage, len(workers)+len(schedules) > 0, len(endpoints) > 0, len(ws) > 0))
 
 	// tsconfig.json
 	files = append(files, g.genTSConfig())
@@ -204,7 +350,12 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	files = append(files, g.genIndex(bp, endpoints, streams, ws, middlewares, subscribes, workers, schedules, hasDB))
 
 	// src/lib/env.ts — env validation
-	files = append(files, g.genEnvTS(secrets, envs))
+	// Collect extra infra env vars that may not be declared as secrets
+	var extraEnvVars []string
+	if hasCache {
+		extraEnvVars = append(extraEnvVars, "REDIS_URL")
+	}
+	files = append(files, g.genEnvTS(secrets, envs, extraEnvVars...))
 
 	// src/lib/errors.ts
 	files = append(files, g.genErrors())
@@ -250,9 +401,54 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// src/functions/<name>.ts
+	// Collect all impl module stubs that need merging (same module, multiple functions)
+	implModuleFuncs := make(map[string][]string) // stub path -> func names
+	for _, fn := range fns {
+		if fn.Impl != nil {
+			mod := ""
+			funcName := toCamelCase(fn.Name)
+			for _, kv := range fn.Impl.Entries {
+				if kv.Key == "module" {
+					mod = exprToString(kv.Value)
+					if !strings.HasSuffix(mod, ".js") {
+						mod += ".js"
+					}
+				}
+				if kv.Key == "func" {
+					funcName = exprToString(kv.Value)
+				}
+			}
+			rawMod := strings.TrimSuffix(mod, ".js")
+			if strings.HasPrefix(rawMod, "./internal/") {
+				stubPath := fmt.Sprintf("src/functions/%s.ts", strings.TrimPrefix(rawMod, "./"))
+				implModuleFuncs[stubPath] = append(implModuleFuncs[stubPath], funcName)
+			}
+		}
+	}
 	for _, fn := range fns {
 		files = append(files, g.genFunction(fn)...)
-
+	}
+	// Merge stubs: when multiple functions share a module, combine their exports
+	for stubPath, funcNames := range implModuleFuncs {
+		if len(funcNames) <= 1 {
+			continue
+		}
+		var sb strings.Builder
+		sb.WriteString("// Stub generated by Blueprint — implement these functions here\n")
+		for _, fn := range funcNames {
+			sb.WriteString(fmt.Sprintf("export async function %s(...args: any[]): Promise<any> {\n", fn))
+			sb.WriteString(fmt.Sprintf("  throw new Error('Not implemented: %s');\n", fn))
+			sb.WriteString("}\n\n")
+		}
+		merged := codegen.OutputFile{Path: stubPath, Content: []byte(sb.String())}
+		// Remove all existing stubs for this path, then append merged one
+		filtered := files[:0]
+		for _, f := range files {
+			if f.Path != stubPath {
+				filtered = append(filtered, f)
+			}
+		}
+		files = append(filtered, merged)
 	}
 
 	// src/pipes/<name>.ts
@@ -308,11 +504,34 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// src/subscriptions/<name>.ts + src/lib/events.ts
-	if len(subscribes) > 0 {
-		files = append(files, g.genEventsLib())
-		for _, sub := range subscribes {
-			files = append(files, g.genSubscribe(sub))
+	// Generate events lib when there are subscribe blocks, STREAM event handlers, or WS emit calls
+	needsEventsLib := len(subscribes) > 0
+	if !needsEventsLib {
+		for _, se := range streams {
+			for _, h := range se.Handlers {
+				if h.EventName != "" && h.Timeout == "" {
+					needsEventsLib = true
+					break
+				}
+			}
+			if needsEventsLib {
+				break
+			}
 		}
+	}
+	if !needsEventsLib {
+		for _, we := range ws {
+			if stmtsHaveCall(we.OnConnect, "emit") || stmtsHaveCall(we.OnMessage, "emit") || stmtsHaveCall(we.OnDisconnect, "emit") {
+				needsEventsLib = true
+				break
+			}
+		}
+	}
+	if needsEventsLib {
+		files = append(files, g.genEventsLib())
+	}
+	for _, sub := range subscribes {
+		files = append(files, g.genSubscribe(sub))
 	}
 
 	// src/lib/external.ts
@@ -496,6 +715,10 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 	if ctx.singleVars == nil {
 		ctx.singleVars = make(map[string]bool)
 	}
+	if ctx.fkAliases == nil {
+		ctx.fkAliases = make(map[string]string)
+	}
+	ctx.generator = g
 
 	// Pre-scan: find input variables that are later reassigned (for let vs const)
 	reassigned := collectStepBindingsReassigned(stmts)
@@ -527,7 +750,8 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 		ctx.declared[name] = true
 	}
 
-	for _, stmt := range stmts {
+	for stmtIdx, stmt := range stmts {
+		_ = stmtIdx // used for look-ahead in map result capture
 		switch s := stmt.(type) {
 		case *ast.InputStmt:
 			name := toCamelCase(s.Name)
@@ -598,25 +822,111 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 				}
 			}
 
-			// Special-case: map <variable>: <expr> — use model name as loop param and fix inner boundVars
+			// Special-case: map <variable>: <expr> — use "item" as loop param (bp convention)
 			if fn, ok := s.Expr.(*ast.FnCall); ok && fn.Name == "map" && len(fn.Args) >= 2 {
 				if ident, ok := fn.Args[0].(*ast.Ident); ok {
 					if modelName, tracked := ctx.varModels[ident.Name]; tracked {
 						collectionVar := toCamelCase(ident.Name)
-						itemVar := toCamelCase(modelName)
-						// Create inner ctx where boundVars maps modelName → itemVar
-						// so update/delete in the body use itemVar.id (the loop param) not collection.id
+						itemVar := "item"
+						// Create inner ctx where boundVars maps modelName → "item"
+						// so update/delete in the body use item.id (the loop param) not collection.id
 						innerCtx := ctx
 						innerCtx.boundVars = make(map[string]string)
 						for k, v := range ctx.boundVars {
 							innerCtx.boundVars[k] = v
 						}
 						innerCtx.boundVars[modelName] = itemVar
-						body := exprToJSWithCtx(fn.Args[1], &innerCtx)
-						b.WriteString(fmt.Sprintf("%sawait Promise.all(%s.map(async (%s: any) => %s));\n",
-							indent, collectionVar, itemVar, body))
+						// Also set varModels for "item" → modelName so FK lookups work on the loop var
+						innerCtx.varModels = make(map[string]string)
+						for k, v := range ctx.varModels {
+							innerCtx.varModels[k] = v
+						}
+						innerCtx.varModels[itemVar] = modelName
+						innerCtx.fkAliases = make(map[string]string)
+						for k, v := range ctx.fkAliases {
+							innerCtx.fkAliases[k] = v
+						}
+
+						// Check if the body expression has FK access patterns (e.g., item.product.price_cents)
+						bodyFKAccesses := g.scanFKAccessInExpr(fn.Args[1], &innerCtx)
+						if len(bodyFKAccesses) > 0 {
+							// Need a block-body lambda to inject FK sub-queries
+							// Build FK sub-queries for inside the lambda
+							var fkLines strings.Builder
+							for _, fk := range bodyFKAccesses {
+								key := fk.varName + "." + fk.fieldName
+								if _, already := innerCtx.fkAliases[key]; !already {
+									alias := "_" + toCamelCase(fk.fieldName)
+									schemaTable := "schema." + toCamelCase(fk.targetModel)
+									fkLines.WriteString(fmt.Sprintf("%s  const %s = (await db.select().from(%s).where(eq(%s.id, %s.%s)))[0];\n",
+										indent, alias, schemaTable, schemaTable, fk.varName, fk.fkColumn))
+									innerCtx.fkAliases[key] = alias
+								}
+							}
+							body := exprToJSWithCtx(fn.Args[1], &innerCtx)
+
+							// Determine if we need to capture the map result
+							mapResultVar := s.Binding
+							if mapResultVar == "" {
+								mapResultVar = g.inferMapResultBinding(fn.Args[1], stmts[stmtIdx+1:])
+							}
+
+							if mapResultVar != "" {
+								name := toCamelCase(mapResultVar)
+								b.WriteString(fmt.Sprintf("%sconst %s = await Promise.all(%s.map(async (%s: any) => {\n",
+									indent, name, collectionVar, itemVar))
+								b.WriteString(fkLines.String())
+								b.WriteString(fmt.Sprintf("%s  return %s;\n", indent, body))
+								b.WriteString(fmt.Sprintf("%s}));\n", indent))
+								ctx.declared[name] = true
+								// Track the variable model for the result (pluralized model)
+								if bodyFn, ok := fn.Args[1].(*ast.FnCall); ok && isDataOp(bodyFn.Name) && len(bodyFn.Args) > 0 {
+									if modelIdent, ok := bodyFn.Args[0].(*ast.Ident); ok {
+										ctx.varModels[name] = modelIdent.Name
+									}
+								}
+							} else {
+								b.WriteString(fmt.Sprintf("%sawait Promise.all(%s.map(async (%s: any) => {\n",
+									indent, collectionVar, itemVar))
+								b.WriteString(fkLines.String())
+								b.WriteString(fmt.Sprintf("%s  return %s;\n", indent, body))
+								b.WriteString(fmt.Sprintf("%s}));\n", indent))
+							}
+						} else {
+							body := exprToJSWithCtx(fn.Args[1], &innerCtx)
+
+							// Determine if we need to capture the map result
+							mapResultVar := s.Binding
+							if mapResultVar == "" {
+								mapResultVar = g.inferMapResultBinding(fn.Args[1], stmts[stmtIdx+1:])
+							}
+
+							if mapResultVar != "" {
+								name := toCamelCase(mapResultVar)
+								b.WriteString(fmt.Sprintf("%sconst %s = await Promise.all(%s.map(async (%s: any) => %s));\n",
+									indent, name, collectionVar, itemVar, body))
+								ctx.declared[name] = true
+								if bodyFn, ok := fn.Args[1].(*ast.FnCall); ok && isDataOp(bodyFn.Name) && len(bodyFn.Args) > 0 {
+									if modelIdent, ok := bodyFn.Args[0].(*ast.Ident); ok {
+										ctx.varModels[name] = modelIdent.Name
+									}
+								}
+							} else {
+								b.WriteString(fmt.Sprintf("%sawait Promise.all(%s.map(async (%s: any) => %s));\n",
+									indent, collectionVar, itemVar, body))
+							}
+						}
 						continue
 					}
+				}
+			}
+
+			// Pre-scan: emit FK sub-queries for any FK access patterns in this step
+			for _, fk := range g.scanFKAccessInStmt(stmt, &ctx) {
+				key := fk.varName + "." + fk.fieldName
+				if _, already := ctx.fkAliases[key]; !already {
+					alias := g.emitFKSubQuery(b, fk, indent)
+					ctx.fkAliases[key] = alias
 				}
 			}
 
@@ -645,9 +955,17 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 			}
 
 		case *ast.GuardStmt:
+			// Pre-scan: emit FK sub-queries for any FK access patterns in the guard condition
+			for _, fk := range g.scanFKAccessInStmt(stmt, &ctx) {
+				key := fk.varName + "." + fk.fieldName
+				if _, already := ctx.fkAliases[key]; !already {
+					alias := g.emitFKSubQuery(b, fk, indent)
+					ctx.fkAliases[key] = alias
+				}
+			}
 			cond := exprToJSWithCtx(s.Condition, &ctx)
 			if ctx.kind == "endpoint" {
-				b.WriteString(fmt.Sprintf("%sif (!(%s)) return c.json({ error: %q }, %s);\n",
+				b.WriteString(fmt.Sprintf("%sif (!(%s)) return c.json({ error: %q }, %s as const);\n",
 					indent, cond, s.Message, s.Status))
 			} else {
 				b.WriteString(fmt.Sprintf("%sif (!(%s)) throw new BpError(%s, %q);\n",
@@ -681,10 +999,13 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 			if ctx.kind == "endpoint" {
 				// For 204 No Content, use c.body(null, 204)
 				if status == "204" {
-					b.WriteString(fmt.Sprintf("%sreturn c.body(null, 204);\n", indent))
+					b.WriteString(fmt.Sprintf("%sreturn c.body(null, 204 as const);\n", indent))
 				} else {
-					b.WriteString(fmt.Sprintf("%sreturn c.json(%s, %s);\n", indent, val, status))
+					b.WriteString(fmt.Sprintf("%sreturn c.json(%s, %s as const);\n", indent, val, status))
 				}
+			} else if ctx.kind == "ws" {
+				// WS context — send message via WebSocket
+				b.WriteString(fmt.Sprintf("%sws.send(JSON.stringify(%s));\n", indent, val))
 			} else {
 				// function/pipe/middleware context — plain return
 				b.WriteString(fmt.Sprintf("%sreturn %s;\n", indent, val))

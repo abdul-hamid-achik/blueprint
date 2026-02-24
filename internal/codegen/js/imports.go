@@ -86,6 +86,12 @@ func (g *Generator) collectImports(stmts []ast.ArrowStmt) *importCollector {
 			if isDataOp(v.Name) || isBuiltinFn(v.Name) {
 				return
 			}
+			// Skip model names — they appear as FnCall nodes inside data op
+			// patterns like fetch room(id) or as arguments to builtins like
+			// join(room(id)), but they are not real function calls.
+			if g.declaredModels[v.Name] {
+				return
+			}
 			if v.Name == "upload" || v.Name == "download" {
 				ic.storageOps[v.Name] = true
 				return
@@ -193,6 +199,23 @@ func writeDataImports(b *strings.Builder) {
 	b.WriteString("import { db } from '../lib/db.js';\n")
 	b.WriteString("import * as schema from '../models/schema.js';\n")
 	b.WriteString("import { eq, ne, lt, gt, lte, gte, and, or, sql, desc, asc, inArray } from 'drizzle-orm';\n")
+}
+
+// stmtsHaveCall checks if any arrow statement contains a function call with the given name.
+func stmtsHaveCall(stmts []ast.ArrowStmt, name string) bool {
+	for _, s := range stmts {
+		if step, ok := s.(*ast.StepStmt); ok {
+			if fn, ok := step.Expr.(*ast.FnCall); ok && fn.Name == name {
+				return true
+			}
+		}
+		if when, ok := s.(*ast.WhenStmt); ok {
+			if stmtsHaveCall(when.Body, name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // stmtsHaveDataOps walks a list of arrow statements and returns true if any

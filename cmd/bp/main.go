@@ -268,6 +268,14 @@ func cmdCheck(filename string) int {
 		return 1
 	}
 
+	// Resolve include statements — merge blocks from included files
+	if errs := resolveIncludes(file, filename); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, e)
+		}
+		return 1
+	}
+
 	// Semantic checking
 	checkErrors := checker.Check(file)
 
@@ -299,6 +307,14 @@ func cmdBuild(filename, outDir string) int {
 		return 1
 	}
 
+	// Resolve include statements — merge blocks from included files
+	if errs := resolveIncludes(file, filename); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, e)
+		}
+		return 1
+	}
+
 	checkErrors := checker.Check(file)
 	if len(checkErrors) > 0 {
 		for _, e := range checkErrors {
@@ -306,6 +322,14 @@ func cmdBuild(filename, outDir string) int {
 		}
 		fmt.Fprintf(os.Stderr, "\n%d semantic error(s) found\n", len(checkErrors))
 		return 1
+	}
+
+	// Clean output directory to remove stale files from previous builds
+	if info, err := os.Stat(outDir); err == nil && info.IsDir() {
+		if err := os.RemoveAll(outDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error cleaning output directory: %s\n", err)
+			return 2
+		}
 	}
 
 	gen := js.New()
@@ -316,6 +340,77 @@ func cmdBuild(filename, outDir string) int {
 
 	fmt.Printf("Built %s -> %s/\n", filename, outDir)
 	return 0
+}
+
+// resolveIncludes processes include statements in the parsed file, reading and
+// parsing included files and merging their blocks into the main file's AST.
+// It detects circular includes and returns errors for any issues found.
+func resolveIncludes(file *ast.File, mainFilename string) []string {
+	baseDir := filepath.Dir(mainFilename)
+	seen := map[string]bool{mainFilename: true}
+	return resolveIncludesRecursive(file, baseDir, seen)
+}
+
+func resolveIncludesRecursive(file *ast.File, baseDir string, seen map[string]bool) []string {
+	var errors []string
+	var newBlocks []ast.TopLevel
+
+	for _, block := range file.Blocks {
+		inc, ok := block.(*ast.Include)
+		if !ok {
+			newBlocks = append(newBlocks, block)
+			continue
+		}
+
+		// Resolve include path relative to the current file's directory
+		incPath := filepath.Join(baseDir, inc.Path)
+
+		// Check for circular includes
+		absPath, err := filepath.Abs(incPath)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: cannot resolve include path %q: %s", inc.Location(), inc.Path, err))
+			continue
+		}
+		if seen[absPath] {
+			errors = append(errors, fmt.Sprintf("%s: circular include detected: %q", inc.Location(), inc.Path))
+			continue
+		}
+		seen[absPath] = true
+
+		// Read and parse the included file
+		src, err := os.ReadFile(incPath)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: cannot read include %q: %s", inc.Location(), inc.Path, err))
+			continue
+		}
+
+		incFile, parseErrors := parser.ParsePartialFile(incPath, src)
+		if len(parseErrors) > 0 {
+			for _, e := range parseErrors {
+				errors = append(errors, parser.FormatError(e, src))
+			}
+			errors = append(errors, fmt.Sprintf("%d error(s) in included file %q", len(parseErrors), inc.Path))
+			continue
+		}
+
+		// Recursively resolve includes in the included file
+		incBaseDir := filepath.Dir(incPath)
+		if errs := resolveIncludesRecursive(incFile, incBaseDir, seen); len(errs) > 0 {
+			errors = append(errors, errs...)
+			continue
+		}
+
+		// Merge blocks from included file (skip its blueprint block — only one allowed)
+		for _, b := range incFile.Blocks {
+			if _, isBP := b.(*ast.Blueprint); isBP {
+				continue // skip duplicate blueprint blocks from includes
+			}
+			newBlocks = append(newBlocks, b)
+		}
+	}
+
+	file.Blocks = newBlocks
+	return errors
 }
 
 func cmdFmt(filename string, write, check bool) int {
@@ -372,6 +467,13 @@ func cmdLint(filename string) int {
 		return 1
 	}
 
+	if errs := resolveIncludes(file, filename); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, e)
+		}
+		return 1
+	}
+
 	checkErrors := checker.Check(file)
 	if len(checkErrors) > 0 {
 		for _, e := range checkErrors {
@@ -424,6 +526,13 @@ func cmdDocs(filename, outFile string) int {
 			fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
 		}
 		fmt.Fprintf(os.Stderr, "\n%d syntax error(s) found\n", len(parseErrors))
+		return 1
+	}
+
+	if errs := resolveIncludes(file, filename); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, e)
+		}
 		return 1
 	}
 

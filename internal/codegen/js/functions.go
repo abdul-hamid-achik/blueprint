@@ -268,7 +268,7 @@ func (g *Generator) genMiddleware(mw *ast.Middleware) codegen.OutputFile {
 
 	b.WriteString(fmt.Sprintf("export const %s = createMiddleware(async (c, next) => {\n", name))
 
-	ctx := emitCtx{kind: "middleware"}
+	ctx := emitCtx{kind: "middleware", asyncFns: g.buildAsyncFns()}
 
 	if len(mw.Before) > 0 {
 		b.WriteString("  // before\n")
