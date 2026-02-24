@@ -1,7 +1,7 @@
 @ "A simple hello world API"
 blueprint "hello-world" {
   version "1.0.0"
-  port    3000
+  port 3000
   runtime node
 }
 
@@ -12,7 +12,6 @@ GET /api/health {
 
 @ "Greeting endpoint"
 GET /api/hello/:name {
-  <- name string required
-
+  <- name  string  required
   -> 200 { message: "Hello, {name}!" }
 }
