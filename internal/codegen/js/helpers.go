@@ -541,7 +541,7 @@ func typeToZod(t ast.TypeExpr) string {
 	switch v := t.(type) {
 	case *ast.PrimitiveType:
 		switch v.Name {
-		case "string":
+		case "string", "text":
 			return "z.string()"
 		case "int":
 			return "z.number().int()"
@@ -602,7 +602,7 @@ func typeToTS(t ast.TypeExpr) string {
 	switch v := t.(type) {
 	case *ast.PrimitiveType:
 		switch v.Name {
-		case "string", "uuid":
+		case "string", "text", "uuid":
 			return "string"
 		case "int", "float", "money":
 			return "number"
@@ -641,7 +641,7 @@ func typeToDrizzle(t ast.TypeExpr) string {
 	switch v := t.(type) {
 	case *ast.PrimitiveType:
 		switch v.Name {
-		case "string":
+		case "string", "text":
 			return "text"
 		case "int":
 			return "integer"
@@ -1239,9 +1239,22 @@ func whereExprToJSWithCtx(cond ast.Expr, schemaTable string, ctx *emitCtx) strin
 	// Generate a conditional filter: if the variable is truthy, apply sql ILIKE or eq
 	if ident, ok := cond.(*ast.Ident); ok {
 		varName := toCamelCase(ident.Name)
-		// Generate: varName ? sql`... ILIKE ...` : undefined
-		// Use ILIKE for string-like search params (q, search, query, name, title)
 		if isSearchParam(ident.Name) {
+			// Find the model's text/string columns to search across
+			textCols := findTextColumns(schemaTable, ctx)
+			if len(textCols) > 0 {
+				// Generate or(sql`col1 ILIKE ...`, sql`col2 ILIKE ...`) across all text columns
+				parts := make([]string, len(textCols))
+				for i, col := range textCols {
+					parts[i] = fmt.Sprintf("sql`${%s.%s} ILIKE ${'%%' + %s + '%%'}`",
+						schemaTable, col, varName)
+				}
+				if len(parts) == 1 {
+					return fmt.Sprintf("(%s ? %s : undefined)", varName, parts[0])
+				}
+				return fmt.Sprintf("(%s ? or(%s) : undefined)", varName, strings.Join(parts, ", "))
+			}
+			// Fallback: no text columns found, search against first column
 			return fmt.Sprintf("(%s ? sql`${%s} ILIKE ${'%%' + %s + '%%'}` : undefined)",
 				varName, schemaTable, varName)
 		}
@@ -1260,6 +1273,44 @@ func isSearchParam(name string) bool {
 		return true
 	}
 	return false
+}
+
+// isTextType returns true if a field type is a searchable text type.
+func isTextType(name string) bool {
+	switch name {
+	case "string", "text", "varchar":
+		return true
+	}
+	return false
+}
+
+// findTextColumns returns the camelCase column names of text/string fields for a model.
+// It looks up the model definition through the generator's AST file.
+func findTextColumns(schemaTable string, ctx *emitCtx) []string {
+	if ctx == nil || ctx.generator == nil || ctx.generator.file == nil {
+		return nil
+	}
+	// Extract model name from schemaTable (e.g., "schema.note" -> "note")
+	modelCamel := strings.TrimPrefix(schemaTable, "schema.")
+	var model *ast.Model
+	for _, node := range ctx.generator.file.Blocks {
+		if m, ok := node.(*ast.Model); ok {
+			if toCamelCase(m.Name) == modelCamel {
+				model = m
+				break
+			}
+		}
+	}
+	if model == nil {
+		return nil
+	}
+	var cols []string
+	for _, f := range model.Fields {
+		if pt, ok := f.Type.(*ast.PrimitiveType); ok && isTextType(pt.Name) {
+			cols = append(cols, toCamelCase(f.Name))
+		}
+	}
+	return cols
 }
 
 // isDurationField checks if a field name is a duration unit (used for N.days, N.hours patterns).

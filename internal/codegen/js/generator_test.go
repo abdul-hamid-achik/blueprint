@@ -1750,7 +1750,7 @@ func TestQueryWithOptionalWhereParams(t *testing.T) {
 }
 model note {
   title    string
-  content  text
+  body     string
   pinned   bool
 }
 GET /api/notes {
@@ -1774,9 +1774,12 @@ GET /api/notes {
 		t.Fatalf("notes.ts not generated: %v", err)
 	}
 	ts := string(tsBytes)
-	// q should generate ILIKE pattern (text search param)
-	if !strings.Contains(ts, "ILIKE") {
-		t.Errorf("search param 'q' should generate ILIKE; got:\n%s", ts)
+	// q should generate ILIKE targeting specific text columns, not the whole table
+	if !strings.Contains(ts, "schema.note.title} ILIKE") {
+		t.Errorf("search param 'q' should target schema.note.title; got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "schema.note.body} ILIKE") {
+		t.Errorf("search param 'q' should target schema.note.body; got:\n%s", ts)
 	}
 	// pinned should generate eq() with null check
 	if !strings.Contains(ts, "eq(schema.note.pinned, pinned)") {

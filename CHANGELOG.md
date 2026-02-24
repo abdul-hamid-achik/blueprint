@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-02-24
+
+### Fixed
+
+- **Search ILIKE targets columns, not table**: `where(q)` now generates `or(sql\`${schema.note.title} ILIKE ...\`, sql\`${schema.note.content} ILIKE ...\`)` across all string/text columns in the model, instead of the whole table reference.
+- **`text` type support**: `text` is now a recognized primitive type throughout the toolchain (parser, checker, codegen). Maps to Drizzle `text()` column, TypeScript `string`, and Zod `z.string()`.
+
 ## [0.3.1] - 2026-02-24
 
 ### Fixed

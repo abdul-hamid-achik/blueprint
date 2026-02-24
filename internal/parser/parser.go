@@ -516,7 +516,7 @@ func typeExprToExpr(typ ast.TypeExpr) ast.Expr {
 func (p *Parser) isTypeStartAt(offset int) bool {
 	tok := p.peekAt(offset)
 	switch tok.Value {
-	case "string", "int", "float", "bool", "uuid", "timestamp", "json", "file", "money":
+	case "string", "text", "int", "float", "bool", "uuid", "timestamp", "json", "file", "money":
 		return true
 	}
 	if tok.Kind == lexer.TokenEnum {
@@ -2191,7 +2191,7 @@ func (p *Parser) isPrimitiveType() bool {
 		return false
 	}
 	switch tok.Value {
-	case "string", "int", "float", "bool", "uuid", "timestamp", "json", "file", "money":
+	case "string", "text", "int", "float", "bool", "uuid", "timestamp", "json", "file", "money":
 		return true
 	}
 	return false
