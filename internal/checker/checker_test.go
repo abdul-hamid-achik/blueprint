@@ -818,3 +818,149 @@ func TestIsPascalCase(t *testing.T) {
 	}
 }
 
+// ═══════════════════════════════════════════════
+// Levenshtein Distance Tests
+// ═══════════════════════════════════════════════
+
+func TestLevenshtein(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0},
+		{"", "abc", 3},
+		{"abc", "", 3},
+		{"abc", "abc", 0},
+		{"kitten", "sitting", 3},
+		{"saturday", "sunday", 3},
+		{"abc", "abd", 1},
+		{"abc", "abcd", 1},
+		{"a", "b", 1},
+	}
+	for _, tt := range tests {
+		got := levenshtein(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("levenshtein(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestSuggestName(t *testing.T) {
+	candidates := []string{"user", "item", "order", "product"}
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"usr", "user"},      // close to "user"
+		{"itm", "item"},      // close to "item"
+		{"ordr", "order"},    // close to "order"
+		{"produc", "product"}, // close to "product"
+		{"zzzzzzzzz", ""},    // too far from everything
+		{"User", "user"},     // case insensitive
+	}
+	for _, tt := range tests {
+		got := suggestName(tt.name, candidates)
+		if got != tt.want {
+			t.Errorf("suggestName(%q, ...) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestSuggestNameEmptyCandidates(t *testing.T) {
+	got := suggestName("foo", nil)
+	if got != "" {
+		t.Errorf("suggestName with nil candidates = %q, want empty", got)
+	}
+}
+
+// ═══════════════════════════════════════════════
+// "Did you mean?" Integration Tests
+// ═══════════════════════════════════════════════
+
+func TestUnknownMiddlewareWithSuggestion(t *testing.T) {
+	errs := check(t, header+`
+middleware require_auth {
+  before {
+    |> guard header.Authorization -> 401 "Missing auth"
+  }
+}
+POST /api/test {
+  use reqire_auth
+  -> 200 "ok"
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `unknown middleware "reqire_auth"`)
+	// Check the hint contains a suggestion
+	if !strings.Contains(errs[0].Hint, `did you mean "require_auth"`) {
+		t.Errorf("expected hint to suggest 'require_auth', got hint: %s", errs[0].Hint)
+	}
+}
+
+func TestUnknownTypeWithSuggestion(t *testing.T) {
+	errs := check(t, headerWithDB+`
+enum Status {
+  active
+  inactive
+}
+model item {
+  id     uuid    primary
+  status Statsu  required
+}
+`)
+	expectErrorContaining(t, errs, `unknown type "Statsu"`)
+	// Find the error about the unknown type
+	for _, e := range errs {
+		if strings.Contains(e.Message, `unknown type "Statsu"`) {
+			if !strings.Contains(e.Hint, `did you mean "Status"`) {
+				t.Errorf("expected hint to suggest 'Status', got hint: %s", e.Hint)
+			}
+			return
+		}
+	}
+}
+
+func TestUnknownModelRefWithSuggestion(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model user {
+  id uuid primary
+}
+model post {
+  id      uuid primary
+  user_id uuid ref(usr)
+}
+`)
+	expectErrorContaining(t, errs, `ref references unknown model "usr"`)
+	for _, e := range errs {
+		if strings.Contains(e.Message, `ref references unknown model "usr"`) {
+			if !strings.Contains(e.Hint, `did you mean "user"`) {
+				t.Errorf("expected hint to suggest 'user', got hint: %s", e.Hint)
+			}
+			return
+		}
+	}
+}
+
+func TestNamesOfKind(t *testing.T) {
+	scope := NewScope(nil)
+	scope.Define(&Symbol{Name: "user", Kind: SymModel})
+	scope.Define(&Symbol{Name: "item", Kind: SymModel})
+	scope.Define(&Symbol{Name: "process", Kind: SymFn})
+
+	models := scope.NamesOfKind(SymModel)
+	if len(models) != 2 {
+		t.Fatalf("expected 2 model names, got %d", len(models))
+	}
+
+	fns := scope.NamesOfKind(SymFn)
+	if len(fns) != 1 {
+		t.Fatalf("expected 1 fn name, got %d", len(fns))
+	}
+
+	pipes := scope.NamesOfKind(SymPipe)
+	if len(pipes) != 0 {
+		t.Fatalf("expected 0 pipe names, got %d", len(pipes))
+	}
+}
+

@@ -217,9 +217,8 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 	case *ast.Ident:
 		name := toCamelCase(v.Name)
 		// If this identifier is a middleware-injected context variable, use c.get()
-		// Cast (c as any) to bypass Hono's strict typed-context restriction.
 		if ctx != nil && ctx.ctxVars != nil && ctx.ctxVars[v.Name] {
-			return fmt.Sprintf("(c as any).get('%s')", name)
+			return fmt.Sprintf("c.get('%s')", name)
 		}
 		return name
 	case *ast.DurationLit:

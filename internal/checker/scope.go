@@ -75,3 +75,22 @@ func (s *Scope) Lookup(name string) *Symbol {
 	}
 	return nil
 }
+
+// NamesOfKind returns all symbol names of the given kind in this scope and parent scopes.
+func (s *Scope) NamesOfKind(kind SymbolKind) []string {
+	var names []string
+	s.collectNamesOfKind(kind, &names, make(map[string]bool))
+	return names
+}
+
+func (s *Scope) collectNamesOfKind(kind SymbolKind, names *[]string, seen map[string]bool) {
+	for _, sym := range s.symbols {
+		if sym.Kind == kind && !seen[sym.Name] {
+			*names = append(*names, sym.Name)
+			seen[sym.Name] = true
+		}
+	}
+	if s.parent != nil {
+		s.parent.collectNamesOfKind(kind, names, seen)
+	}
+}

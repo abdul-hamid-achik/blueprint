@@ -305,18 +305,28 @@ func (c *Checker) checkTest(n *ast.Test) {
 func (c *Checker) checkTestGroup(n *ast.TestGroup) {
 	c.checkSnakeCase(n.Name, "test_group", n.Loc)
 	// Check that all referenced tests exist in this file
+	var testNames []string
+	for _, block := range c.file.Blocks {
+		if t, ok := block.(*ast.Test); ok {
+			testNames = append(testNames, t.Name)
+		}
+	}
 	for _, testName := range n.Tests {
 		found := false
-		for _, block := range c.file.Blocks {
-			if t, ok := block.(*ast.Test); ok && t.Name == testName {
+		for _, tn := range testNames {
+			if tn == testName {
 				found = true
 				break
 			}
 		}
 		if !found {
+			hint := "Define the test or fix the name"
+			if suggestion := suggestName(testName, testNames); suggestion != "" {
+				hint += fmt.Sprintf("; did you mean %q?", suggestion)
+			}
 			c.addError(n.Loc,
 				fmt.Sprintf("test_group references unknown test %q", testName),
-				"Define the test or fix the name",
+				hint,
 			)
 		}
 	}
@@ -400,9 +410,16 @@ func (c *Checker) checkTypeRef(te ast.TypeExpr) {
 	case *ast.NamedType:
 		if !IsPrimitive(t.Name) {
 			if c.global.Lookup(t.Name) == nil {
+				hint := "Define it with type, alias, or enum"
+				candidates := append(c.global.NamesOfKind(SymType),
+					append(c.global.NamesOfKind(SymEnum),
+						c.global.NamesOfKind(SymAlias)...)...)
+				if suggestion := suggestName(t.Name, candidates); suggestion != "" {
+					hint += fmt.Sprintf("; did you mean %q?", suggestion)
+				}
 				c.addError(t.Loc,
 					fmt.Sprintf("unknown type %q", t.Name),
-					"Define it with type, alias, or enum",
+					hint,
 				)
 			}
 		}
@@ -417,9 +434,13 @@ func (c *Checker) checkTypeRef(te ast.TypeExpr) {
 func (c *Checker) checkRefTarget(expr ast.Expr, loc lexer.Loc) {
 	if id, ok := expr.(*ast.Ident); ok {
 		if sym := c.global.Lookup(id.Name); sym == nil || sym.Kind != SymModel {
+			hint := "Define the model or fix the name"
+			if suggestion := suggestName(id.Name, c.global.NamesOfKind(SymModel)); suggestion != "" {
+				hint += fmt.Sprintf("; did you mean %q?", suggestion)
+			}
 			c.addError(loc,
 				fmt.Sprintf("ref references unknown model %q", id.Name),
-				"Define the model or fix the name",
+				hint,
 			)
 		}
 	}
@@ -441,9 +462,18 @@ func (c *Checker) checkMiddlewareRef(name string, loc lexer.Loc) {
 	}
 	sym := c.global.Lookup(name)
 	if sym == nil {
+		hint := "Define it with: middleware " + name + " { ... }"
+		// Gather candidates from both user-defined and builtin middleware
+		candidates := c.global.NamesOfKind(SymMiddleware)
+		for builtin := range builtinMiddleware {
+			candidates = append(candidates, builtin)
+		}
+		if suggestion := suggestName(name, candidates); suggestion != "" {
+			hint += fmt.Sprintf("; did you mean %q?", suggestion)
+		}
 		c.addError(loc,
 			fmt.Sprintf("unknown middleware %q", name),
-			"Define it with: middleware "+name+" { ... }",
+			hint,
 		)
 		return
 	}
@@ -596,6 +626,57 @@ func (c *Checker) checkPascalCase(name, what string, loc lexer.Loc) {
 			"Start with uppercase, use mixed case (e.g. MyThing)",
 		)
 	}
+}
+
+// ═══════════════════════════════════════════════
+// "Did you mean?" Suggestions
+// ═══════════════════════════════════════════════
+
+// levenshtein computes the edit distance between two strings.
+func levenshtein(a, b string) int {
+	la, lb := len(a), len(b)
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
+
+	prev := make([]int, lb+1)
+	curr := make([]int, lb+1)
+	for j := range prev {
+		prev[j] = j
+	}
+
+	for i := 1; i <= la; i++ {
+		curr[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			curr[j] = min(curr[j-1]+1, min(prev[j]+1, prev[j-1]+cost))
+		}
+		prev, curr = curr, prev
+	}
+	return prev[lb]
+}
+
+// suggestName finds the closest match from candidates within a threshold.
+func suggestName(name string, candidates []string) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	bestDist := len(name)/2 + 1 // threshold: half the name length + 1
+	best := ""
+	for _, c := range candidates {
+		d := levenshtein(strings.ToLower(name), strings.ToLower(c))
+		if d < bestDist {
+			bestDist = d
+			best = c
+		}
+	}
+	return best
 }
 
 // ═══════════════════════════════════════════════
