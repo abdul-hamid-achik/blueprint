@@ -44,8 +44,9 @@ type emitCtx struct {
 	singleVars  map[string]bool   // variables bound from fetch (single record, not a collection)
 	asyncFns    map[string]bool   // function/pipe names that should be awaited
 	structEnums map[string]bool   // enum names that have struct-body variants (bracket access → <Name>Config)
-	fkAliases   map[string]string // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
-	generator   *Generator        // back-reference for FK model lookups
+	paginatedVars map[string]bool   // variables bound from paginated queries (have .items/.total)
+	fkAliases     map[string]string // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
+	generator     *Generator        // back-reference for FK model lookups
 }
 
 // Generate implements codegen.Generator.
@@ -715,6 +716,9 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 	if ctx.singleVars == nil {
 		ctx.singleVars = make(map[string]bool)
 	}
+	if ctx.paginatedVars == nil {
+		ctx.paginatedVars = make(map[string]bool)
+	}
 	if ctx.fkAliases == nil {
 		ctx.fkAliases = make(map[string]string)
 	}
@@ -796,6 +800,12 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 							// fetch returns a single record; query returns a collection
 							if fn.Name == "fetch" {
 								ctx.singleVars[s.Binding] = true
+							}
+							// Track paginated queries (result has .items/.total shape)
+							if fn.Name == "query" {
+								if queryIsPaginated(fn) {
+									ctx.paginatedVars[s.Binding] = true
+								}
 							}
 						}
 					}
@@ -1038,6 +1048,16 @@ func webhookAuthSecretKey(expr ast.Expr) string {
 		return ""
 	}
 	return fa.Field
+}
+
+// queryIsPaginated checks if a query FnCall has a paginate() marker in its args.
+func queryIsPaginated(fn *ast.FnCall) bool {
+	for _, arg := range fn.Args[1:] {
+		if marker, ok := arg.(*ast.FnCall); ok && marker.Name == "paginate" {
+			return true
+		}
+	}
+	return false
 }
 
 // Ensure Generator implements codegen.Generator.

@@ -446,6 +446,26 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 		if v.Field == "count" {
 			return fmt.Sprintf("%s.length", exprToJSWithCtx(v.Base, ctx))
 		}
+		// .items on a non-paginated query result (plain array) → just return the array
+		// Only paginated results (with { items, total } shape) have a real .items property
+		if v.Field == "items" {
+			if ident, ok := v.Base.(*ast.Ident); ok && ctx != nil && ctx.paginatedVars != nil {
+				varName := ident.Name
+				if !ctx.paginatedVars[varName] && !ctx.paginatedVars[toCamelCase(varName)] {
+					// Non-paginated result — .items is not valid, just use the array
+					return exprToJSWithCtx(v.Base, ctx)
+				}
+			}
+		}
+		// .total on a non-paginated query result → .length
+		if v.Field == "total" {
+			if ident, ok := v.Base.(*ast.Ident); ok && ctx != nil && ctx.paginatedVars != nil {
+				varName := ident.Name
+				if !ctx.paginatedVars[varName] && !ctx.paginatedVars[toCamelCase(varName)] {
+					return fmt.Sprintf("%s.length", exprToJSWithCtx(v.Base, ctx))
+				}
+			}
+		}
 		// FK relation access: X.Y.Z where X is a model var, Y is a FK ref field -> _Y.Z
 		// Detect pattern: FieldAccess(FieldAccess(Ident(X), Y), Z)
 		// Check fkAliases first (set by emitArrowStmts pre-scan)
@@ -901,7 +921,23 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 	switch v.Name {
 	case "fetch":
 		// fetch model(id) -> (await db.select().from(schema.model).where(eq(schema.model.id, id)))[0]
+		// fetch model where(cond1, cond2) -> compound where with and()
 		if len(v.Args) >= 2 {
+			// Check if the second arg is a where() marker
+			if whereCall, ok := v.Args[1].(*ast.FnCall); ok && whereCall.Name == "where" {
+				if len(whereCall.Args) == 1 {
+					cond := whereExprToJSWithCtx(whereCall.Args[0], schemaTable, ctx)
+					return fmt.Sprintf("(await db.select().from(%s).where(%s))[0]",
+						schemaTable, cond)
+				} else if len(whereCall.Args) > 1 {
+					conditions := make([]string, len(whereCall.Args))
+					for i, cond := range whereCall.Args {
+						conditions[i] = whereExprToJSWithCtx(cond, schemaTable, ctx)
+					}
+					return fmt.Sprintf("(await db.select().from(%s).where(and(%s)))[0]",
+						schemaTable, strings.Join(conditions, ", "))
+				}
+			}
 			idExpr := exprToJSWithCtx(v.Args[1], ctx)
 			return fmt.Sprintf("(await db.select().from(%s).where(eq(%s.id, %s)))[0]",
 				schemaTable, schemaTable, idExpr)
@@ -1068,10 +1104,19 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 			}
 		} else if len(whereMarker.Args) > 1 {
 			conditions := make([]string, len(whereMarker.Args))
+			hasOptional := false
 			for i, cond := range whereMarker.Args {
 				conditions[i] = whereExprToJSWithCtx(cond, schemaTable, ctx)
+				if _, isIdent := cond.(*ast.Ident); isIdent {
+					hasOptional = true
+				}
 			}
-			query.WriteString(".where(and(" + strings.Join(conditions, ", ") + "))")
+			if hasOptional {
+				// Some conditions are optional (raw idents) — filter out undefined at runtime
+				query.WriteString(".where(and(...[" + strings.Join(conditions, ", ") + "].filter(Boolean)))")
+			} else {
+				query.WriteString(".where(and(" + strings.Join(conditions, ", ") + "))")
+			}
 		}
 	}
 
@@ -1106,10 +1151,18 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 				}
 			} else if len(whereMarker.Args) > 1 {
 				conditions := make([]string, len(whereMarker.Args))
+				hasOptional := false
 				for i, cond := range whereMarker.Args {
 					conditions[i] = whereExprToJSWithCtx(cond, schemaTable, ctx)
+					if _, isIdent := cond.(*ast.Ident); isIdent {
+						hasOptional = true
+					}
 				}
-				wq.WriteString(".where(and(" + strings.Join(conditions, ", ") + "))")
+				if hasOptional {
+					wq.WriteString(".where(and(...[" + strings.Join(conditions, ", ") + "].filter(Boolean)))")
+				} else {
+					wq.WriteString(".where(and(" + strings.Join(conditions, ", ") + "))")
+				}
 			}
 			whereClause = wq.String()
 		}
@@ -1167,11 +1220,46 @@ func whereExprToJSWithCtx(cond ast.Expr, schemaTable string, ctx *emitCtx) strin
 				return fmt.Sprintf("lte(%s.%s, %s)", schemaTable, field, right)
 			case ">=":
 				return fmt.Sprintf("gte(%s.%s, %s)", schemaTable, field, right)
+			case "in":
+				// id in tags.tag_id → inArray(schema.model.field, collection.map(r => r.fkField))
+				if fa, ok := bin.Right.(*ast.FieldAccess); ok {
+					// Right side is collection.field — generate .map() to extract the field
+					collection := exprToJSWithCtx(fa.Base, ctx)
+					mapField := toCamelCase(fa.Field)
+					return fmt.Sprintf("inArray(%s.%s, %s.map((r: any) => r.%s))", schemaTable, field, collection, mapField)
+				}
+				right := exprToJSWithCtx(bin.Right, ctx)
+				return fmt.Sprintf("inArray(%s.%s, %s)", schemaTable, field, right)
+			case "like":
+				return fmt.Sprintf("sql`${%s.%s} ILIKE ${'%%' + %s + '%%'}`", schemaTable, field, right)
 			}
 		}
 	}
+	// Plain identifier as a where condition (e.g., where(q, pinned))
+	// Generate a conditional filter: if the variable is truthy, apply sql ILIKE or eq
+	if ident, ok := cond.(*ast.Ident); ok {
+		varName := toCamelCase(ident.Name)
+		// Generate: varName ? sql`... ILIKE ...` : undefined
+		// Use ILIKE for string-like search params (q, search, query, name, title)
+		if isSearchParam(ident.Name) {
+			return fmt.Sprintf("(%s ? sql`${%s} ILIKE ${'%%' + %s + '%%'}` : undefined)",
+				varName, schemaTable, varName)
+		}
+		// For boolean/enum filter params, use eq on the same-named column
+		return fmt.Sprintf("(%s != null ? eq(%s.%s, %s) : undefined)",
+			varName, schemaTable, varName, varName)
+	}
 	// Fallback to generic expression
 	return exprToJSWithCtx(cond, ctx)
+}
+
+// isSearchParam returns true if a parameter name suggests a text search query.
+func isSearchParam(name string) bool {
+	switch name {
+	case "q", "search", "query", "keyword", "term", "filter":
+		return true
+	}
+	return false
 }
 
 // isDurationField checks if a field name is a duration unit (used for N.days, N.hours patterns).

@@ -713,6 +713,19 @@ func cmdMigrate(filename, outDir, subCmd string) int {
 		}
 	}
 
+	// Copy .env from the project directory (parent of outDir) to generated/ if it exists.
+	// Drizzle-kit needs DATABASE_URL which is typically in the project root's .env file.
+	projectDir := filepath.Dir(filename)
+	envSrc := filepath.Join(projectDir, ".env")
+	envDst := filepath.Join(outDir, ".env")
+	if _, err := os.Stat(envSrc); err == nil {
+		if envContent, err := os.ReadFile(envSrc); err == nil {
+			if err := os.WriteFile(envDst, envContent, 0644); err == nil {
+				fmt.Printf("Copied .env from %s to %s\n", projectDir, outDir)
+			}
+		}
+	}
+
 	fmt.Printf("Running drizzle-kit %s in %s...\n", subCmd, outDir)
 	cmd := exec.Command("npx", "drizzle-kit", subCmd)
 	cmd.Dir = outDir

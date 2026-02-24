@@ -2227,6 +2227,7 @@ func (p *Parser) isKeywordUsableAsIdent() bool {
 		lexer.TokenTest, lexer.TokenTestGroup, lexer.TokenFixture,
 		lexer.TokenType, lexer.TokenAlias, lexer.TokenEnum,
 		lexer.TokenInclude, lexer.TokenImpl,
+		lexer.TokenTags,
 		lexer.TokenIdent:
 		return true
 	}

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-02-24
+
+### Fixed
+
+- **`where()` with optional filter params**: `query note where(q, pinned)` now generates proper SQL predicates — text search params (q, search) produce `ILIKE` patterns, boolean/enum params produce `eq()` with null guards, and optional conditions are filtered with `.filter(Boolean)`.
+- **`.items` on non-paginated queries**: `all_tags.items` on a plain `query tag` (no `paginate()`) now resolves to the array itself instead of accessing a nonexistent `.items` property. Only paginated query results retain `.items`/`.total` access.
+- **`inArray` in where clauses**: `where(id in links.tag_id)` now generates `inArray(schema.tag.id, links.map((r: any) => r.tagId))` instead of the incorrect `links.tagId.includes(id)`.
+- **Compound `where` in `fetch`**: `fetch note_tag where(note_id == id, tag_id == tag_id)` now generates `and(eq(schema.noteTag.noteId, id), eq(schema.noteTag.tagId, tagId))` instead of nesting `where()` inside `eq()`.
+- **`.env` propagation in `bp migrate`**: `bp migrate push` now copies the project's `.env` file into `generated/` before running `drizzle-kit`, so `DATABASE_URL` is available.
+- **`tags` usable as identifier**: `tags` keyword is now allowed in expression/binding contexts (e.g., `|> tags = query tag`), fixing a parser restriction that prevented using `tags` as a variable name.
+
 ## [0.3.0] - 2026-02-24
 
 ### Added

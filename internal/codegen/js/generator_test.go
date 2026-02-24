@@ -1741,3 +1741,199 @@ POST /webhooks/stripe {
 		t.Errorf("should wrap JSON.parse in try/catch; got:\n%s", ts)
 	}
 }
+
+func TestQueryWithOptionalWhereParams(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+model note {
+  title    string
+  content  text
+  pinned   bool
+}
+GET /api/notes {
+  <- q      string optional
+  <- pinned bool   optional
+  |> notes = query note where(q, pinned)
+  -> 200 { notes: notes }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	checker.Check(file)
+	outDir := t.TempDir()
+	g := New()
+	if err := g.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	tsBytes, err := os.ReadFile(filepath.Join(outDir, "src/routes/notes.ts"))
+	if err != nil {
+		t.Fatalf("notes.ts not generated: %v", err)
+	}
+	ts := string(tsBytes)
+	// q should generate ILIKE pattern (text search param)
+	if !strings.Contains(ts, "ILIKE") {
+		t.Errorf("search param 'q' should generate ILIKE; got:\n%s", ts)
+	}
+	// pinned should generate eq() with null check
+	if !strings.Contains(ts, "eq(schema.note.pinned, pinned)") {
+		t.Errorf("boolean filter 'pinned' should generate eq(); got:\n%s", ts)
+	}
+	// Should filter out undefined optional conditions
+	if !strings.Contains(ts, ".filter(Boolean)") {
+		t.Errorf("optional where params should use .filter(Boolean); got:\n%s", ts)
+	}
+}
+
+func TestNonPaginatedQueryNoItems(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+model tag {
+  name string
+}
+GET /api/tags {
+  |> all_tags = query tag
+  -> 200 { tag_list: all_tags.items }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	checker.Check(file)
+	outDir := t.TempDir()
+	g := New()
+	if err := g.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	tsBytes, err := os.ReadFile(filepath.Join(outDir, "src/routes/tags.ts"))
+	if err != nil {
+		t.Fatalf("tags.ts not generated: %v", err)
+	}
+	ts := string(tsBytes)
+	// Non-paginated query — .items should be stripped (just use allTags directly)
+	if strings.Contains(ts, "allTags.items") {
+		t.Errorf("non-paginated query should not use .items; got:\n%s", ts)
+	}
+	// Should just reference allTags directly
+	if !strings.Contains(ts, "tagList: allTags") {
+		t.Errorf("should reference allTags directly; got:\n%s", ts)
+	}
+}
+
+func TestFetchWithCompoundWhere(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+model note_tag {
+  note_id uuid ref(note)
+  tag_id  uuid ref(tag)
+}
+model note {
+  title string
+}
+model tag {
+  name string
+}
+DELETE /api/notes/:note_id/tags/:tag_id {
+  <- note_id uuid required
+  <- tag_id  uuid required
+  |> link = fetch note_tag where(note_id == note_id, tag_id == tag_id)
+  -> 204
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	checker.Check(file)
+	outDir := t.TempDir()
+	g := New()
+	if err := g.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	// Route could be note-tags.ts or notes.ts
+	ts := ""
+	for _, name := range []string{"src/routes/note-tags.ts", "src/routes/notes.ts"} {
+		if data, err := os.ReadFile(filepath.Join(outDir, name)); err == nil {
+			ts = string(data)
+			break
+		}
+	}
+	if ts == "" {
+		t.Fatal("route file not generated")
+	}
+	// Should use and() with eq() conditions, not nested where() as a value
+	if strings.Contains(ts, "eq(schema.noteTag.id, where(") {
+		t.Errorf("fetch should not nest where() inside eq(); got:\n%s", ts)
+	}
+	// Should generate and(eq(...), eq(...))
+	if !strings.Contains(ts, "and(eq(schema.noteTag.noteId,") {
+		t.Errorf("compound fetch where should use and(eq(...)); got:\n%s", ts)
+	}
+}
+
+func TestInArrayInWhereClause(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+model tag {
+  name string
+}
+model note_tag {
+  note_id uuid ref(note)
+  tag_id  uuid ref(tag)
+}
+model note {
+  title string
+}
+GET /api/notes/:id/tags {
+  <- id uuid required
+  |> links = query note_tag where(note_id == id)
+  |> tags = query tag where(id in links.tag_id)
+  -> 200 { tags: tags }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	checker.Check(file)
+	outDir := t.TempDir()
+	g := New()
+	if err := g.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	ts := ""
+	for _, name := range []string{"src/routes/notes.ts", "src/routes/tags.ts", "src/routes/note-tags.ts"} {
+		if data, err := os.ReadFile(filepath.Join(outDir, name)); err == nil {
+			ts = string(data)
+			break
+		}
+	}
+	if ts == "" {
+		entries, _ := os.ReadDir(filepath.Join(outDir, "src/routes"))
+		for _, e := range entries {
+			t.Logf("generated route: %s", e.Name())
+		}
+		t.Fatal("notes route not generated")
+	}
+	// Should use inArray(), not .includes()
+	if strings.Contains(ts, ".includes(") {
+		t.Errorf("where(id in collection.field) should use inArray, not .includes(); got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "inArray(schema.tag.id,") {
+		t.Errorf("should generate inArray(schema.tag.id, ...); got:\n%s", ts)
+	}
+	// Should use .map() to extract the field from the collection
+	if !strings.Contains(ts, ".map((r: any) => r.tagId)") {
+		t.Errorf("should .map() to extract tag_id field; got:\n%s", ts)
+	}
+}
