@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.4] - 2026-02-24
+
+### Fixed
+
+- **Collection variables mapped to snake_case in responses**: `-> 200 { notes: notes }` where `notes` is a `query note` result now emits `notes.map((r: any) => ({ id: r.id, title: r.title, created_at: r.createdAt, ... }))` to convert Drizzle camelCase keys back to `.bp` snake_case. Applies to collections, single records, and paginated `.items`. Previously only outer BlockExpr keys were preserved while inner row data retained camelCase.
+- **Unbound `update` reassigns fetch variable**: `|> update note { ... }` (no binding) after `|> note = fetch note(id)` now generates `note = (await db.update(...).returning())[0]` instead of discarding the `.returning()` result. The fetch binding uses `let` so the updated row is available to subsequent response output.
+
 ## [0.3.3] - 2026-02-24
 
 ### Fixed

@@ -514,7 +514,31 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			if ctx != nil && ctx.preserveBlockKeys {
 				key = kv.Key
 			}
-			pairs[i] = fmt.Sprintf("%s: %s", key, exprToJSWithCtx(kv.Value, ctx))
+			val := exprToJSWithCtx(kv.Value, ctx)
+			// In output context, wrap model variables with row mapper to convert
+			// Drizzle camelCase keys back to .bp snake_case keys
+			if ctx != nil && ctx.preserveBlockKeys && ctx.generator != nil {
+				if ident, ok := kv.Value.(*ast.Ident); ok {
+					modelName := ""
+					if m, found := ctx.varModels[ident.Name]; found {
+						modelName = m
+					} else if m, found := ctx.varModels[toCamelCase(ident.Name)]; found {
+						modelName = m
+					}
+					if modelName != "" {
+						if model := ctx.generator.findModel(modelName); model != nil {
+							if ctx.singleVars[ident.Name] {
+								val = buildSingleRecordMapper(val, model)
+							} else if ctx.paginatedVars[ident.Name] {
+								val = buildPaginatedMapper(val, model)
+							} else {
+								val = buildCollectionMapper(val, model)
+							}
+						}
+					}
+				}
+			}
+			pairs[i] = fmt.Sprintf("%s: %s", key, val)
 		}
 		return fmt.Sprintf("{ %s }", strings.Join(pairs, ", "))
 	case *ast.PathExpr:
@@ -1535,4 +1559,44 @@ func walkStmts(stmts []ast.ArrowStmt, fn func(ast.Expr)) {
 			walkStmts(s.Recover, fn)
 		}
 	}
+}
+
+// findModel looks up a model by its .bp name from the Generator's AST.
+func (g *Generator) findModel(name string) *ast.Model {
+	for _, node := range g.file.Blocks {
+		if m, ok := node.(*ast.Model); ok && m.Name == name {
+			return m
+		}
+	}
+	return nil
+}
+
+// buildCollectionMapper wraps a collection variable with .map() that converts
+// Drizzle camelCase keys to .bp snake_case keys for response output.
+func buildCollectionMapper(varName string, model *ast.Model) string {
+	pairs := make([]string, len(model.Fields))
+	for i, f := range model.Fields {
+		pairs[i] = fmt.Sprintf("%s: r.%s", f.Name, toCamelCase(f.Name))
+	}
+	return fmt.Sprintf("%s.map((r: any) => ({ %s }))", varName, strings.Join(pairs, ", "))
+}
+
+// buildSingleRecordMapper wraps a single-record variable with an inline object
+// that maps Drizzle camelCase keys to .bp snake_case keys.
+func buildSingleRecordMapper(varName string, model *ast.Model) string {
+	pairs := make([]string, len(model.Fields))
+	for i, f := range model.Fields {
+		pairs[i] = fmt.Sprintf("%s: %s.%s", f.Name, varName, toCamelCase(f.Name))
+	}
+	return fmt.Sprintf("{ %s }", strings.Join(pairs, ", "))
+}
+
+// buildPaginatedMapper wraps a paginated result variable so that .items
+// gets mapped from Drizzle camelCase to .bp snake_case keys.
+func buildPaginatedMapper(varName string, model *ast.Model) string {
+	pairs := make([]string, len(model.Fields))
+	for i, f := range model.Fields {
+		pairs[i] = fmt.Sprintf("%s: r.%s", f.Name, toCamelCase(f.Name))
+	}
+	return fmt.Sprintf("{ ...%s, items: %s.items.map((r: any) => ({ %s })) }", varName, varName, strings.Join(pairs, ", "))
 }

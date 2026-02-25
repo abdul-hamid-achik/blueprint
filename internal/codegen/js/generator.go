@@ -683,6 +683,38 @@ func collectStepBindingsReassigned(stmts []ast.ArrowStmt) map[string]bool {
 	return reassigned
 }
 
+// collectUpdateReassignments detects fetch-bound variables that will be implicitly
+// reassigned by a subsequent update without a binding.
+// E.g., |> note = fetch note(id) ... |> update note { title: title }
+// The variable "note" must use `let` so the update result can be reassigned to it.
+func collectUpdateReassignments(stmts []ast.ArrowStmt) map[string]bool {
+	// First: find variables bound from fetch data ops
+	fetchBindings := make(map[string]string) // model_name -> camelCase variable_name
+	for _, s := range stmts {
+		if step, ok := s.(*ast.StepStmt); ok && step.Binding != "" {
+			if fn, ok := step.Expr.(*ast.FnCall); ok && fn.Name == "fetch" && len(fn.Args) > 0 {
+				if ident, ok := fn.Args[0].(*ast.Ident); ok {
+					fetchBindings[ident.Name] = toCamelCase(step.Binding)
+				}
+			}
+		}
+	}
+	// Second: find updates without binding that target a model with a fetch-bound variable
+	result := make(map[string]bool)
+	for _, s := range stmts {
+		if step, ok := s.(*ast.StepStmt); ok && step.Binding == "" {
+			if fn, ok := step.Expr.(*ast.FnCall); ok && fn.Name == "update" && len(fn.Args) > 0 {
+				if ident, ok := fn.Args[0].(*ast.Ident); ok {
+					if varName, found := fetchBindings[ident.Name]; found {
+						result[varName] = true
+					}
+				}
+			}
+		}
+	}
+	return result
+}
+
 // collectPropertyMutations returns the set of variable names that have property mutations
 // via `when cond: var.field = value` inline assignment patterns.
 // These need `Record<string, any>` type annotation.
@@ -727,6 +759,9 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 
 	// Pre-scan: find input variables that are later reassigned (for let vs const)
 	reassigned := collectStepBindingsReassigned(stmts)
+
+	// Pre-scan: find fetch-bound variables implicitly reassigned by unbound updates
+	updateReassigned := collectUpdateReassignments(stmts)
 
 	// Pre-scan: find variables that have property mutations (e.g., `when x: filters.status = x`)
 	// These need `Record<string, any>` type annotation
@@ -951,7 +986,7 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 				} else {
 					// Use `let` for reassigned vars; annotate filter-accumulator objects as Record<string, any>
 					decl := "const"
-					if reassigned[name] {
+					if reassigned[name] || updateReassigned[name] {
 						decl = "let"
 					}
 					if propMutated[name] {
@@ -962,7 +997,21 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 					ctx.declared[name] = true
 				}
 			} else {
-				b.WriteString(fmt.Sprintf("%s%s;\n", indent, expr))
+				// Check if this is an unbound update that should reassign a fetch variable
+				reassignVar := ""
+				if fn, ok := s.Expr.(*ast.FnCall); ok && fn.Name == "update" && len(fn.Args) > 0 {
+					if ident, ok := fn.Args[0].(*ast.Ident); ok {
+						v := toCamelCase(ident.Name)
+						if updateReassigned[v] {
+							reassignVar = v
+						}
+					}
+				}
+				if reassignVar != "" {
+					b.WriteString(fmt.Sprintf("%s%s = %s;\n", indent, reassignVar, expr))
+				} else {
+					b.WriteString(fmt.Sprintf("%s%s;\n", indent, expr))
+				}
 			}
 
 		case *ast.GuardStmt:

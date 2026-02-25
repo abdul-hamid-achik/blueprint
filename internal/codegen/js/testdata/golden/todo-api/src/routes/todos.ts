@@ -58,9 +58,9 @@ todosRoutes.patch('/api/todos/:id', zValidator('json', patchTodosSchema), async 
   try {
     const id = z.string().uuid().parse(c.req.param('id'));
     const done = c.req.valid('json').done;
-    const todo = (await db.select().from(schema.todo).where(eq(schema.todo.id, id)))[0];
+    let todo = (await db.select().from(schema.todo).where(eq(schema.todo.id, id)))[0];
     if (!(todo)) return c.json({ error: "Todo not found" }, 404 as const);
-    (await db.update(schema.todo).set(Object.fromEntries(Object.entries({ done: done }).filter(([_, v]) => v !== undefined))).where(eq(schema.todo.id, todo.id)).returning())[0];
+    todo = (await db.update(schema.todo).set(Object.fromEntries(Object.entries({ done: done }).filter(([_, v]) => v !== undefined))).where(eq(schema.todo.id, todo.id)).returning())[0];
     return c.json({ id: todo.id, done: done }, 200 as const);
   } catch (err) {
     if (err instanceof BpError) return c.json({ error: err.message }, err.statusCode);
