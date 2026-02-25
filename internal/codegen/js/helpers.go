@@ -537,6 +537,23 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 						}
 					}
 				}
+				// Handle paginated results referenced via .items (e.g., result.items)
+				// These are FieldAccess, not plain Ident, so the check above misses them
+				if fa, ok := kv.Value.(*ast.FieldAccess); ok && fa.Field == "items" {
+					if baseIdent, ok := fa.Base.(*ast.Ident); ok && ctx.paginatedVars[baseIdent.Name] {
+						modelName := ""
+						if m, found := ctx.varModels[baseIdent.Name]; found {
+							modelName = m
+						} else if m, found := ctx.varModels[toCamelCase(baseIdent.Name)]; found {
+							modelName = m
+						}
+						if modelName != "" {
+							if model := ctx.generator.findModel(modelName); model != nil {
+								val = buildCollectionMapper(val, model)
+							}
+						}
+					}
+				}
 			}
 			pairs[i] = fmt.Sprintf("%s: %s", key, val)
 		}

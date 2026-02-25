@@ -18,7 +18,7 @@ todosRoutes.get('/api/todos', zValidator('query', getTodosSchema), async (c) => 
     const page = c.req.valid('query').page;
     const perPage = c.req.valid('query').per_page;
     const todos = await (async () => { const _items = await db.select().from(schema.todo).limit(perPage).offset((page - 1) * perPage); const [{value: _ct}] = await db.select({value: sql`count(*)`}).from(schema.todo); return { items: _items, total: Number(_ct) }; })();
-    return c.json({ todos: todos.items, total: todos.total, page: page }, 200 as const);
+    return c.json({ todos: todos.items.map((r: any) => ({ id: r.id, title: r.title, done: r.done, created: r.created })), total: todos.total, page: page }, 200 as const);
   } catch (err) {
     if (err instanceof BpError) return c.json({ error: err.message }, err.statusCode);
     throw err;
