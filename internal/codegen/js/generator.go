@@ -44,9 +44,10 @@ type emitCtx struct {
 	singleVars  map[string]bool   // variables bound from fetch (single record, not a collection)
 	asyncFns    map[string]bool   // function/pipe names that should be awaited
 	structEnums map[string]bool   // enum names that have struct-body variants (bracket access → <Name>Config)
-	paginatedVars map[string]bool   // variables bound from paginated queries (have .items/.total)
-	fkAliases     map[string]string // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
-	generator     *Generator        // back-reference for FK model lookups
+	paginatedVars    map[string]bool   // variables bound from paginated queries (have .items/.total)
+	fkAliases        map[string]string // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
+	generator        *Generator        // back-reference for FK model lookups
+	preserveBlockKeys bool             // when true, BlockExpr keys are not camelCased (for JSON response output)
 }
 
 // Generate implements codegen.Generator.
@@ -779,10 +780,10 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 					}
 				} else if ctx.method == "GET" || ctx.method == "DELETE" {
 					b.WriteString(fmt.Sprintf("%s%s %s = c.req.valid('query').%s;\n",
-						indent, decl, name, name))
+						indent, decl, name, s.Name))
 				} else {
 					b.WriteString(fmt.Sprintf("%s%s %s = c.req.valid('json').%s;\n",
-						indent, decl, name, name))
+						indent, decl, name, s.Name))
 				}
 				ctx.declared[name] = true
 			}
@@ -1004,7 +1005,10 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 			if status == "" {
 				status = "200"
 			}
-			val := exprToJSWithCtx(s.Value, &ctx)
+			// Preserve original key names in response JSON (don't camelCase BlockExpr keys)
+			outputCtx := ctx
+			outputCtx.preserveBlockKeys = true
+			val := exprToJSWithCtx(s.Value, &outputCtx)
 
 			if ctx.kind == "endpoint" {
 				// For 204 No Content, use c.body(null, 204)

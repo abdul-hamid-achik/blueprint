@@ -4,12 +4,14 @@ import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { secureHeaders } from 'hono/secure-headers';
 import { env } from './lib/env.js';
+import { cors } from 'hono/cors';
 import { healthRoutes } from './routes/health.js';
 import { helloRoutes } from './routes/hello.js';
 
 const app = new Hono();
 
 app.use('*', secureHeaders());
+app.use('*', cors());
 
 app.route('/', healthRoutes);
 app.route('/', helloRoutes);

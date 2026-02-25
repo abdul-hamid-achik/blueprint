@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2026-02-24
+
+### Fixed
+
+- **Response JSON keys preserve `.bp` snake_case**: Output blocks like `-> 200 { created_at: note.created_at }` now emit `{ created_at: note.createdAt }` instead of `{ createdAt: note.createdAt }`. The JSON key matches the `.bp` source declaration while the value accessor correctly uses Drizzle's camelCase property. This applies to all endpoints including list responses (Bugs 1 & 8).
+- **PATCH returns updated data via `.returning()`**: `update` data operations now use `.returning()` so the response contains the actual updated row, not stale pre-update data (Bug 2).
+- **PATCH only sets defined fields**: PATCH handlers wrap set values with `Object.fromEntries(Object.entries({...}).filter(([_, v]) => v !== undefined))` so that fields not included in the request body aren't overwritten to `NULL` (Bug 3).
+- **Auto timestamp fields bumped on update**: Model fields with the `auto` modifier (e.g., `updated_at timestamp default(now) auto`) now inject `updatedAt: new Date()` into every `update` set call (Bug 4).
+- **`inArray` guarded against empty arrays**: Junction table queries like `where(id in links.tag_id)` now emit `(links.length > 0 ? inArray(...) : sql\`1 = 0\`)` to prevent Drizzle from crashing on empty arrays (Bug 5).
+- **Validation schema uses original field names**: Zod schemas now use `.bp`-declared names (`tag_id`, `per_page`) instead of camelCase (`tagId`, `perPage`). Input extraction also reads from the original name: `c.req.valid('json').tag_id` (Bug 6).
+- **CORS middleware auto-generated**: `index.ts` now always imports and applies `cors()` from `hono/cors` unless already declared via `use cors` in the blueprint block. This ensures SPAs and mobile apps can connect out of the box (Bug 7).
+
 ## [0.3.2] - 2026-02-24
 
 ### Fixed

@@ -263,6 +263,13 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 	case *ast.FnCall:
 		// Handle data operations (query, save, fetch, update, delete, etc.)
 		if isDataOp(v.Name) {
+			// Data ops always need camelCase keys for Drizzle column names,
+			// so reset preserveBlockKeys even when inside a response context.
+			if ctx != nil && ctx.preserveBlockKeys {
+				localCtx := *ctx
+				localCtx.preserveBlockKeys = false
+				return dataOpToJSWithCtx(v, &localCtx)
+			}
 			return dataOpToJSWithCtx(v, ctx)
 		}
 		// Handle call <service> METHOD /path [body] -> await call<Service>(method, path, body?)
@@ -503,7 +510,11 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 	case *ast.BlockExpr:
 		pairs := make([]string, len(v.Entries))
 		for i, kv := range v.Entries {
-			pairs[i] = fmt.Sprintf("%s: %s", toCamelCase(kv.Key), exprToJSWithCtx(kv.Value, ctx))
+			key := toCamelCase(kv.Key)
+			if ctx != nil && ctx.preserveBlockKeys {
+				key = kv.Key
+			}
+			pairs[i] = fmt.Sprintf("%s: %s", key, exprToJSWithCtx(kv.Value, ctx))
 		}
 		return fmt.Sprintf("{ %s }", strings.Join(pairs, ", "))
 	case *ast.PathExpr:
@@ -871,6 +882,29 @@ func extractInjectedModelMap(stmts []ast.ArrowStmt) map[string]string {
 	return result
 }
 
+// findAutoFields returns the names of fields with the "auto" constraint for a model.
+// These fields (e.g., updated_at timestamp auto) should be set to new Date() on every update.
+func findAutoFields(ctx *emitCtx, modelName string) []string {
+	if ctx == nil || ctx.generator == nil || ctx.generator.file == nil {
+		return nil
+	}
+	for _, block := range ctx.generator.file.Blocks {
+		if m, ok := block.(*ast.Model); ok && m.Name == modelName {
+			var fields []string
+			for _, f := range m.Fields {
+				for _, c := range f.Constraints {
+					if c.Kind == "auto" {
+						fields = append(fields, f.Name)
+						break
+					}
+				}
+			}
+			return fields
+		}
+	}
+	return nil
+}
+
 // isDataOp checks if a function name is a Blueprint data operation.
 func isDataOp(name string) bool {
 	switch name {
@@ -990,7 +1024,24 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 		if len(v.Args) >= 2 {
 			if block, ok := v.Args[1].(*ast.BlockExpr); ok {
 				vals := exprToJSWithCtx(block, ctx)
-				return fmt.Sprintf("await db.update(%s).set(%s).where(eq(%s.id, %s))",
+
+				// Bug 3: For PATCH, filter out undefined values so unset fields aren't overwritten
+				if ctx != nil && ctx.method == "PATCH" {
+					vals = fmt.Sprintf("Object.fromEntries(Object.entries(%s).filter(([_, v]) => v !== undefined))", vals)
+				}
+
+				// Bug 4: Inject auto timestamp fields (e.g., updated_at auto → updatedAt: new Date())
+				autoFields := findAutoFields(ctx, resolvedModel)
+				if len(autoFields) > 0 {
+					autoEntries := make([]string, len(autoFields))
+					for i, f := range autoFields {
+						autoEntries[i] = fmt.Sprintf("%s: new Date()", toCamelCase(f))
+					}
+					vals = fmt.Sprintf("{ ...%s, %s }", vals, strings.Join(autoEntries, ", "))
+				}
+
+				// Bug 2: Use .returning() to get updated row instead of stale data
+				return fmt.Sprintf("(await db.update(%s).set(%s).where(eq(%s.id, %s)).returning())[0]",
 					resolvedSchemaTable, vals, resolvedSchemaTable, idRef)
 			}
 		}
@@ -1222,11 +1273,13 @@ func whereExprToJSWithCtx(cond ast.Expr, schemaTable string, ctx *emitCtx) strin
 				return fmt.Sprintf("gte(%s.%s, %s)", schemaTable, field, right)
 			case "in":
 				// id in tags.tag_id → inArray(schema.model.field, collection.map(r => r.fkField))
+				// Guard against empty arrays which cause Drizzle inArray to crash
 				if fa, ok := bin.Right.(*ast.FieldAccess); ok {
 					// Right side is collection.field — generate .map() to extract the field
 					collection := exprToJSWithCtx(fa.Base, ctx)
 					mapField := toCamelCase(fa.Field)
-					return fmt.Sprintf("inArray(%s.%s, %s.map((r: any) => r.%s))", schemaTable, field, collection, mapField)
+					return fmt.Sprintf("(%s.length > 0 ? inArray(%s.%s, %s.map((r: any) => r.%s)) : sql`1 = 0`)",
+						collection, schemaTable, field, collection, mapField)
 				}
 				right := exprToJSWithCtx(bin.Right, ctx)
 				return fmt.Sprintf("inArray(%s.%s, %s)", schemaTable, field, right)

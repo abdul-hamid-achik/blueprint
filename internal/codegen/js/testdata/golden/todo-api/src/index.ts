@@ -5,11 +5,13 @@ import { serve } from '@hono/node-server';
 import { secureHeaders } from 'hono/secure-headers';
 import { env } from './lib/env.js';
 import { db } from './lib/db.js';
+import { cors } from 'hono/cors';
 import { todosRoutes } from './routes/todos.js';
 
 const app = new Hono();
 
 app.use('*', secureHeaders());
+app.use('*', cors());
 
 app.route('/', todosRoutes);
 

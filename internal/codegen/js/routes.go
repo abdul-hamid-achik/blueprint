@@ -36,6 +36,17 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		"cors":     "hono/cors",
 		"compress": "hono/compress",
 	}
+	// Check if cors is explicitly declared in blueprint uses
+	hasCors := false
+	for _, u := range bp.Uses {
+		if u.Name == "cors" {
+			hasCors = true
+		}
+	}
+	// Always import cors for SPA/mobile compatibility
+	if !hasCors {
+		b.WriteString("import { cors } from 'hono/cors';\n")
+	}
 	for _, u := range bp.Uses {
 		if pkg, ok := builtinMiddleware[u.Name]; ok {
 			b.WriteString(fmt.Sprintf("import { %s } from '%s';\n", u.Name, pkg))
@@ -127,7 +138,13 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	b.WriteString("const app = new Hono();\n\n")
 
 	// Security headers (X-Content-Type-Options, X-Frame-Options, etc.)
-	b.WriteString("app.use('*', secureHeaders());\n\n")
+	b.WriteString("app.use('*', secureHeaders());\n")
+
+	// CORS middleware — always enabled for SPA/mobile compatibility
+	if !hasCors {
+		b.WriteString("app.use('*', cors());\n")
+	}
+	b.WriteString("\n")
 
 	// If there are WS endpoints, set up upgradeWebSocket + injectWebSocket
 	if len(ws) > 0 {

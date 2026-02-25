@@ -242,7 +242,7 @@ func (g *Generator) genValidation(endpoints []*ast.Endpoint) codegen.OutputFile 
 				zodType = typeToZod(inp.Type)
 			}
 			zodType += constraintsToZod(inp.Constraints)
-			b.WriteString(fmt.Sprintf("  %s: %s,\n", toCamelCase(inp.Name), zodType))
+			b.WriteString(fmt.Sprintf("  %s: %s,\n", inp.Name, zodType))
 		}
 		b.WriteString("});\n\n")
 	}

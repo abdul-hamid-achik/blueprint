@@ -1823,9 +1823,9 @@ GET /api/tags {
 	if strings.Contains(ts, "allTags.items") {
 		t.Errorf("non-paginated query should not use .items; got:\n%s", ts)
 	}
-	// Should just reference allTags directly
-	if !strings.Contains(ts, "tagList: allTags") {
-		t.Errorf("should reference allTags directly; got:\n%s", ts)
+	// Should just reference allTags directly with original key name
+	if !strings.Contains(ts, "tag_list: allTags") {
+		t.Errorf("should reference allTags directly with original key name; got:\n%s", ts)
 	}
 }
 

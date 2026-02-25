@@ -16,7 +16,7 @@ export const todosRoutes = new Hono();
 todosRoutes.get('/api/todos', zValidator('query', getTodosSchema), async (c) => {
   try {
     const page = c.req.valid('query').page;
-    const perPage = c.req.valid('query').perPage;
+    const perPage = c.req.valid('query').per_page;
     const todos = await (async () => { const _items = await db.select().from(schema.todo).limit(perPage).offset((page - 1) * perPage); const [{value: _ct}] = await db.select({value: sql`count(*)`}).from(schema.todo); return { items: _items, total: Number(_ct) }; })();
     return c.json({ todos: todos.items, total: todos.total, page: page }, 200 as const);
   } catch (err) {
@@ -60,7 +60,7 @@ todosRoutes.patch('/api/todos/:id', zValidator('json', patchTodosSchema), async 
     const done = c.req.valid('json').done;
     const todo = (await db.select().from(schema.todo).where(eq(schema.todo.id, id)))[0];
     if (!(todo)) return c.json({ error: "Todo not found" }, 404 as const);
-    await db.update(schema.todo).set({ done: done }).where(eq(schema.todo.id, todo.id));
+    (await db.update(schema.todo).set(Object.fromEntries(Object.entries({ done: done }).filter(([_, v]) => v !== undefined))).where(eq(schema.todo.id, todo.id)).returning())[0];
     return c.json({ id: todo.id, done: done }, 200 as const);
   } catch (err) {
     if (err instanceof BpError) return c.json({ error: err.message }, err.statusCode);
