@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,16 +32,24 @@ func main() {
 	switch os.Args[1] {
 	case "check":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("check", "check <file.bp>",
+			printCommandHelp("check", "check <file.bp> [--json]",
 				"Validate a .bp file for syntax and semantic errors.",
-				nil)
+				[][2]string{
+					{"--json", "Output in JSON format (for CI)"},
+				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp check <file.bp>")
+			fmt.Fprintln(os.Stderr, "Usage: bp check <file.bp> [--json]")
 			os.Exit(1)
 		}
-		os.Exit(cmdCheck(os.Args[2]))
+		jsonOutput := false
+		for _, arg := range os.Args[3:] {
+			if arg == "--json" {
+				jsonOutput = true
+			}
+		}
+		os.Exit(cmdCheck(os.Args[2], jsonOutput))
 	case "build":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("build", "build <file.bp> [--out <dir>]",
@@ -286,36 +295,98 @@ func main() {
 		os.Exit(cmdDeploy(os.Args[2], outDir, tag))
 	case "version", "--version", "-v":
 		fmt.Printf("bp version %s\n", version)
+	case "completion":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("completion", "completion <shell>",
+				"Generate shell completion script for bash, zsh, or fish.",
+				nil)
+			os.Exit(0)
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp completion <bash|zsh|fish>")
+			os.Exit(1)
+		}
+		os.Exit(cmdCompletion(os.Args[2]))
+	case "stats":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("stats", "stats <file.bp> [--json]",
+				"Show code statistics for a Blueprint file.",
+				[][2]string{{"--json", "Output in JSON format"}})
+			os.Exit(0)
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp stats <file.bp> [--json]")
+			os.Exit(1)
+		}
+		jsonOutput := false
+		for _, arg := range os.Args[3:] {
+			if arg == "--json" {
+				jsonOutput = true
+			}
+		}
+		os.Exit(cmdStats(os.Args[2], jsonOutput))
+	case "doctor":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("doctor", "doctor",
+				"Check your environment for Blueprint dependencies.",
+				nil)
+			os.Exit(0)
+		}
+		os.Exit(cmdDoctor())
+	case "lsp":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("lsp", "lsp",
+				"Start the Language Server Protocol server.",
+				nil)
+			os.Exit(0)
+		}
+		os.Exit(cmdLSP())
 	case "help", "--help", "-h":
 		printUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
+		// Check for typo and suggest correction
+		if suggestion := suggestCommand(os.Args[1]); suggestion != "" {
+			fmt.Fprintf(os.Stderr, "\nDid you mean: %s?\n", suggestion)
+		}
 		printUsage()
 		os.Exit(1)
 	}
 }
 
-func cmdCheck(filename string) int {
+func cmdCheck(filename string, jsonOutput bool) int {
 	src, err := os.ReadFile(filename)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		if jsonOutput {
+			printJSONError("read_error", err.Error())
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		}
 		return 2
 	}
 
 	file, parseErrors := parser.ParseFile(filename, src)
 
 	if len(parseErrors) > 0 {
-		for _, e := range parseErrors {
-			fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
+		if jsonOutput {
+			printJSONCheckResult(filename, false, parseErrors, nil)
+		} else {
+			for _, e := range parseErrors {
+				fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
+			}
+			fmt.Fprintf(os.Stderr, "\n%d syntax error(s) found\n", len(parseErrors))
 		}
-		fmt.Fprintf(os.Stderr, "\n%d syntax error(s) found\n", len(parseErrors))
 		return 1
 	}
 
 	// Resolve include statements — merge blocks from included files
 	if errs := resolveIncludes(file, filename); len(errs) > 0 {
-		for _, e := range errs {
-			fmt.Fprintln(os.Stderr, e)
+		if jsonOutput {
+			printJSONError("include_error", errs[0])
+		} else {
+			for _, e := range errs {
+				fmt.Fprintln(os.Stderr, e)
+			}
 		}
 		return 1
 	}
@@ -324,14 +395,22 @@ func cmdCheck(filename string) int {
 	checkErrors := checker.Check(file)
 
 	if len(checkErrors) > 0 {
-		for _, e := range checkErrors {
-			fmt.Fprintln(os.Stderr, checker.FormatCheckError(e, src))
+		if jsonOutput {
+			printJSONCheckResult(filename, false, nil, checkErrors)
+		} else {
+			for _, e := range checkErrors {
+				fmt.Fprintln(os.Stderr, checker.FormatCheckError(e, src))
+			}
+			fmt.Fprintf(os.Stderr, "\n%d semantic error(s) found\n", len(checkErrors))
 		}
-		fmt.Fprintf(os.Stderr, "\n%d semantic error(s) found\n", len(checkErrors))
 		return 1
 	}
 
-	fmt.Printf("OK: %s\n", filename)
+	if jsonOutput {
+		printJSONCheckResult(filename, true, nil, nil)
+	} else {
+		fmt.Printf("OK: %s\n", filename)
+	}
 	return 0
 }
 
@@ -1094,6 +1173,128 @@ func cmdDeploy(filename, outDir, tag string) int {
 	return 0
 }
 
+func cmdCompletion(shell string) int {
+	switch shell {
+	case "bash":
+		fmt.Println(`_bp_completion() {
+    local cur prev opts
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    
+    commands="check build diff run dev test migrate generate docs fmt lint init eject deploy completion version help"
+    
+    if [[ ${COMP_CWORD} -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "${commands}" -- ${cur}) )
+        return 0
+    fi
+    
+    case "${prev}" in
+        check|build|diff|run|dev|test|migrate|generate|docs|fmt|lint|deploy)
+            _filedir "@(.bp)"
+            return 0
+            ;;
+        completion)
+            COMPREPLY=( $(compgen -W "bash zsh fish" -- ${cur}) )
+            return 0
+            ;;
+        --out)
+            _filedir -d
+            return 0
+            ;;
+    esac
+    
+    if [[ ${cur} == -* ]]; then
+        COMPREPLY=( $(compgen -W "--out --write --check --tag --help -h" -- ${cur}) )
+        return 0
+    fi
+}
+
+complete -F _bp_completion bp`)
+	case "zsh":
+		fmt.Println(`#compdef bp
+
+_bp() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    _arguments -C \
+        '1: :->command' \
+        '*: :->args'
+
+    case "$state" in
+        command)
+            _values 'commands' \
+                'check[Validate syntax and semantics]' \
+                'build[Compile .bp to JavaScript/TypeScript]' \
+                'diff[Show changes without overwriting]' \
+                'run[Build and start the server]' \
+                'dev[Watch mode - rebuild and restart]' \
+                'test[Build and run vitest]' \
+                'migrate[Run drizzle-kit migration]' \
+                'generate[Resolve @> slots via LLM]' \
+                'docs[Generate OpenAPI 3.1 JSON]' \
+                'fmt[Format a .bp file]' \
+                'lint[Lint for best practices]' \
+                'init[Scaffold a new project]' \
+                'eject[Remove Blueprint markers]' \
+                'deploy[Build and run Docker container]' \
+                'completion[Generate shell completion]' \
+                'version[Print version]' \
+                'help[Show help]'
+            ;;
+        args)
+            case "$line[1]" in
+                check|build|diff|run|dev|test|migrate|generate|docs|fmt|lint|deploy)
+                    _files -g "*.bp"
+                    ;;
+                completion)
+                    _values 'shell' 'bash' 'zsh' 'fish'
+                    ;;
+                init|eject|version|help)
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+compdef _bp bp`)
+	case "fish":
+		fmt.Println(`complete -c bp -f
+
+complete -c bp -n "__fish_use_subcommand" -a "check" -d "Validate syntax and semantics"
+complete -c bp -n "__fish_use_subcommand" -a "build" -d "Compile .bp to JavaScript/TypeScript"
+complete -c bp -n "__fish_use_subcommand" -a "diff" -d "Show changes without overwriting"
+complete -c bp -n "__fish_use_subcommand" -a "run" -d "Build and start the server"
+complete -c bp -n "__fish_use_subcommand" -a "dev" -d "Watch mode - rebuild and restart"
+complete -c bp -n "__fish_use_subcommand" -a "test" -d "Build and run vitest"
+complete -c bp -n "__fish_use_subcommand" -a "migrate" -d "Run drizzle-kit migration"
+complete -c bp -n "__fish_use_subcommand" -a "generate" -d "Resolve @> slots via LLM"
+complete -c bp -n "__fish_use_subcommand" -a "docs" -d "Generate OpenAPI 3.1 JSON"
+complete -c bp -n "__fish_use_subcommand" -a "fmt" -d "Format a .bp file"
+complete -c bp -n "__fish_use_subcommand" -a "lint" -d "Lint for best practices"
+complete -c bp -n "__fish_use_subcommand" -a "init" -d "Scaffold a new project"
+complete -c bp -n "__fish_use_subcommand" -a "eject" -d "Remove Blueprint markers"
+complete -c bp -n "__fish_use_subcommand" -a "deploy" -d "Build and run Docker container"
+complete -c bp -n "__fish_use_subcommand" -a "completion" -d "Generate shell completion"
+complete -c bp -n "__fish_use_subcommand" -a "version" -d "Print version"
+complete -c bp -n "__fish_use_subcommand" -a "help" -d "Show help"
+
+complete -c bp -n "__fish_seen_subcommand_from check build diff run dev test migrate generate docs fmt lint deploy" -a "(__fish_complete_suffix .bp)"
+complete -c bp -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
+
+complete -c bp -l out -d "Output directory"
+complete -c bp -l write -d "Write output back to file"
+complete -c bp -l check -d "Check if formatted (CI mode)"
+complete -c bp -l tag -d "Docker image tag"
+complete -c bp -l help -s h -d "Show help"`)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown shell: %s. Supported: bash, zsh, fish\n", shell)
+		return 1
+	}
+	return 0
+}
+
 func buildInitTemplate(displayName, safeName string) string {
 	return fmt.Sprintf(`@ %q
 blueprint %q {
@@ -1157,20 +1358,411 @@ func printUsage() {
 	fmt.Println("Usage: bp <command> [arguments]")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  check    <file.bp>                       Validate syntax and semantics")
-	fmt.Println("  build    <file.bp> [--out dir]           Compile .bp to JavaScript/TypeScript")
-	fmt.Println("  diff     <file.bp> [--out dir]           Show changes without overwriting")
-	fmt.Println("  run      <file.bp> [--out dir]           Build and start the server")
-	fmt.Println("  dev      <file.bp> [--out dir]           Watch mode — rebuild and restart on changes")
-	fmt.Println("  test     <file.bp> [--out dir]           Build and run vitest")
-	fmt.Println("  migrate  <file.bp> [generate|push|…]    Build and run drizzle-kit migration")
-	fmt.Println("  generate <file.bp> [--write]             Resolve @> slots via LLM (needs ANTHROPIC_API_KEY)")
-	fmt.Println("  docs     <file.bp> [--out file.json]     Generate OpenAPI 3.1 JSON spec")
-	fmt.Println("  fmt      <file.bp> [--write]             Format a .bp file")
-	fmt.Println("  lint     <file.bp>                       Lint a .bp file for best practices")
-	fmt.Println("  init     [name]                          Scaffold a new Blueprint project")
-	fmt.Println("  eject    <dir>                           Remove Blueprint markers from generated code")
-	fmt.Println("  deploy   <file.bp> [--tag <image>]       Build and run Docker container")
-	fmt.Println("  version                                  Print version")
-	fmt.Println("  help                                     Show this help")
+	fmt.Println("  check      <file.bp>                       Validate syntax and semantics")
+	fmt.Println("  build      <file.bp> [--out dir]           Compile .bp to JavaScript/TypeScript")
+	fmt.Println("  diff       <file.bp> [--out dir]           Show changes without overwriting")
+	fmt.Println("  run        <file.bp> [--out dir]           Build and start the server")
+	fmt.Println("  dev        <file.bp> [--out dir]           Watch mode — rebuild and restart on changes")
+	fmt.Println("  test       <file.bp> [--out dir]           Build and run vitest")
+	fmt.Println("  migrate    <file.bp> [generate|push|…]     Build and run drizzle-kit migration")
+	fmt.Println("  generate   <file.bp> [--write]             Resolve @> slots via LLM (needs ANTHROPIC_API_KEY)")
+	fmt.Println("  docs       <file.bp> [--out file.json]     Generate OpenAPI 3.1 JSON spec")
+	fmt.Println("  fmt        <file.bp> [--write]             Format a .bp file")
+	fmt.Println("  lint       <file.bp>                       Lint a .bp file for best practices")
+	fmt.Println("  init       [name]                          Scaffold a new Blueprint project")
+	fmt.Println("  eject      <dir>                           Remove Blueprint markers from generated code")
+	fmt.Println("  deploy     <file.bp> [--tag <image>]       Build and run Docker container")
+	fmt.Println("  completion <bash|zsh|fish>                 Generate shell completion script")
+	fmt.Println("  stats      <file.bp> [--json]              Show code statistics")
+	fmt.Println("  doctor                                     Check environment dependencies")
+	fmt.Println("  lsp                                        Start LSP server")
+	fmt.Println("  version                                    Print version")
+	fmt.Println("  help                                       Show this help")
+}
+
+// suggestCommand returns the closest matching command for typos
+func suggestCommand(input string) string {
+	commands := []string{"check", "build", "diff", "run", "dev", "test", "migrate",
+		"generate", "docs", "fmt", "lint", "init", "eject", "deploy",
+		"completion", "version", "help"}
+	
+	// Common typos mapping
+	typos := map[string]string{
+		"chekc":   "check",
+		"chek":    "check",
+		"biuld":   "build",
+		"buid":    "build",
+		"buld":    "build",
+		"diff":    "diff",
+		"ru":      "run",
+		"rn":      "run",
+		"de":      "dev",
+		"tev":     "dev",
+		"tets":    "test",
+		"tst":     "test",
+		"migarte": "migrate",
+		"migrat":  "migrate",
+		"generat": "generate",
+		"gen":     "generate",
+		"dcos":    "docs",
+		"fnt":     "fmt",
+		"fromat":  "fmt",
+		"int":     "init",
+		"ejet":    "eject",
+		"deply":   "deploy",
+		"complet": "completion",
+		"compl":   "completion",
+		"verison": "version",
+		"versin":  "version",
+		"ver":     "version",
+		"hlep":    "help",
+		"hel":     "help",
+	}
+	
+	// Direct typo match
+	if suggestion, ok := typos[input]; ok {
+		return suggestion
+	}
+	
+	// Find closest match by Levenshtein distance
+	bestMatch := ""
+	bestDist := 3 // Only suggest if within 2 edits
+	
+	for _, cmd := range commands {
+		dist := levenshteinDistance(input, cmd)
+		if dist < bestDist {
+			bestDist = dist
+			bestMatch = cmd
+		}
+	}
+	
+	return bestMatch
+}
+
+// levenshteinDistance calculates the edit distance between two strings
+func levenshteinDistance(a, b string) int {
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+	
+	// Use a simple iterative approach with O(min(m,n)) space
+	if len(a) < len(b) {
+		a, b = b, a
+	}
+	
+	previous := make([]int, len(b)+1)
+	current := make([]int, len(b)+1)
+	
+	for j := 0; j <= len(b); j++ {
+		previous[j] = j
+	}
+	
+	for i := 1; i <= len(a); i++ {
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			current[j] = min3(
+				current[j-1]+1,    // insertion
+				previous[j]+1,     // deletion
+				previous[j-1]+cost, // substitution
+			)
+		}
+		previous, current = current, previous
+	}
+	
+	return previous[len(b)]
+}
+
+func min3(a, b, c int) int {
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
+}
+
+// JSON output helpers
+
+func printJSONError(errorType, message string) {
+	output := map[string]interface{}{
+		"success": false,
+		"error": map[string]string{
+			"type":    errorType,
+			"message": message,
+		},
+	}
+	printJSON(output)
+}
+
+func printJSONCheckResult(filename string, valid bool, parseErrors []parser.ParseError, checkErrors []checker.CheckError) {
+	output := map[string]interface{}{
+		"success":  valid,
+		"filename": filename,
+	}
+	
+	if !valid {
+		var errors []map[string]interface{}
+		
+		for _, e := range parseErrors {
+			errors = append(errors, map[string]interface{}{
+				"type":     "parse",
+				"message":  e.Message,
+				"line":     e.Loc.Line,
+				"column":   e.Loc.Col,
+				"file":     e.Loc.File,
+			})
+		}
+		
+		for _, e := range checkErrors {
+			errors = append(errors, map[string]interface{}{
+				"type":    "semantic",
+				"message": e.Message,
+				"line":    e.Loc.Line,
+				"column":  e.Loc.Col,
+				"file":    e.Loc.File,
+			})
+		}
+		
+		output["errors"] = errors
+		output["error_count"] = len(errors)
+	}
+	
+	printJSON(output)
+}
+
+func printJSON(v interface{}) {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	encoder.Encode(v)
+}
+
+// cmdStats shows code statistics for a Blueprint file
+func cmdStats(filename string, jsonOutput bool) int {
+	src, err := os.ReadFile(filename)
+	if err != nil {
+		if jsonOutput {
+			printJSONError("read_error", err.Error())
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		}
+		return 2
+	}
+
+	file, parseErrors := parser.ParseFile(filename, src)
+	if len(parseErrors) > 0 {
+		if jsonOutput {
+			printJSON(map[string]interface{}{
+				"success": false,
+				"error":   "parse errors in file",
+			})
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: file has %d parse error(s)\n", len(parseErrors))
+		}
+		return 1
+	}
+
+	// Count different block types
+	stats := struct {
+		TotalLines      int `json:"total_lines"`
+		Models          int `json:"models"`
+		Endpoints       int `json:"endpoints"`
+		Functions       int `json:"functions"`
+		Pipes           int `json:"pipes"`
+		Middleware      int `json:"middleware"`
+		Workers         int `json:"workers"`
+		Schedules       int `json:"schedules"`
+		Tests           int `json:"tests"`
+		Secrets         int `json:"secrets"`
+		EnvVars         int `json:"env_vars"`
+		Enums           int `json:"enums"`
+		Types           int `json:"types"`
+		ComplexityScore int `json:"complexity_score"`
+	}{}
+
+	stats.TotalLines = len(strings.Split(string(src), "\n"))
+
+	for _, block := range file.Blocks {
+		switch b := block.(type) {
+		case *ast.Model:
+			stats.Models++
+			stats.ComplexityScore += len(b.Fields)
+		case *ast.Endpoint:
+			stats.Endpoints++
+			stats.ComplexityScore += len(b.Stmts)
+		case *ast.Fn:
+			stats.Functions++
+			if b.Logic != nil {
+				stats.ComplexityScore += len(b.Logic.Stmts)
+			}
+		case *ast.Pipe:
+			stats.Pipes++
+			stats.ComplexityScore += len(b.Stmts)
+		case *ast.Middleware:
+			stats.Middleware++
+			stats.ComplexityScore += len(b.Before) + len(b.After)
+		case *ast.Worker:
+			stats.Workers++
+			stats.ComplexityScore += len(b.Stmts)
+		case *ast.Schedule:
+			stats.Schedules++
+			stats.ComplexityScore += len(b.Stmts)
+		case *ast.Test:
+			stats.Tests++
+		case *ast.Secret:
+			stats.Secrets++
+		case *ast.Env:
+			stats.EnvVars++
+		case *ast.Enum:
+			stats.Enums++
+			stats.ComplexityScore += len(b.Variants)
+		case *ast.TypeDecl:
+			stats.Types++
+		}
+	}
+
+	if jsonOutput {
+		printJSON(map[string]interface{}{
+			"success":  true,
+			"filename": filename,
+			"stats":    stats,
+		})
+	} else {
+		fmt.Printf("Statistics for %s:\n\n", filename)
+		fmt.Printf("  Lines of code:     %d\n", stats.TotalLines)
+		fmt.Printf("  Complexity score:  %d\n\n", stats.ComplexityScore)
+		fmt.Println("  Blocks:")
+		fmt.Printf("    Models:      %d\n", stats.Models)
+		fmt.Printf("    Endpoints:   %d\n", stats.Endpoints)
+		fmt.Printf("    Functions:   %d\n", stats.Functions)
+		fmt.Printf("    Pipes:       %d\n", stats.Pipes)
+		fmt.Printf("    Middleware:  %d\n", stats.Middleware)
+		fmt.Printf("    Workers:     %d\n", stats.Workers)
+		fmt.Printf("    Schedules:   %d\n", stats.Schedules)
+		fmt.Printf("    Tests:       %d\n", stats.Tests)
+		fmt.Printf("    Enums:       %d\n", stats.Enums)
+		fmt.Printf("    Types:       %d\n", stats.Types)
+		fmt.Println()
+		fmt.Println("  Configuration:")
+		fmt.Printf("    Secrets:     %d\n", stats.Secrets)
+		fmt.Printf("    Env vars:    %d\n", stats.EnvVars)
+	}
+
+	return 0
+}
+
+// cmdDoctor checks the environment for Blueprint dependencies
+func cmdDoctor() int {
+	checks := []struct {
+		Name     string `json:"name"`
+		Command  string `json:"-"`
+		Required bool   `json:"required"`
+		Found    bool   `json:"found"`
+		Version  string `json:"version,omitempty"`
+		Message  string `json:"message,omitempty"`
+	}{
+		{Name: "Go", Command: "go version", Required: false},
+		{Name: "Node.js", Command: "node --version", Required: true},
+		{Name: "npm", Command: "npm --version", Required: true},
+		{Name: "Docker", Command: "docker --version", Required: false},
+		{Name: "PostgreSQL", Command: "psql --version", Required: false},
+		{Name: "Redis", Command: "redis-cli --version", Required: false},
+		{Name: "Git", Command: "git --version", Required: false},
+	}
+
+	allPassed := true
+	for i := range checks {
+		cmd := exec.Command("sh", "-c", checks[i].Command)
+		output, err := cmd.Output()
+		if err == nil {
+			checks[i].Found = true
+			version := strings.TrimSpace(string(output))
+			// Extract version number
+			parts := strings.Fields(version)
+			if len(parts) >= 3 {
+				checks[i].Version = parts[2]
+			} else if len(parts) >= 1 {
+				checks[i].Version = parts[0]
+			}
+		} else {
+			checks[i].Found = false
+			if checks[i].Required {
+				allPassed = false
+				checks[i].Message = "Required for running generated projects"
+			} else {
+				checks[i].Message = "Optional"
+			}
+		}
+	}
+
+	// Check environment variables
+	envVars := []struct {
+		Name    string `json:"name"`
+		Set     bool   `json:"set"`
+		Message string `json:"message,omitempty"`
+	}{
+		{Name: "ANTHROPIC_API_KEY", Message: "Required for bp generate"},
+		{Name: "DATABASE_URL", Message: "Default database connection"},
+		{Name: "REDIS_URL", Message: "For caching and job queues"},
+	}
+
+	for i := range envVars {
+		envVars[i].Set = os.Getenv(envVars[i].Name) != ""
+	}
+
+	fmt.Println("Blueprint Environment Check")
+	fmt.Println()
+	fmt.Println("Dependencies:")
+	for _, c := range checks {
+		status := "✅"
+		if !c.Found {
+			if c.Required {
+				status = "❌"
+			} else {
+				status = "⚠️"
+			}
+		}
+		fmt.Printf("  %s %-12s", status, c.Name)
+		if c.Found {
+			fmt.Printf("(%s)", c.Version)
+		}
+		if c.Message != "" {
+			fmt.Printf(" - %s", c.Message)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println()
+	fmt.Println("Environment Variables:")
+	for _, e := range envVars {
+		status := "❌"
+		if e.Set {
+			status = "✅"
+		}
+		fmt.Printf("  %s %-20s", status, e.Name)
+		if !e.Set && e.Message != "" {
+			fmt.Printf("- %s", e.Message)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println()
+	if allPassed {
+		fmt.Println("✅ All required dependencies found!")
+		return 0
+	} else {
+		fmt.Println("❌ Some required dependencies are missing.")
+		fmt.Println("   Install Node.js and npm to run generated projects.")
+		return 1
+	}
 }

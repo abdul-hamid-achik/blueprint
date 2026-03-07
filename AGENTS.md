@@ -33,6 +33,7 @@ internal/
     nodes.go                    # All AST node types (Blueprint, Model, Endpoint, ...)
     visitor.go                  # Visitor interface
     walk.go                     # Generic tree walker
+    printer.go                  # BP file formatter
   checker/
     scope.go                    # Scope management, name resolution
     types.go                    # Type system implementation
@@ -40,10 +41,30 @@ internal/
     checker_test.go             # 57+ tests
   codegen/
     codegen.go                  # Generator interface + OutputFile type
-    js/
-      generator.go              # Main JS/TS generator (1964 lines)
-      helpers.go                # exprToJS, type mappings, query helpers (1024 lines)
-      generator_test.go         # 7 codegen tests
+    js/                         # JavaScript/TypeScript code generator
+      generator.go              # Main JS/TS generator
+      helpers.go                # exprToJS, type mappings, query helpers
+      routes.go                 # REST/STREAM/WS route generation
+      schema.go                 # Drizzle schema generation
+      functions.go              # Function and pipe generation
+      static.go                 # package.json, tsconfig, Dockerfile
+      imports.go                # Import collection and deduplication
+      events.go                 # Event/stream handling
+      templates/                # Code templates
+      generator_test.go         # Codegen tests
+      golden_test.go            # Golden file snapshot tests
+  generate/
+    generate.go                 # LLM integration for @> slots
+  linter/
+    linter.go                   # Lint rules (block-ordering, intent-on-endpoints, etc.)
+    linter_test.go              # Linter tests
+  docs/
+    openapi.go                  # OpenAPI 3.1 spec generation
+    docs_test.go                # Docs tests
+  lsp/
+    server.go                   # Language Server Protocol implementation
+  registry/
+    registry.go                 # Package registry (future: bp add/install)
 testdata/
   valid/                        # 35+ valid .bp fixture files
   invalid/                      # 21+ invalid .bp fixture files (expected errors)
@@ -77,6 +98,9 @@ go test ./internal/lexer/...    # lexer only
 go test ./internal/parser/...   # parser only
 go test ./internal/checker/...  # checker only
 go test ./internal/codegen/...  # codegen only
+go test ./internal/generate/... # generate/LLM tests
+go test ./internal/linter/...   # linter tests
+go test ./internal/docs/...     # docs/OpenAPI tests
 
 # Build and validate the reference example
 go build -o bin/bp ./cmd/bp
@@ -153,24 +177,29 @@ These are acknowledged gaps between spec and current implementation:
 
 ### Codegen (M3 gaps)
 - **Workers** — `genWorker()` is implemented but has no test coverage in `generator_test.go` and is not exercised by `all_features.bp`.
-- **STREAM endpoints** (`STREAM /path { ... }`) — collected into `streams` slice and passed to `genIndex`, but silently unused there. No `genStreamEndpoint` method exists.
-- **WS endpoints** (`WS /path { ... }`) — same as STREAM; collected but silently dropped.
 - **`subscribe` blocks** — not implemented.
-- **`call external`** in endpoints — the `external` block generates `src/lib/external.ts` but `call service GET /path` inside endpoints is not handled in `emitArrowStmts`.
-- **`map` operations** — emitted as basic JS but without proper type context.
+- **`call external`** in endpoints — the `external` block generates `src/lib/external.ts` but `call service GET /path` inside endpoints is not fully hardened.
 - **Test codegen** — basic vitest files generated but fixture system (`seed api_key { ... }`) emits raw strings, not functional code.
-- **`bp eject`** command — not implemented.
 
 ### CLI (M4–M7)
+- `bp check` — ✅ implemented (`--json` flag for CI output)
+- `bp build` — ✅ implemented
+- `bp diff` — ✅ implemented (preview changes before building)
+- `bp run` — ✅ implemented (build + npm install + npm start)
+- `bp dev` — ✅ implemented (polling watcher + subprocess restart)
+- `bp test` — ✅ implemented (build + npm install if needed + npx vitest run)
+- `bp migrate` — ✅ implemented (build + npx drizzle-kit generate|push|studio|check)
+- `bp deploy` — ✅ implemented (Docker build + optional Fly.io deploy)
+- `bp generate` — ✅ implemented (`internal/generate/generate.go`, needs `ANTHROPIC_API_KEY`)
 - `bp init` — ✅ implemented (`cmd/bp/main.go`)
 - `bp fmt` — ✅ implemented (`internal/ast/printer.go`)
 - `bp lint` — ✅ implemented (`internal/linter/linter.go`)
 - `bp docs` — ✅ implemented (`internal/docs/openapi.go`, generates OpenAPI 3.1 JSON)
-- `bp dev` — ✅ implemented (polling watcher + subprocess restart)
-- `bp run` — ✅ implemented (build + npm install + npm start)
-- `bp test` — ✅ implemented (build + npm install if needed + npx vitest run)
-- `bp migrate` — ✅ implemented (build + npx drizzle-kit generate|push|studio|check)
-- `bp generate` — ✅ implemented (`internal/generate/generate.go`, needs `ANTHROPIC_API_KEY`)
+- `bp stats` — ✅ implemented (code statistics: models, endpoints, functions, etc.)
+- `bp doctor` — ✅ implemented (environment dependency checks)
+- `bp completion` — ✅ implemented (bash/zsh/fish shell completion)
+- `bp lsp` — ✅ implemented (`internal/lsp/server.go`, basic LSP server)
+- `bp eject` — ✅ implemented (removes Blueprint markers from generated code)
 - `@blueprint/runtime` npm package — ✅ `packages/runtime/` (BpError, paginate, requireEnv, type utilities)
 - GoReleaser — ✅ `.goreleaser.yaml` (Linux/macOS/Windows, amd64/arm64, Homebrew tap)
 - Release CI — ✅ `.github/workflows/release.yml` (triggers on v* tags)

@@ -21,7 +21,31 @@ jobs:
         run: go build ./...
 
       - name: Test with race detection and coverage
-        run: go test ./... -v -count=1 -race -coverprofile=coverage.out
+        run: go test ./... -v -count=1 -race -coverprofile=coverage.out -covermode=atomic
+
+      - name: Check coverage threshold
+        run: |
+          # Get overall coverage percentage
+          COVERAGE=$(go tool cover -func=coverage.out | grep "total:" | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: ${COVERAGE}%"
+
+          # Per-package coverage thresholds
+          echo ""
+          echo "Per-package coverage:"
+          go test ./... -cover 2>&1 | grep -E "coverage:|no test files" || true
+
+          # Current overall threshold is 60% (will increase as we add more tests)
+          # Individual package thresholds:
+          # - internal/lexer: 85%
+          # - internal/parser: 75%
+          # - internal/checker: 80%
+          # - internal/codegen/js: 75%
+          THRESHOLD=60.0
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "❌ Coverage ${COVERAGE}% is below threshold of ${THRESHOLD}%"
+            exit 1
+          fi
+          echo "✅ Coverage ${COVERAGE}% meets threshold of ${THRESHOLD}%"
 
       - name: Upload coverage
         if: always()

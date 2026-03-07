@@ -262,17 +262,23 @@ generated/
 
 | Command | Status | Description |
 |---------|--------|-------------|
-| `bp check <file>` | ✅ | Validate syntax and semantics |
+| `bp check <file> [--json]` | ✅ | Validate syntax and semantics |
 | `bp build <file> [--out <dir>]` | ✅ | Compile to TypeScript project |
+| `bp diff <file> [--out <dir>]` | ✅ | Preview changes before building |
 | `bp run <file> [--out <dir>]` | ✅ | Build and start the server |
 | `bp dev <file> [--out <dir>]` | ✅ | Watch mode — rebuild and restart on changes |
+| `bp test <file> [--out <dir>]` | ✅ | Build and run vitest |
+| `bp migrate <file> [generate\|push]` | ✅ | Build and run drizzle-kit |
+| `bp deploy <file> [--out <dir>] [--tag <image>]` | ✅ | Deploy to Docker or Fly.io |
+| `bp generate <file> [--write]` | ✅ | Resolve `@>` slots via LLM (needs `ANTHROPIC_API_KEY`) |
 | `bp init [name]` | ✅ | Scaffold a new Blueprint project |
 | `bp fmt <file> [--write]` | ✅ | Format .bp files |
 | `bp lint <file>` | ✅ | Lint for style and best practices |
 | `bp docs <file> [--out file.json]` | ✅ | Generate OpenAPI 3.1 JSON spec |
-| `bp test <file> [--out <dir>]` | ✅ | Build and run vitest |
-| `bp migrate <file> [generate\|push]` | ✅ | Build and run drizzle-kit |
-| `bp generate <file> [--write]` | ✅ | Resolve `@>` slots via LLM (needs `ANTHROPIC_API_KEY`) |
+| `bp stats <file> [--json]` | ✅ | Show code statistics |
+| `bp doctor` | ✅ | Check environment dependencies |
+| `bp completion <bash\|zsh\|fish>` | ✅ | Generate shell completion script |
+| `bp lsp` | ✅ | Start Language Server Protocol server |
 | `bp eject <dir>` | ✅ | Remove Blueprint markers — make generated code fully yours |
 | `bp version` | ✅ | Show version |
 

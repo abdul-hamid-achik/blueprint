@@ -369,6 +369,157 @@ bp help
 
 ---
 
+## `bp diff`
+
+Preview what changes `bp build` will make before overwriting output.
+
+```bash
+bp diff <file.bp> [--out <dir>]
+```
+
+Compares current generated output against what a fresh build would produce. Shows a unified diff of changes.
+
+**Example:**
+
+```bash
+bp diff my-service.bp
+# Shows diff between current generated/ and new build output
+```
+
+---
+
+## `bp deploy`
+
+Deploy the generated application to Docker or Fly.io.
+
+```bash
+bp deploy <file.bp> [--out <dir>] [--tag <image>]
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out <dir>` | `generated/` | Build output directory |
+| `--tag <image>` | blueprint-app | Docker image tag |
+
+**Example:**
+
+```bash
+# Build and deploy locally with Docker
+bp deploy my-service.bp --tag my-app:latest
+
+# Deploy to Fly.io (requires flyctl)
+bp deploy my-service.bp --tag my-app:latest
+```
+
+---
+
+## `bp stats`
+
+Show code statistics for a Blueprint file.
+
+```bash
+bp stats <file.bp> [--json]
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | false | Output in JSON format |
+
+**Example:**
+
+```bash
+bp stats my-service.bp
+# Models: 12
+# Endpoints: 45
+# Functions: 8
+# Pipes: 3
+# Lines of code: 1,247
+```
+
+---
+
+## `bp doctor`
+
+Check your environment for Blueprint dependencies.
+
+```bash
+bp doctor
+```
+
+Verifies that required tools are installed and accessible:
+- Go (for building from source)
+- Node.js and npm
+- Docker (optional)
+- PostgreSQL client (optional)
+- Redis client (optional)
+
+**Example:**
+
+```bash
+bp doctor
+# ✓ Go 1.22.0
+# ✓ Node.js 20.5.0
+# ✓ npm 10.2.3
+# ✓ Docker 24.0.7
+# ⚠ PostgreSQL client not found (optional)
+```
+
+---
+
+## `bp completion`
+
+Generate shell completion script.
+
+```bash
+bp completion <bash|zsh|fish>
+```
+
+**Example:**
+
+```bash
+# Bash
+source <(bp completion bash)
+
+# Zsh
+source <(bp completion zsh)
+
+# Fish
+bp completion fish | source
+```
+
+---
+
+## `bp lsp`
+
+Start the Language Server Protocol server.
+
+```bash
+bp lsp
+```
+
+Provides IDE support for Blueprint files:
+- Syntax error diagnostics
+- Hover documentation
+- Go-to-definition (planned)
+- Autocomplete (planned)
+
+Configure your editor to use `bp lsp` for `.bp` files.
+
+**Example (VS Code settings.json):**
+
+```json
+{
+  "blueprint.languageServer.path": "bp",
+  "blueprint.languageServer.args": ["lsp"]
+}
+```
+
+---
+
 ## Environment Variables
 
 | Variable | Used by | Description |

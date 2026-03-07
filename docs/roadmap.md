@@ -345,7 +345,7 @@ Blueprint is open source. To contribute:
 
 1. Pick an item from this roadmap
 2. Open an issue to discuss the approach
-3. Read the [Architecture](./architecture) page for codebase orientation
+3. Read the [Architecture](/architecture) page for codebase orientation
 4. Submit a PR
 
 See the [GitHub repository](https://github.com/abdul-hamid-achik/blueprint) for the issue tracker and contributing guidelines.

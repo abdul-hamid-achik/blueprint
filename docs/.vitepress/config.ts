@@ -82,6 +82,7 @@ export default defineConfig({
           { text: 'Testing Guide', link: '/testing-guide' },
           { text: 'Deployment', link: '/deployment' },
           { text: 'LLM Generation', link: '/llm-generation' },
+          { text: 'FAQ', link: '/faq' },
         ],
       },
       {
@@ -89,6 +90,7 @@ export default defineConfig({
         items: [
           { text: 'Architecture', link: '/architecture' },
           { text: 'Roadmap', link: '/roadmap' },
+          { text: 'Changelog', link: '/changelog' },
         ],
       },
     ],
