@@ -240,6 +240,50 @@ func main() {
 			os.Exit(1)
 		}
 		os.Exit(cmdEject(os.Args[2]))
+	case "diff":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("diff", "diff <file.bp> [--out <dir>]",
+				"Show what changes bp build would make, without overwriting.",
+				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+			os.Exit(0)
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>]")
+			os.Exit(1)
+		}
+		outDir := "generated"
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "--out" && i+1 < len(os.Args) {
+				outDir = os.Args[i+1]
+				i++
+			}
+		}
+		os.Exit(cmdDiff(os.Args[2], outDir))
+	case "deploy":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("deploy", "deploy <file.bp> [--out <dir>] [--tag <tag>]",
+				"Build and run a Docker container from your Blueprint.",
+				[][2]string{
+					{"--out <dir>", "Output directory (default: generated/)"},
+					{"--tag <tag>", "Docker image tag (default: blueprint-app:latest)"}})
+			os.Exit(0)
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp deploy <file.bp> [--out <dir>] [--tag <tag>]")
+			os.Exit(1)
+		}
+		outDir := "generated"
+		tag := "blueprint-app:latest"
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "--out" && i+1 < len(os.Args) {
+				outDir = os.Args[i+1]
+				i++
+			} else if os.Args[i] == "--tag" && i+1 < len(os.Args) {
+				tag = os.Args[i+1]
+				i++
+			}
+		}
+		os.Exit(cmdDeploy(os.Args[2], outDir, tag))
 	case "version", "--version", "-v":
 		fmt.Printf("bp version %s\n", version)
 	case "help", "--help", "-h":
@@ -872,6 +916,184 @@ func cmdEject(dir string) int {
 	return 0
 }
 
+func cmdDiff(filename, outDir string) int {
+	// First, check if the .bp file is valid
+	src, err := os.ReadFile(filename)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return 2
+	}
+
+	file, parseErrors := parser.ParseFile(filename, src)
+	if len(parseErrors) > 0 {
+		for _, e := range parseErrors {
+			fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
+		}
+		return 1
+	}
+
+	if errs := resolveIncludes(file, filename); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, e)
+		}
+		return 1
+	}
+
+	checkErrors := checker.Check(file)
+	if len(checkErrors) > 0 {
+		for _, e := range checkErrors {
+			fmt.Fprintln(os.Stderr, e)
+		}
+		return 1
+	}
+
+	// Create temp dir for new build
+	tmpDir, err := os.MkdirTemp("", "bp-diff-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return 2
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Generate to temp dir
+	gen := js.New()
+	if err := gen.Generate(file, tmpDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
+		return 4
+	}
+
+	// Compare temp dir with existing outDir
+	hasDiff := false
+
+	// Check if outDir exists
+	if _, err := os.Stat(outDir); os.IsNotExist(err) {
+		newCount := 0
+		filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				newCount++
+			}
+			return nil
+		})
+		fmt.Printf("Directory %s does not exist — would create %d new files\n", outDir, newCount)
+		hasDiff = true
+	} else {
+		// Walk both directories and compare
+		err := filepath.Walk(tmpDir, func(newPath string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return err
+			}
+			rel, _ := filepath.Rel(tmpDir, newPath)
+			oldPath := filepath.Join(outDir, rel)
+
+			oldData, err := os.ReadFile(oldPath)
+			if os.IsNotExist(err) {
+				fmt.Printf("New file: %s\n", rel)
+				hasDiff = true
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+
+			newData, _ := os.ReadFile(newPath)
+			if string(oldData) != string(newData) {
+				fmt.Printf("Modified: %s\n", rel)
+				hasDiff = true
+			}
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error comparing files: %s\n", err)
+			return 2
+		}
+
+		// Check for deleted files
+		err = filepath.Walk(outDir, func(oldPath string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return err
+			}
+			rel, _ := filepath.Rel(outDir, oldPath)
+			newPath := filepath.Join(tmpDir, rel)
+			if _, err := os.Stat(newPath); os.IsNotExist(err) {
+				fmt.Printf("Deleted: %s\n", rel)
+				hasDiff = true
+			}
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error checking for deleted files: %s\n", err)
+			return 2
+		}
+	}
+
+	if !hasDiff {
+		fmt.Println("No changes — output is up to date.")
+	}
+	return 0
+}
+
+func cmdDeploy(filename, outDir, tag string) int {
+	// First, build the project
+	fmt.Println("Building...")
+	src, err := os.ReadFile(filename)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return 2
+	}
+
+	file, parseErrors := parser.ParseFile(filename, src)
+	if len(parseErrors) > 0 {
+		for _, e := range parseErrors {
+			fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
+		}
+		return 1
+	}
+
+	if errs := resolveIncludes(file, filename); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, e)
+		}
+		return 1
+	}
+
+	checkErrors := checker.Check(file)
+	if len(checkErrors) > 0 {
+		for _, e := range checkErrors {
+			fmt.Fprintln(os.Stderr, e)
+		}
+		return 1
+	}
+
+	// Build to outDir
+	gen := js.New()
+	if err := gen.Generate(file, outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
+		return 4
+	}
+
+	// Check if Dockerfile exists
+	dockerfilePath := filepath.Join(outDir, "Dockerfile")
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Error: No Dockerfile found in %s\n", outDir)
+		return 2
+	}
+
+	// Build Docker image
+	fmt.Printf("Building Docker image: %s\n", tag)
+	cmd := exec.Command("docker", "build", "-t", tag, ".")
+	cmd.Dir = outDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Docker build failed: %s\n", err)
+		return 2
+	}
+
+	fmt.Printf("\nDeploy complete! Image: %s\n", tag)
+	fmt.Println("Run with: docker run -p 3000:3000", tag)
+	return 0
+}
+
 func buildInitTemplate(displayName, safeName string) string {
 	return fmt.Sprintf(`@ %q
 blueprint %q {
@@ -937,6 +1159,7 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  check    <file.bp>                       Validate syntax and semantics")
 	fmt.Println("  build    <file.bp> [--out dir]           Compile .bp to JavaScript/TypeScript")
+	fmt.Println("  diff     <file.bp> [--out dir]           Show changes without overwriting")
 	fmt.Println("  run      <file.bp> [--out dir]           Build and start the server")
 	fmt.Println("  dev      <file.bp> [--out dir]           Watch mode — rebuild and restart on changes")
 	fmt.Println("  test     <file.bp> [--out dir]           Build and run vitest")
@@ -947,6 +1170,7 @@ func printUsage() {
 	fmt.Println("  lint     <file.bp>                       Lint a .bp file for best practices")
 	fmt.Println("  init     [name]                          Scaffold a new Blueprint project")
 	fmt.Println("  eject    <dir>                           Remove Blueprint markers from generated code")
+	fmt.Println("  deploy   <file.bp> [--tag <image>]       Build and run Docker container")
 	fmt.Println("  version                                  Print version")
 	fmt.Println("  help                                     Show this help")
 }

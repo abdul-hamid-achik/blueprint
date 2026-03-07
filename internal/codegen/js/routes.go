@@ -742,6 +742,10 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		toPascalCase(fileKey)))
 	b.WriteString(fmt.Sprintf("  const %s = new Hono();\n\n", routeVar))
 
+	// Room management: Map<roomId, Set<WebSocket>>
+	b.WriteString("  // Room management for join/leave/broadcast\n")
+	b.WriteString("  const _rooms = new Map<string, Set<any>>();\n\n")
+
 	for _, ep := range endpoints {
 		b.WriteString(fmt.Sprintf("// WS %s\n", ep.Path))
 		if ep.Intent != nil {

@@ -91,6 +91,37 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 		enumNames[strings.ToLower(e.Name)] = varName
 	}
 
+	// Collect and emit inline enums from model fields
+	// Map: enum key (modelName_fieldName) -> { varName, variants }
+	inlineEnums := make(map[string]struct {
+		varName  string
+		variants []string
+	})
+	for _, m := range models {
+		for _, f := range m.Fields {
+			if ie, ok := f.Type.(*ast.EnumInline); ok {
+				key := m.Name + "_" + f.Name
+				ienumVariants := make([]string, len(ie.Variants))
+				for i, v := range ie.Variants {
+					ienumVariants[i] = fmt.Sprintf("'%s'", v)
+				}
+				inlineEnums[key] = struct {
+					varName  string
+					variants []string
+				}{
+					varName:  toCamelCase(m.Name) + toPascalCase(f.Name) + "Enum",
+					variants: ienumVariants,
+				}
+			}
+		}
+	}
+	// Generate pgEnum declarations for inline enums
+	for _, ie := range inlineEnums {
+		enumName := strings.ReplaceAll(ie.varName, "Enum", "")
+		b.WriteString(fmt.Sprintf("export const %s = pgEnum('%s', [%s]);\n\n",
+			ie.varName, strings.ToLower(enumName), strings.Join(ie.variants, ", ")))
+	}
+
 	// Emit each model as a pgTable
 	for _, m := range models {
 		tableName := pluralize(m.Name)
@@ -109,17 +140,11 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 				}
 			}
 
-			// Check for inline enum — generate a pgEnum for it
-			if ie, ok := f.Type.(*ast.EnumInline); ok {
+			// Check for inline enum — use the generated pgEnum
+			if _, ok := f.Type.(*ast.EnumInline); ok {
 				inlineEnumVar := toCamelCase(m.Name) + toPascalCase(f.Name) + "Enum"
-				variants := make([]string, len(ie.Variants))
-				for i, v := range ie.Variants {
-					variants[i] = fmt.Sprintf("'%s'", v)
-				}
-				// Insert the enum declaration before this table (will be above in output)
-				// For simplicity, use text with a check comment for now
-				b.WriteString(fmt.Sprintf("  %s: text('%s')", colName, f.Name))
-				_ = inlineEnumVar
+				// Use the generated pgEnum instead of text
+				b.WriteString(fmt.Sprintf("  %s: %s('%s')", colName, inlineEnumVar, f.Name))
 				g.writeFieldConstraints(&b, f)
 				b.WriteString(",\n")
 				continue
