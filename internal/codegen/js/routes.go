@@ -759,7 +759,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 
 		// Extract path params into closure-scoped variables so all handlers can access them
 		for _, param := range pathParams {
-			b.WriteString(fmt.Sprintf("  const %s = c.req.param('%s');\n", toCamelCase(param), param))
+			b.WriteString(fmt.Sprintf("  const %s = c.req.param('%s') || '';\n", toCamelCase(param), param))
 		}
 
 		// Hoist variables from onConnect that are used across handlers.

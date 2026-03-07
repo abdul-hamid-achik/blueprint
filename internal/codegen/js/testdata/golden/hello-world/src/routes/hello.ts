@@ -9,7 +9,7 @@ export const helloRoutes = new Hono();
 // Greeting endpoint
 helloRoutes.get('/api/hello/:name', async (c) => {
   try {
-    const name = c.req.param('name');
+    const name = c.req.param('name') || '';
     return c.json({ message: `Hello, ${name}!` }, 200 as const);
   } catch (err) {
     if (err instanceof BpError) return c.json({ error: err.message }, err.statusCode);

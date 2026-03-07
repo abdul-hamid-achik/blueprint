@@ -810,7 +810,7 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 						b.WriteString(fmt.Sprintf("%s%s %s = z.coerce.number().int().parse(c.req.param('%s'));\n",
 							indent, decl, name, s.Name))
 					default:
-						b.WriteString(fmt.Sprintf("%s%s %s = c.req.param('%s');\n",
+						b.WriteString(fmt.Sprintf("%s%s %s = c.req.param('%s') || '';\n",
 							indent, decl, name, s.Name))
 					}
 				} else if ctx.method == "GET" || ctx.method == "DELETE" {
