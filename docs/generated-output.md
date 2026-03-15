@@ -19,6 +19,7 @@ generated/
 │       ├── api.ts
 │       ├── schemas.ts
 │       ├── client.ts
+│       ├── i18n.ts
 │       └── react-query.ts   # optional via --react-query
 └── src/
     ├── index.ts
@@ -33,10 +34,14 @@ generated/
     ├── validation/
     │   └── schemas.ts
     ├── lib/
+    │   ├── analytics.ts
     │   ├── db.ts
     │   ├── env.ts
     │   ├── errors.ts
+    │   ├── i18n.ts
+    │   ├── save-migrations.ts
     │   ├── storage.ts
+    │   ├── state.ts
     │   ├── cache.ts
     │   └── queue.ts
     ├── routes/
@@ -48,6 +53,8 @@ generated/
     ├── middleware/
     │   └── <name>.ts
     ├── workers/
+    │   └── <name>.ts
+    ├── saves/
     │   └── <name>.ts
     └── schedules/
         └── <name>.ts
@@ -135,7 +142,7 @@ export const patchTodosSchema = z.object({
 
 ### `src/types.ts`
 
-TypeScript type definitions, including custom types, aliases, and rich enum config objects.
+TypeScript type definitions, including custom types, aliases, state-machine unions, and rich enum config objects.
 
 ```typescript
 export type Plan = 'free' | 'pro' | 'enterprise';
@@ -146,6 +153,57 @@ export const PlanConfig = {
   enterprise: { rate_limit: '1000/min', max_file: 500 * 1024 * 1024,  monthly_ops: 100000 },
 } as const;
 ```
+
+When you use `state mission_status { ... }`, this file also includes generated state unions and transition metadata.
+
+### `src/lib/i18n.ts`
+
+Localization metadata and translation bundles declared with `locale` and `translation`.
+
+```typescript
+export const locales = ["en", "fr-FR"] as const;
+export const defaultLocale = "en";
+export const localeFallbacks = { "en": "en", "fr-FR": "en" } as const;
+export const translationNamespaces = { missionText: ["mission.start"] } as const;
+export const translationValues = {
+  missionText: {
+    en: { "mission.start": "Start mission" },
+  },
+} as const;
+```
+
+### `src/lib/state.ts`
+
+Runtime helpers for `state` declarations.
+
+```typescript
+export function canTransitionMissionStatus(from: string, to: string): boolean {
+  return ((MissionStatusTransitions as any)[from] ?? []).includes(to);
+}
+
+export function transitionMissionStatus<T extends string>(from: T, to: T): T {
+  if (!canTransitionMissionStatus(from, to)) throw new InvalidTransitionError("mission_status", from, to);
+  return to;
+}
+```
+
+### `src/lib/analytics.ts`
+
+Analytics event metadata plus the generated `track(...)` helper. HTTP sinks are queued, batched, and retried with backoff.
+
+```typescript
+await track("mission_started", { missionId: "m_123" });
+```
+
+### `src/lib/save-migrations.ts`
+
+Save upgrade helpers generated from `save` declarations.
+
+```typescript
+const upgraded = await upgradePlayerProgressSave(saveData);
+```
+
+If you declare `migrate 1 -> 2 using "./custom-player-progress"`, this file imports that hook and the stub is generated in `src/saves/custom-player-progress.ts`.
 
 ### `src/types/api.ts`
 
@@ -238,6 +296,7 @@ The package exports:
 - `frontend/src/api.ts`
 - `frontend/src/schemas.ts`
 - `frontend/src/client.ts`
+- `frontend/src/i18n.ts`
 - `frontend/src/react-query.ts` when `--react-query` is enabled
 - `frontend/src/index.ts` as a convenience barrel export
 

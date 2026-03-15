@@ -2,6 +2,7 @@ package js
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
@@ -10,7 +11,7 @@ import (
 
 // --- Types ---
 
-func (g *Generator) genTypes(types []*ast.TypeDecl, aliases []*ast.Alias, enums []*ast.Enum) codegen.OutputFile {
+func (g *Generator) genTypes(types []*ast.TypeDecl, aliases []*ast.Alias, enums []*ast.Enum, states []*ast.StateMachine) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 
@@ -19,42 +20,69 @@ func (g *Generator) genTypes(types []*ast.TypeDecl, aliases []*ast.Alias, enums 
 		isStruct := g.structEnums[e.Name]
 		if isStruct {
 			// Struct enum: generate plain string enum + separate config object
-			b.WriteString(fmt.Sprintf("export const %s = {\n", name))
+			fmt.Fprintf(&b, "export const %s = {\n", name)
 			for _, v := range e.Variants {
-				b.WriteString(fmt.Sprintf("  %s: '%s',\n", v.Name, v.Name))
+				fmt.Fprintf(&b, "  %s: '%s',\n", v.Name, v.Name)
 			}
 			b.WriteString("} as const;\n")
-			b.WriteString(fmt.Sprintf("export type %s = keyof typeof %s;\n\n", name, name))
+			fmt.Fprintf(&b, "export type %s = keyof typeof %s;\n\n", name, name)
 			// Config object with struct field data
-			b.WriteString(fmt.Sprintf("export const %sConfig: Record<string, any> = {\n", name))
+			fmt.Fprintf(&b, "export const %sConfig: Record<string, any> = {\n", name)
 			for _, v := range e.Variants {
 				if v.Body != nil && len(v.Body.Entries) > 0 {
 					parts := make([]string, len(v.Body.Entries))
 					for i, kv := range v.Body.Entries {
 						parts[i] = fmt.Sprintf("%s: %s", toCamelCase(kv.Key), exprToJS(kv.Value))
 					}
-					b.WriteString(fmt.Sprintf("  %s: { %s },\n", v.Name, strings.Join(parts, ", ")))
+					fmt.Fprintf(&b, "  %s: { %s },\n", v.Name, strings.Join(parts, ", "))
 				} else {
-					b.WriteString(fmt.Sprintf("  %s: {},\n", v.Name))
+					fmt.Fprintf(&b, "  %s: {},\n", v.Name)
 				}
 			}
 			b.WriteString("};\n\n")
 		} else {
-			b.WriteString(fmt.Sprintf("export const %s = {\n", name))
+			fmt.Fprintf(&b, "export const %s = {\n", name)
 			for _, v := range e.Variants {
-				b.WriteString(fmt.Sprintf("  %s: '%s',\n", v.Name, v.Name))
+				fmt.Fprintf(&b, "  %s: '%s',\n", v.Name, v.Name)
 			}
 			b.WriteString("} as const;\n")
-			b.WriteString(fmt.Sprintf("export type %s = keyof typeof %s;\n\n", name, name))
+			fmt.Fprintf(&b, "export type %s = keyof typeof %s;\n\n", name, name)
 		}
 	}
 
 	for _, a := range aliases {
-		b.WriteString(fmt.Sprintf("export type %s = %s;\n\n", a.Name, typeToTS(a.Type)))
+		fmt.Fprintf(&b, "export type %s = %s;\n\n", a.Name, typeToTS(a.Type))
+	}
+
+	for _, s := range states {
+		statesName := toPascalCase(s.Name)
+		stateVals := make([]string, len(s.States))
+		for i, state := range s.States {
+			stateVals[i] = fmt.Sprintf("%q", state)
+		}
+		fmt.Fprintf(&b, "export const %sStates = [%s] as const;\n", statesName, strings.Join(stateVals, ", "))
+		fmt.Fprintf(&b, "export type %s = (typeof %sStates)[number];\n", statesName, statesName)
+		transitionMap := make(map[string][]string)
+		for _, st := range s.States {
+			transitionMap[st] = []string{}
+		}
+		for _, tr := range s.Transitions {
+			transitionMap[tr.From] = append(transitionMap[tr.From], tr.To)
+		}
+		parts := make([]string, 0, len(s.States))
+		for _, st := range s.States {
+			targets := transitionMap[st]
+			quoted := make([]string, len(targets))
+			for i, t := range targets {
+				quoted[i] = fmt.Sprintf("%q", t)
+			}
+			parts = append(parts, fmt.Sprintf("  %s: [%s]", st, strings.Join(quoted, ", ")))
+		}
+		fmt.Fprintf(&b, "export const %sTransitions = {\n%s\n} as const;\n\n", statesName, strings.Join(parts, ",\n"))
 	}
 
 	for _, t := range types {
-		b.WriteString(fmt.Sprintf("export interface %s {\n", toPascalCase(t.Name)))
+		fmt.Fprintf(&b, "export interface %s {\n", toPascalCase(t.Name))
 		for _, f := range t.Fields {
 			opt := ""
 			for _, c := range f.Constraints {
@@ -63,7 +91,7 @@ func (g *Generator) genTypes(types []*ast.TypeDecl, aliases []*ast.Alias, enums 
 					break
 				}
 			}
-			b.WriteString(fmt.Sprintf("  %s%s: %s;\n", toCamelCase(f.Name), opt, typeToTS(f.Type)))
+			fmt.Fprintf(&b, "  %s%s: %s;\n", toCamelCase(f.Name), opt, typeToTS(f.Type))
 		}
 		b.WriteString("}\n\n")
 	}
@@ -78,6 +106,11 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { pgTable, pgEnum, text, integer, real, boolean, uuid, timestamp, jsonb } from 'drizzle-orm/pg-core';\n\n")
 
+	namedTypes := collectNamedTypesFromModels(models)
+	if len(namedTypes) > 0 {
+		fmt.Fprintf(&b, "import type { %s } from '../types.js';\n\n", strings.Join(namedTypes, ", "))
+	}
+
 	// Build enum name lookup for column type matching
 	enumNames := make(map[string]string) // lower(name) -> varName
 	for _, e := range enums {
@@ -86,8 +119,8 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 		for i, v := range e.Variants {
 			variants[i] = fmt.Sprintf("'%s'", v.Name)
 		}
-		b.WriteString(fmt.Sprintf("export const %s = pgEnum('%s', [%s]);\n\n",
-			varName, strings.ToLower(e.Name), strings.Join(variants, ", ")))
+		fmt.Fprintf(&b, "export const %s = pgEnum('%s', [%s]);\n\n",
+			varName, strings.ToLower(e.Name), strings.Join(variants, ", "))
 		enumNames[strings.ToLower(e.Name)] = varName
 	}
 
@@ -118,14 +151,14 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 	// Generate pgEnum declarations for inline enums
 	for _, ie := range inlineEnums {
 		enumName := strings.ReplaceAll(ie.varName, "Enum", "")
-		b.WriteString(fmt.Sprintf("export const %s = pgEnum('%s', [%s]);\n\n",
-			ie.varName, strings.ToLower(enumName), strings.Join(ie.variants, ", ")))
+		fmt.Fprintf(&b, "export const %s = pgEnum('%s', [%s]);\n\n",
+			ie.varName, strings.ToLower(enumName), strings.Join(ie.variants, ", "))
 	}
 
 	// Emit each model as a pgTable
 	for _, m := range models {
 		tableName := pluralize(m.Name)
-		b.WriteString(fmt.Sprintf("export const %s = pgTable('%s', {\n", toCamelCase(m.Name), tableName))
+		fmt.Fprintf(&b, "export const %s = pgTable('%s', {\n", toCamelCase(m.Name), tableName)
 
 		for _, f := range m.Fields {
 			colName := toCamelCase(f.Name)
@@ -133,7 +166,7 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 			// Check for named type matching a declared enum
 			if nt, ok := f.Type.(*ast.NamedType); ok {
 				if enumVar, exists := enumNames[strings.ToLower(nt.Name)]; exists {
-					b.WriteString(fmt.Sprintf("  %s: %s('%s')", colName, enumVar, f.Name))
+					fmt.Fprintf(&b, "  %s: %s('%s')", colName, enumVar, f.Name)
 					g.writeFieldConstraints(&b, f)
 					b.WriteString(",\n")
 					continue
@@ -144,25 +177,57 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 			if _, ok := f.Type.(*ast.EnumInline); ok {
 				inlineEnumVar := toCamelCase(m.Name) + toPascalCase(f.Name) + "Enum"
 				// Use the generated pgEnum instead of text
-				b.WriteString(fmt.Sprintf("  %s: %s('%s')", colName, inlineEnumVar, f.Name))
+				fmt.Fprintf(&b, "  %s: %s('%s')", colName, inlineEnumVar, f.Name)
 				g.writeFieldConstraints(&b, f)
 				b.WriteString(",\n")
 				continue
 			}
 
 			colType := typeToDrizzle(f.Type)
-			b.WriteString(fmt.Sprintf("  %s: %s('%s')", colName, colType, f.Name))
+			fmt.Fprintf(&b, "  %s: %s('%s')", colName, colType, f.Name)
+			if jt, ok := f.Type.(*ast.TypedJSONType); ok {
+				fmt.Fprintf(&b, ".$type<%s>()", typeToTS(jt.Inner))
+			}
 			g.writeFieldConstraints(&b, f)
 			b.WriteString(",\n")
 		}
 		b.WriteString("});\n\n")
 
 		// Emit TypeScript type from model
-		b.WriteString(fmt.Sprintf("export type %s = typeof %s.$inferSelect;\n", toPascalCase(m.Name), toCamelCase(m.Name)))
-		b.WriteString(fmt.Sprintf("export type New%s = typeof %s.$inferInsert;\n\n", toPascalCase(m.Name), toCamelCase(m.Name)))
+		fmt.Fprintf(&b, "export type %s = typeof %s.$inferSelect;\n", toPascalCase(m.Name), toCamelCase(m.Name))
+		fmt.Fprintf(&b, "export type New%s = typeof %s.$inferInsert;\n\n", toPascalCase(m.Name), toCamelCase(m.Name))
 	}
 
 	return codegen.OutputFile{Path: "src/models/schema.ts", Content: []byte(b.String())}
+}
+
+func collectNamedTypesFromModels(models []*ast.Model) []string {
+	set := map[string]struct{}{}
+	for _, m := range models {
+		for _, f := range m.Fields {
+			collectNamedTypesFromTypeExpr(f.Type, set)
+		}
+	}
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, toPascalCase(name))
+	}
+	slices.Sort(names)
+	return names
+}
+
+func collectNamedTypesFromTypeExpr(t ast.TypeExpr, set map[string]struct{}) {
+	switch v := t.(type) {
+	case *ast.TypedJSONType:
+		collectNamedTypesFromTypeExpr(v.Inner, set)
+	case *ast.NamedType:
+		set[v.Name] = struct{}{}
+	case *ast.ListType:
+		collectNamedTypesFromTypeExpr(v.Element, set)
+	case *ast.MapType:
+		collectNamedTypesFromTypeExpr(v.Key, set)
+		collectNamedTypesFromTypeExpr(v.Value, set)
+	}
 }
 
 // writeFieldConstraints writes Drizzle column constraints for a field.
@@ -213,7 +278,7 @@ func (g *Generator) writeFieldConstraints(b *strings.Builder, f *ast.Field) {
 				if _, ok := c.Value.(*ast.Ident); ok {
 					val = fmt.Sprintf(`"%s"`, exprToString(c.Value))
 				}
-				b.WriteString(fmt.Sprintf(".default(%s)", val))
+				fmt.Fprintf(b, ".default(%s)", val)
 			}
 			// Fields with defaults are implicitly not-null in Drizzle
 			if isRequired {
@@ -221,7 +286,7 @@ func (g *Generator) writeFieldConstraints(b *strings.Builder, f *ast.Field) {
 			}
 		case "ref":
 			if ref := exprToString(c.Value); ref != "" {
-				b.WriteString(fmt.Sprintf(".references(() => %s.id)", toCamelCase(ref)))
+				fmt.Fprintf(b, ".references(() => %s.id)", toCamelCase(ref))
 			}
 		}
 	}
@@ -232,7 +297,17 @@ func (g *Generator) writeFieldConstraints(b *strings.Builder, f *ast.Field) {
 func (g *Generator) genValidation(endpoints []*ast.Endpoint) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
-	b.WriteString("import { z } from 'zod';\n\n")
+	b.WriteString("import { z } from 'zod';\n")
+
+	namedTypes := collectNamedTypesFromEndpointInputs(endpoints)
+	if len(namedTypes) > 0 {
+		schemaNames := make([]string, len(namedTypes))
+		for i, name := range namedTypes {
+			schemaNames[i] = frontendSchemaName(name)
+		}
+		fmt.Fprintf(&b, "import { %s } from '../types/schemas.js';\n", strings.Join(schemaNames, ", "))
+	}
+	b.WriteString("\n")
 
 	emitted := make(map[string]bool) // track emitted schema names
 
@@ -258,7 +333,7 @@ func (g *Generator) genValidation(endpoints []*ast.Endpoint) codegen.OutputFile 
 
 		isQuerySource := ep.Method == "GET" || ep.Method == "DELETE"
 
-		b.WriteString(fmt.Sprintf("export const %s = z.object({\n", schemaName))
+		fmt.Fprintf(&b, "export const %s = z.object({\n", schemaName)
 		for _, inp := range inputs {
 			var zodType string
 			if isQuerySource {
@@ -267,12 +342,31 @@ func (g *Generator) genValidation(endpoints []*ast.Endpoint) codegen.OutputFile 
 				zodType = typeToZod(inp.Type)
 			}
 			zodType += constraintsToZod(inp.Constraints)
-			b.WriteString(fmt.Sprintf("  %s: %s,\n", inp.Name, zodType))
+			fmt.Fprintf(&b, "  %s: %s,\n", inp.Name, zodType)
 		}
 		b.WriteString("});\n\n")
 	}
 
 	return codegen.OutputFile{Path: "src/validation/schemas.ts", Content: []byte(b.String())}
+}
+
+func collectNamedTypesFromEndpointInputs(endpoints []*ast.Endpoint) []string {
+	set := map[string]struct{}{}
+	for _, ep := range endpoints {
+		for _, stmt := range ep.Stmts {
+			inp, ok := stmt.(*ast.InputStmt)
+			if !ok {
+				continue
+			}
+			collectNamedTypesFromTypeExpr(inp.Type, set)
+		}
+	}
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func endpointSchemaName(method, path string) string {

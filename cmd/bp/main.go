@@ -1173,7 +1173,9 @@ func cmdDiff(filename, outDir string, reactQuery, frontendOnly bool) int {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		return 2
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+	}()
 
 	// Generate to temp dir
 	gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly)
@@ -1188,12 +1190,15 @@ func cmdDiff(filename, outDir string, reactQuery, frontendOnly bool) int {
 	// Check if outDir exists
 	if _, err := os.Stat(outDir); os.IsNotExist(err) {
 		newCount := 0
-		filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
+		if err := filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
 			if err == nil && !info.IsDir() {
 				newCount++
 			}
 			return nil
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			return 2
+		}
 		fmt.Printf("Directory %s does not exist — would create %d new files\n", outDir, newCount)
 		hasDiff = true
 	} else {
@@ -1706,7 +1711,9 @@ func printJSONCheckResult(filename string, valid bool, parseErrors []parser.Pars
 func printJSON(v interface{}) {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
-	encoder.Encode(v)
+	if err := encoder.Encode(v); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to encode JSON output: %v\n", err)
+	}
 }
 
 // cmdStats shows code statistics for a Blueprint file

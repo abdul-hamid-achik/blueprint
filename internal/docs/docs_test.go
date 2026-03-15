@@ -236,6 +236,96 @@ GET /api/items {
 	}
 }
 
+func TestGenerateOpenAPI_TypedJSONUsesInnerSchema(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+type MissionDefinition {
+  title string required
+}
+
+@ "Create mission"
+POST /api/missions {
+  <- data json<MissionDefinition> required
+  -> 201 { ok: true }
+}
+`
+	spec := parseAndGenOpenAPI(t, src)
+	paths := spec["paths"].(map[string]any)
+	post := paths["/api/missions"].(map[string]any)["post"].(map[string]any)
+	body := post["requestBody"].(map[string]any)
+	content := body["content"].(map[string]any)["application/json"].(map[string]any)
+	schema := content["schema"].(map[string]any)
+	props := schema["properties"].(map[string]any)
+	dataSchema := props["data"].(map[string]any)
+	if dataSchema["$ref"] != "#/components/schemas/MissionDefinition" {
+		t.Fatalf("expected typed json to reference MissionDefinition, got %v", dataSchema)
+	}
+}
+
+func TestGenerateOpenAPI_ContentBlockSchema(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+type MissionDefinition {
+  title string required
+}
+
+content mission {
+  data json<MissionDefinition> required
+}
+`
+	spec := parseAndGenOpenAPI(t, src)
+	components := spec["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+	mission := schemas["Mission"].(map[string]any)
+	props := mission["properties"].(map[string]any)
+	if _, ok := props["key"]; !ok {
+		t.Fatal("content schemas should include generated key field")
+	}
+	if _, ok := props["status"]; !ok {
+		t.Fatal("content schemas should include generated status field")
+	}
+	data := props["data"].(map[string]any)
+	if data["$ref"] != "#/components/schemas/MissionDefinition" {
+		t.Fatalf("expected content data field to reference MissionDefinition, got %v", data)
+	}
+}
+
+func TestGenerateOpenAPI_TranslationKeyTypeEnum(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+translation mission_text {
+  key "mission.start"
+  key "mission.complete"
+}
+
+type MissionDefinition {
+  title_key tkey(mission_text) required
+}
+`
+	spec := parseAndGenOpenAPI(t, src)
+	components := spec["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+	mission := schemas["MissionDefinition"].(map[string]any)
+	props := mission["properties"].(map[string]any)
+	titleKey := props["title_key"].(map[string]any)
+	enumVals := titleKey["enum"].([]any)
+	if len(enumVals) != 2 || enumVals[0] != "mission.start" || enumVals[1] != "mission.complete" {
+		t.Fatalf("expected translation key enum values, got %v", enumVals)
+	}
+}
+
 func TestGenerateOpenAPI_RequestBody(t *testing.T) {
 	src := `blueprint "test" {
   version "1.0.0"

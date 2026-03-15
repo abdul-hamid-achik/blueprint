@@ -24,7 +24,7 @@ func TestMain(m *testing.M) {
 		panic(string(out))
 	}
 	code := m.Run()
-	os.RemoveAll(tmp)
+	_ = os.RemoveAll(tmp)
 	os.Exit(code)
 }
 

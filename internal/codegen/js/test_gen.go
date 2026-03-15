@@ -71,13 +71,13 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 
 	name := toCamelCase(t.Name)
 	if t.Intent != nil {
-		b.WriteString(fmt.Sprintf("// %s\n", t.Intent.Text))
+		fmt.Fprintf(&b, "// %s\n", t.Intent.Text)
 	}
-	b.WriteString(fmt.Sprintf("describe('%s', () => {\n", name))
+	fmt.Fprintf(&b, "describe('%s', () => {\n", name)
 
 	// Hoist setup variables to describe scope.
 	for _, v := range hoistedVarList {
-		b.WriteString(fmt.Sprintf("  let %s: any;\n", v))
+		fmt.Fprintf(&b, "  let %s: any;\n", v)
 	}
 	if len(hoistedVarList) > 0 {
 		b.WriteString("\n")
@@ -103,41 +103,41 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 	if t.Request != nil && t.Request.Repeat > 1 {
 		repeat = t.Request.Repeat
 	}
-	b.WriteString(fmt.Sprintf("  it('%s', async () => {\n", t.Name))
+	fmt.Fprintf(&b, "  it('%s', async () => {\n", t.Name)
 	indent := "    "
 	if repeat > 1 {
-		b.WriteString(fmt.Sprintf("    for (let _i = 0; _i < %d; _i++) {\n", repeat))
+		fmt.Fprintf(&b, "    for (let _i = 0; _i < %d; _i++) {\n", repeat)
 		indent = "      "
 	}
 
 	// HTTP request.
 	if t.Target != nil {
 		method := strings.ToUpper(t.Target.Method)
-		b.WriteString(fmt.Sprintf("%sconst res = await app.request('%s', {\n", indent, t.Target.Path))
-		b.WriteString(fmt.Sprintf("%s  method: '%s',\n", indent, method))
+		fmt.Fprintf(&b, "%sconst res = await app.request('%s', {\n", indent, t.Target.Path)
+		fmt.Fprintf(&b, "%s  method: '%s',\n", indent, method)
 
 		if t.Request != nil {
 			// Auth header (e.g. auth api_key(key.key_hash) → X-API-Key header).
 			for _, kv := range t.Request.Entries {
 				if kv.Key == "auth" {
 					if hdr := testAuthHeader(kv.Value); hdr != "" {
-						b.WriteString(fmt.Sprintf("%s  headers: %s,\n", indent, hdr))
+						fmt.Fprintf(&b, "%s  headers: %s,\n", indent, hdr)
 					}
 				}
 			}
 			// Request body with fixture() resolution.
 			for _, kv := range t.Request.Entries {
 				if kv.Key == "body" {
-					b.WriteString(fmt.Sprintf("%s  body: JSON.stringify(%s),\n", indent, testResolveExpr(kv.Value, fixtureMap)))
+					fmt.Fprintf(&b, "%s  body: JSON.stringify(%s),\n", indent, testResolveExpr(kv.Value, fixtureMap))
 				}
 			}
 		}
-		b.WriteString(fmt.Sprintf("%s});\n", indent))
+		fmt.Fprintf(&b, "%s});\n", indent)
 	}
 
 	// Parse response body once if any body assertions exist.
 	if hasBodyAssertions {
-		b.WriteString(fmt.Sprintf("%sconst body = await res.json() as any;\n", indent))
+		fmt.Fprintf(&b, "%sconst body = await res.json() as any;\n", indent)
 	}
 
 	// Assertions.
@@ -297,13 +297,13 @@ func emitTestAssertion(b *strings.Builder, a *ast.Assertion, indent string) {
 	case "status":
 		// "status 200" — second field is the numeric code.
 		if len(fields) >= 2 {
-			b.WriteString(fmt.Sprintf("%sexpect(res.status).toBe(%s);\n", indent, fields[1]))
+			fmt.Fprintf(b, "%sexpect(res.status).toBe(%s);\n", indent, fields[1])
 		}
 	case "body":
 		// Patterns: body . field is type  /  body . field == value  /  body . field exists
 		path, op, rhs := parseAssertionFields(fields)
 		if path == "" {
-			b.WriteString(fmt.Sprintf("%s// TODO: assert %s\n", indent, a.Raw))
+			fmt.Fprintf(b, "%s// TODO: assert %s\n", indent, a.Raw)
 			return
 		}
 		// Convert snake_case field to camelCase JS path.
@@ -318,15 +318,15 @@ func emitTestAssertion(b *strings.Builder, a *ast.Assertion, indent string) {
 		case "is":
 			emitTypeExpect(b, jsPath, rhs, indent)
 		case "==":
-			b.WriteString(fmt.Sprintf("%sexpect(%s).toBe(%s);\n", indent, jsPath, rhs))
+			fmt.Fprintf(b, "%sexpect(%s).toBe(%s);\n", indent, jsPath, rhs)
 		case "!=":
-			b.WriteString(fmt.Sprintf("%sexpect(%s).not.toBe(%s);\n", indent, jsPath, rhs))
+			fmt.Fprintf(b, "%sexpect(%s).not.toBe(%s);\n", indent, jsPath, rhs)
 		case "exists":
-			b.WriteString(fmt.Sprintf("%sexpect(%s).toBeDefined();\n", indent, jsPath))
+			fmt.Fprintf(b, "%sexpect(%s).toBeDefined();\n", indent, jsPath)
 		case "not_exists":
-			b.WriteString(fmt.Sprintf("%sexpect(%s).toBeUndefined();\n", indent, jsPath))
+			fmt.Fprintf(b, "%sexpect(%s).toBeUndefined();\n", indent, jsPath)
 		default:
-			b.WriteString(fmt.Sprintf("%s// TODO: assert %s\n", indent, a.Raw))
+			fmt.Fprintf(b, "%s// TODO: assert %s\n", indent, a.Raw)
 		}
 	case "header":
 		// header . Name == value
@@ -337,18 +337,18 @@ func emitTestAssertion(b *strings.Builder, a *ast.Assertion, indent string) {
 			if len(parts) == 2 {
 				headerName = parts[1]
 			}
-			b.WriteString(fmt.Sprintf("%sexpect(res.headers.get('%s')).toBe(%s);\n", indent, headerName, rhs))
+			fmt.Fprintf(b, "%sexpect(res.headers.get('%s')).toBe(%s);\n", indent, headerName, rhs)
 		} else {
-			b.WriteString(fmt.Sprintf("%s// TODO: assert %s\n", indent, a.Raw))
+			fmt.Fprintf(b, "%s// TODO: assert %s\n", indent, a.Raw)
 		}
 	case "model":
 		// model job where ( id == body . job_id , status == "done" ) exists
 		emitModelAssertion(b, fields, indent)
 	case "duration":
 		// duration < 500ms  — timing assertion (approximate)
-		b.WriteString(fmt.Sprintf("%s// TODO: assert %s\n", indent, a.Raw))
+		fmt.Fprintf(b, "%s// TODO: assert %s\n", indent, a.Raw)
 	default:
-		b.WriteString(fmt.Sprintf("%s// TODO: assert %s\n", indent, a.Raw))
+		fmt.Fprintf(b, "%s// TODO: assert %s\n", indent, a.Raw)
 	}
 }
 
@@ -360,7 +360,7 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 
 	// fields[0] == "model", fields[1] == model name
 	if len(fields) < 2 {
-		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: could not parse model assertion: %s\n", indent, raw))
+		fmt.Fprintf(b, "%sexpect(true).toBe(false); // PARSE ERROR: could not parse model assertion: %s\n", indent, raw)
 		return
 	}
 	modelName := fields[1]
@@ -379,7 +379,7 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 
 	// Validate: must have matching parens with content
 	if start < 0 || end_ < 0 || end_ <= start {
-		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: missing or empty where clause in model assertion: %s\n", indent, raw))
+		fmt.Fprintf(b, "%sexpect(true).toBe(false); // PARSE ERROR: missing or empty where clause in model assertion: %s\n", indent, raw)
 		return
 	}
 
@@ -388,15 +388,16 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 	tailValid := false
 	if end_+1 < len(fields) {
 		tail := fields[end_+1]
-		if tail == "exists" {
+		switch tail {
+		case "exists":
 			tailValid = true
-		} else if tail == "not" {
+		case "not":
 			exists = false
 			tailValid = true
 		}
 	}
 	if !tailValid {
-		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: missing exists/not after where in model assertion: %s\n", indent, raw))
+		fmt.Fprintf(b, "%sexpect(true).toBe(false); // PARSE ERROR: missing exists/not after where in model assertion: %s\n", indent, raw)
 		return
 	}
 
@@ -429,37 +430,37 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 
 	// If any conditions failed to parse, emit a failing assertion
 	if len(parseErrors) > 0 {
-		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: could not parse model condition(s): %s\n", indent, strings.Join(parseErrors, "; ")))
+		fmt.Fprintf(b, "%sexpect(true).toBe(false); // PARSE ERROR: could not parse model condition(s): %s\n", indent, strings.Join(parseErrors, "; "))
 		return
 	}
 
 	// Must have at least one condition
 	if len(conditions) == 0 {
-		b.WriteString(fmt.Sprintf("%sexpect(true).toBe(false); // PARSE ERROR: no conditions found in model assertion: %s\n", indent, raw))
+		fmt.Fprintf(b, "%sexpect(true).toBe(false); // PARSE ERROR: no conditions found in model assertion: %s\n", indent, raw)
 		return
 	}
 
 	// Emit the query — use singular model name for schema reference (matches schema.ts exports)
 	schemaTable := "schema." + toCamelCase(modelName)
-	b.WriteString(fmt.Sprintf("%sconst _row = await db.select().from(%s)", indent, schemaTable))
+	fmt.Fprintf(b, "%sconst _row = await db.select().from(%s)", indent, schemaTable)
 	if len(conditions) == 1 {
-		b.WriteString(fmt.Sprintf(".where(%s)", conditions[0]))
+		fmt.Fprintf(b, ".where(%s)", conditions[0])
 	} else if len(conditions) > 1 {
-		b.WriteString(fmt.Sprintf(".where(and(\n"))
+		b.WriteString(".where(and(\n")
 		for i, c := range conditions {
 			sep := ","
 			if i == len(conditions)-1 {
 				sep = ""
 			}
-			b.WriteString(fmt.Sprintf("%s  %s%s\n", indent, c, sep))
+			fmt.Fprintf(b, "%s  %s%s\n", indent, c, sep)
 		}
-		b.WriteString(fmt.Sprintf("%s))", indent))
+		fmt.Fprintf(b, "%s))", indent)
 	}
 	b.WriteString(".limit(1);\n")
 	if exists {
-		b.WriteString(fmt.Sprintf("%sexpect(_row.length).toBeGreaterThan(0);\n", indent))
+		fmt.Fprintf(b, "%sexpect(_row.length).toBeGreaterThan(0);\n", indent)
 	} else {
-		b.WriteString(fmt.Sprintf("%sexpect(_row.length).toBe(0);\n", indent))
+		fmt.Fprintf(b, "%sexpect(_row.length).toBe(0);\n", indent)
 	}
 }
 
@@ -574,18 +575,18 @@ func parseAssertionFields(fields []string) (path, op, rhs string) {
 func emitTypeExpect(b *strings.Builder, jsPath, typeName, indent string) {
 	switch typeName {
 	case "string":
-		b.WriteString(fmt.Sprintf("%sexpect(typeof %s).toBe('string');\n", indent, jsPath))
+		fmt.Fprintf(b, "%sexpect(typeof %s).toBe('string');\n", indent, jsPath)
 	case "uuid":
-		b.WriteString(fmt.Sprintf("%sexpect(%s).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);\n", indent, jsPath))
+		fmt.Fprintf(b, "%sexpect(%s).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);\n", indent, jsPath)
 	case "email":
-		b.WriteString(fmt.Sprintf(`%sexpect(%s).toMatch(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);`+"\n", indent, jsPath))
+		fmt.Fprintf(b, `%sexpect(%s).toMatch(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);`+"\n", indent, jsPath)
 	case "url":
-		b.WriteString(fmt.Sprintf("%sexpect(() => new URL(%s)).not.toThrow();\n", indent, jsPath))
+		fmt.Fprintf(b, "%sexpect(() => new URL(%s)).not.toThrow();\n", indent, jsPath)
 	case "number", "int", "float":
-		b.WriteString(fmt.Sprintf("%sexpect(typeof %s).toBe('number');\n", indent, jsPath))
+		fmt.Fprintf(b, "%sexpect(typeof %s).toBe('number');\n", indent, jsPath)
 	case "bool", "boolean":
-		b.WriteString(fmt.Sprintf("%sexpect(typeof %s).toBe('boolean');\n", indent, jsPath))
+		fmt.Fprintf(b, "%sexpect(typeof %s).toBe('boolean');\n", indent, jsPath)
 	default:
-		b.WriteString(fmt.Sprintf("%sexpect(%s).toBeDefined(); // type: %s\n", indent, jsPath, typeName))
+		fmt.Fprintf(b, "%sexpect(%s).toBeDefined(); // type: %s\n", indent, jsPath, typeName)
 	}
 }

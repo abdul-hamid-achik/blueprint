@@ -51,6 +51,8 @@ GET /api/todos {
 
 `bp build todo.bp` generates a working [Hono](https://hono.dev) + [Drizzle](https://orm.drizzle.team) + [Zod](https://zod.dev) project. No boilerplate. No lock-in.
 
+Blueprint also supports game/content-platform patterns such as typed JSON payloads, versioned `content` records, localization bundles, state machines, analytics sinks, and save migration helpers.
+
 ---
 
 ## Install
@@ -231,6 +233,40 @@ schedule cleanup {
   |> old = query job where(created < 90.days.ago)
   |> delete old
   |> log "Cleaned {old.count} expired jobs"
+}
+```
+
+### Game and content workflows
+
+```bp
+locale en default
+
+translation mission_text {
+  key "mission.start"
+
+  locale en {
+    "mission.start": "Start mission"
+  }
+}
+
+state mission_status {
+  draft -> reviewed
+  reviewed -> published
+}
+
+content mission {
+  data json<MissionDefinition> required
+}
+
+analytics gameplay {
+  event mission_started
+  sink console
+}
+
+save player_progress {
+  model save_slot
+  version_field save_version
+  latest 3
 }
 ```
 

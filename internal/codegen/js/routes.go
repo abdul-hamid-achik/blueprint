@@ -49,10 +49,10 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	}
 	for _, u := range bp.Uses {
 		if pkg, ok := builtinMiddleware[u.Name]; ok {
-			b.WriteString(fmt.Sprintf("import { %s } from '%s';\n", u.Name, pkg))
+			fmt.Fprintf(&b, "import { %s } from '%s';\n", u.Name, pkg)
 		} else {
-			b.WriteString(fmt.Sprintf("import { %s } from './middleware/%s.js';\n",
-				toCamelCase(u.Name), toKebabCase(u.Name)))
+			fmt.Fprintf(&b, "import { %s } from './middleware/%s.js';\n",
+				toCamelCase(u.Name), toKebabCase(u.Name))
 		}
 	}
 
@@ -86,19 +86,19 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 
 	// Import regular route files (sorted for deterministic output)
 	for _, res := range sortedKeys2(routeResources) {
-		b.WriteString(fmt.Sprintf("import { %sRoutes } from './routes/%s.js';\n", toCamelCase(res), toKebabCase(res)))
+		fmt.Fprintf(&b, "import { %sRoutes } from './routes/%s.js';\n", toCamelCase(res), toKebabCase(res))
 	}
 
 	// Import stream route files
 	for _, res := range sortedKeys2(streamResources) {
 		fk := fileKeyForStream(res)
-		b.WriteString(fmt.Sprintf("import { %sRoutes } from './routes/%s.js';\n", toCamelCase(fk), toKebabCase(fk)))
+		fmt.Fprintf(&b, "import { %sRoutes } from './routes/%s.js';\n", toCamelCase(fk), toKebabCase(fk))
 	}
 
 	// Import WS route factory functions
 	for _, res := range sortedKeys2(wsResources) {
 		fk := fileKeyForWs(res)
-		b.WriteString(fmt.Sprintf("import { create%sRoutes } from './routes/%s.js';\n", toPascalCase(fk), toKebabCase(fk)))
+		fmt.Fprintf(&b, "import { create%sRoutes } from './routes/%s.js';\n", toPascalCase(fk), toKebabCase(fk))
 	}
 
 	// Import subscription handlers and event emitter
@@ -107,7 +107,7 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		for _, sub := range subscribes {
 			handlerName := "on" + toPascalCase(strings.ReplaceAll(sub.Event, ".", "_"))
 			fileName := toKebabCase(strings.ReplaceAll(sub.Event, ".", "-"))
-			b.WriteString(fmt.Sprintf("import { %s } from './subscriptions/%s.js';\n", handlerName, fileName))
+			fmt.Fprintf(&b, "import { %s } from './subscriptions/%s.js';\n", handlerName, fileName)
 		}
 	}
 
@@ -117,8 +117,10 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		for _, w := range workers {
 			name := toCamelCase(w.Name)
 			onFailName := name + "OnFail"
-			b.WriteString(fmt.Sprintf("import { %s, %s } from './workers/%s.js';\n",
-				name, onFailName, toKebabCase(w.Name)))
+			queueName := name + "QueueName"
+			timeoutName := name + "TimeoutMs"
+			fmt.Fprintf(&b, "import { %s, %s, %s, %s } from './workers/%s.js';\n",
+				name, onFailName, queueName, timeoutName, toKebabCase(w.Name))
 		}
 	}
 
@@ -128,8 +130,8 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		for _, s := range schedules {
 			name := toCamelCase(s.Name)
 			cronName := name + "Cron"
-			b.WriteString(fmt.Sprintf("import { %s, %s } from './schedules/%s.js';\n",
-				name, cronName, toKebabCase(s.Name)))
+			fmt.Fprintf(&b, "import { %s, %s } from './schedules/%s.js';\n",
+				name, cronName, toKebabCase(s.Name))
 		}
 	}
 
@@ -164,14 +166,14 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 				}
 				configParts[i] = fmt.Sprintf("%s: %s", key, exprToJS(kv.Value))
 			}
-			b.WriteString(fmt.Sprintf("app.use('*', %s({ %s }));\n",
-				toCamelCase(u.Name), strings.Join(configParts, ", ")))
+			fmt.Fprintf(&b, "app.use('*', %s({ %s }));\n",
+				toCamelCase(u.Name), strings.Join(configParts, ", "))
 		} else {
 			// Simple middleware
 			if _, ok := builtinMiddleware[u.Name]; ok {
-				b.WriteString(fmt.Sprintf("app.use('*', %s());\n", toCamelCase(u.Name)))
+				fmt.Fprintf(&b, "app.use('*', %s());\n", toCamelCase(u.Name))
 			} else {
-				b.WriteString(fmt.Sprintf("app.use('*', %s);\n", toCamelCase(u.Name)))
+				fmt.Fprintf(&b, "app.use('*', %s);\n", toCamelCase(u.Name))
 			}
 		}
 	}
@@ -181,19 +183,19 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 
 	// Mount regular routes (sorted for deterministic output)
 	for _, res := range sortedKeys2(routeResources) {
-		b.WriteString(fmt.Sprintf("app.route('/', %sRoutes);\n", toCamelCase(res)))
+		fmt.Fprintf(&b, "app.route('/', %sRoutes);\n", toCamelCase(res))
 	}
 
 	// Mount stream routes
 	for _, res := range sortedKeys2(streamResources) {
 		fk := fileKeyForStream(res)
-		b.WriteString(fmt.Sprintf("app.route('/', %sRoutes);\n", toCamelCase(fk)))
+		fmt.Fprintf(&b, "app.route('/', %sRoutes);\n", toCamelCase(fk))
 	}
 
 	// Mount WS routes (created via factory with runtime upgradeWebSocket)
 	for _, res := range sortedKeys2(wsResources) {
 		fk := fileKeyForWs(res)
-		b.WriteString(fmt.Sprintf("app.route('/', create%sRoutes(upgradeWebSocket));\n", toPascalCase(fk)))
+		fmt.Fprintf(&b, "app.route('/', create%sRoutes(upgradeWebSocket));\n", toPascalCase(fk))
 	}
 
 	b.WriteString("\n")
@@ -203,7 +205,7 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		b.WriteString("// Register event subscriptions\n")
 		for _, sub := range subscribes {
 			handlerName := "on" + toPascalCase(strings.ReplaceAll(sub.Event, ".", "_"))
-			b.WriteString(fmt.Sprintf("on('%s', %s);\n", sub.Event, handlerName))
+			fmt.Fprintf(&b, "on('%s', %s);\n", sub.Event, handlerName)
 		}
 		b.WriteString("\n")
 	}
@@ -213,8 +215,20 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		b.WriteString("// Start workers\n")
 		for _, w := range workers {
 			name := toCamelCase(w.Name)
-			queueName := w.Name
-			b.WriteString(fmt.Sprintf("new Worker('%s', async (job) => { await %s(job.data); }, {\n", queueName, name))
+			queueName := name + "QueueName"
+			timeoutName := name + "TimeoutMs"
+			fmt.Fprintf(&b, "new Worker(%s, async (job) => {\n", queueName)
+			b.WriteString("  try {\n")
+			fmt.Fprintf(&b, "    if (%s > 0) {\n", timeoutName)
+			fmt.Fprintf(&b, "      await Promise.race([%s(job.data), new Promise((_, reject) => setTimeout(() => reject(new Error('Worker timeout')), %s))]);\n", name, timeoutName)
+			b.WriteString("    } else {\n")
+			fmt.Fprintf(&b, "      await %s(job.data);\n", name)
+			b.WriteString("    }\n")
+			b.WriteString("  } catch (error) {\n")
+			fmt.Fprintf(&b, "    await %sOnFail(job.data, error instanceof Error ? error : new Error(String(error)));\n", name)
+			b.WriteString("    throw error;\n")
+			b.WriteString("  }\n")
+			b.WriteString("}, {\n")
 			b.WriteString("  connection: { url: env.REDIS_URL }\n")
 			b.WriteString("});\n")
 		}
@@ -228,7 +242,7 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		for _, s := range schedules {
 			name := toCamelCase(s.Name)
 			cronName := name + "Cron"
-			b.WriteString(fmt.Sprintf("schedulerQueue.add('%s', {}, { repeat: { pattern: %s } });\n", s.Name, cronName))
+			fmt.Fprintf(&b, "schedulerQueue.add('%s', {}, { repeat: { pattern: %s } });\n", s.Name, cronName)
 		}
 		b.WriteString("\n")
 	}
@@ -242,14 +256,14 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	b.WriteString("  return c.json({ error: 'Internal server error' }, 500 as const);\n")
 	b.WriteString("});\n\n")
 
-	b.WriteString(fmt.Sprintf("console.log('%%s listening on port %%d', %q, %d);\n", bp.Name, port))
+	fmt.Fprintf(&b, "console.log('%%s listening on port %%d', %q, %d);\n", bp.Name, port)
 
 	// If WS: use injectWebSocket(serve(...)), otherwise capture server ref for graceful shutdown
 	if len(ws) > 0 {
-		b.WriteString(fmt.Sprintf("const server = serve({ fetch: app.fetch, port: %d });\n", port))
+		fmt.Fprintf(&b, "const server = serve({ fetch: app.fetch, port: %d });\n", port)
 		b.WriteString("injectWebSocket(server);\n\n")
 	} else {
-		b.WriteString(fmt.Sprintf("const server = serve({ fetch: app.fetch, port: %d });\n\n", port))
+		fmt.Fprintf(&b, "const server = serve({ fetch: app.fetch, port: %d });\n\n", port)
 	}
 
 	// Graceful shutdown
@@ -343,13 +357,13 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	// Import validation schemas
 	if len(schemaNames) > 0 {
 		names := sortedKeys2(schemaNames)
-		b.WriteString(fmt.Sprintf("import { %s } from '../validation/schemas.js';\n",
-			strings.Join(names, ", ")))
+		fmt.Fprintf(&b, "import { %s } from '../validation/schemas.js';\n",
+			strings.Join(names, ", "))
 	}
 	// Import middleware
 	for _, mwName := range sortedKeys2(middlewareNames) {
-		b.WriteString(fmt.Sprintf("import { %s } from '../middleware/%s.js';\n",
-			toCamelCase(mwName), toKebabCase(mwName)))
+		fmt.Fprintf(&b, "import { %s } from '../middleware/%s.js';\n",
+			toCamelCase(mwName), toKebabCase(mwName))
 	}
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
 	if needsWebhookAuth {
@@ -389,10 +403,10 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		for _, k := range varKeys {
 			fields = append(fields, k+": any")
 		}
-		b.WriteString(fmt.Sprintf("export const %s = new Hono<{ Variables: { %s } }>();\n\n",
-			routeVar, strings.Join(fields, "; ")))
+		fmt.Fprintf(&b, "export const %s = new Hono<{ Variables: { %s } }>();\n\n",
+			routeVar, strings.Join(fields, "; "))
 	} else {
-		b.WriteString(fmt.Sprintf("export const %s = new Hono();\n\n", routeVar))
+		fmt.Fprintf(&b, "export const %s = new Hono();\n\n", routeVar)
 	}
 
 	// Module-level rate limit store (shared across all handlers in this file)
@@ -404,18 +418,18 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 
 	for _, ep := range endpoints {
 		method := strings.ToLower(ep.Method)
-		b.WriteString(fmt.Sprintf("// %s %s\n", ep.Method, ep.Path))
+		fmt.Fprintf(&b, "// %s %s\n", ep.Method, ep.Path)
 		if ep.Intent != nil {
-			b.WriteString(fmt.Sprintf("// %s\n", ep.Intent.Text))
+			fmt.Fprintf(&b, "// %s\n", ep.Intent.Text)
 		}
 
 		// Build handler: routeVar.method('path', ...middleware, zValidator, async (c) => { ... })
-		b.WriteString(fmt.Sprintf("%s.%s('%s'", routeVar, method, ep.Path))
+		fmt.Fprintf(&b, "%s.%s('%s'", routeVar, method, ep.Path)
 
 		// Add middleware
 		for _, meta := range ep.Meta {
 			if meta.Kind == "use" && meta.Use != nil {
-				b.WriteString(fmt.Sprintf(", %s", toCamelCase(meta.Use.Name)))
+				fmt.Fprintf(&b, ", %s", toCamelCase(meta.Use.Name))
 			}
 		}
 
@@ -435,7 +449,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 			if ep.Method == "GET" || ep.Method == "DELETE" {
 				source = "'query'"
 			}
-			b.WriteString(fmt.Sprintf(", zValidator(%s, %s)", source, schemaName))
+			fmt.Fprintf(&b, ", zValidator(%s, %s)", source, schemaName)
 		}
 
 		b.WriteString(", async (c) => {\n")
@@ -446,27 +460,27 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 			case "limit":
 				rateStr := exprToJS(meta.Value)
 				rateLimit, rateWindowMS := parseRateLimit(rateStr)
-				b.WriteString(fmt.Sprintf("  // rate limit: %s\n", rateStr))
+				fmt.Fprintf(&b, "  // rate limit: %s\n", rateStr)
 				// rate limit store is at module scope (see needsRateLimit above)
 				b.WriteString("  const _clientIp = c.req.header('x-forwarded-for') || 'unknown';\n")
 				b.WriteString("  const _now = Date.now();\n")
 				b.WriteString("  const _rateKey = `${_clientIp}:${c.req.path}`;\n")
 				b.WriteString("  const _rateEntry = _rateLimitStore.get(_rateKey);\n")
 				b.WriteString("  if (_rateEntry && _rateEntry.resetAt > _now) {\n")
-				b.WriteString(fmt.Sprintf("    if (_rateEntry.count >= %d) {\n", rateLimit))
+				fmt.Fprintf(&b, "    if (_rateEntry.count >= %d) {\n", rateLimit)
 				b.WriteString("      return c.json({ error: 'Rate limit exceeded' }, 429 as const);\n")
 				b.WriteString("    }\n")
 				b.WriteString("    _rateEntry.count++;\n")
 				b.WriteString("  } else {\n")
-				b.WriteString(fmt.Sprintf("    _rateLimitStore.set(_rateKey, { count: 1, resetAt: _now + %d });\n", rateWindowMS))
+				fmt.Fprintf(&b, "    _rateLimitStore.set(_rateKey, { count: 1, resetAt: _now + %d });\n", rateWindowMS)
 				b.WriteString("  }\n")
 			case "cache":
-				b.WriteString(fmt.Sprintf("  // cache: %s\n", exprToJS(meta.Value)))
+				fmt.Fprintf(&b, "  // cache: %s\n", exprToJS(meta.Value))
 			case "auth":
 				if secretKey := webhookAuthSecretKey(meta.Value); secretKey != "" {
-					b.WriteString(fmt.Sprintf("  const _payload = await c.req.text();\n"))
-					b.WriteString(fmt.Sprintf("  const _sig = c.req.header('X-Webhook-Signature') ?? '';\n"))
-					b.WriteString(fmt.Sprintf("  const _expected = createHmac('sha256', env.%s).update(_payload).digest('hex');\n", secretKey))
+					b.WriteString("  const _payload = await c.req.text();\n")
+					b.WriteString("  const _sig = c.req.header('X-Webhook-Signature') ?? '';\n")
+					fmt.Fprintf(&b, "  const _expected = createHmac('sha256', env.%s).update(_payload).digest('hex');\n", secretKey)
 					b.WriteString("  let _sigBuf: Buffer; try { _sigBuf = Buffer.from(_sig, 'hex'); } catch { return c.json({ error: 'Invalid signature' }, 401 as const); }\n")
 					b.WriteString("  if (_sigBuf.length !== Buffer.from(_expected, 'hex').length || !timingSafeEqual(_sigBuf, Buffer.from(_expected, 'hex'))) return c.json({ error: 'Invalid signature' }, 401 as const);\n")
 					b.WriteString("  let data: any;\n")
@@ -599,20 +613,20 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 	b.WriteString("\n")
 
 	routeVar := toCamelCase(fileKey) + "Routes"
-	b.WriteString(fmt.Sprintf("export const %s = new Hono();\n\n", routeVar))
+	fmt.Fprintf(&b, "export const %s = new Hono();\n\n", routeVar)
 
 	for _, ep := range endpoints {
-		b.WriteString(fmt.Sprintf("// STREAM %s\n", ep.Path))
+		fmt.Fprintf(&b, "// STREAM %s\n", ep.Path)
 		if ep.Intent != nil {
-			b.WriteString(fmt.Sprintf("// %s\n", ep.Intent.Text))
+			fmt.Fprintf(&b, "// %s\n", ep.Intent.Text)
 		}
 
-		b.WriteString(fmt.Sprintf("%s.get('%s', async (c) => {\n", routeVar, ep.Path))
+		fmt.Fprintf(&b, "%s.get('%s', async (c) => {\n", routeVar, ep.Path)
 
 		// Extract path params at the start of the handler
 		pathParams := extractPathParams(ep.Path)
 		for _, param := range pathParams {
-			b.WriteString(fmt.Sprintf("  const %s = c.req.param('%s');\n", toCamelCase(param), param))
+			fmt.Fprintf(&b, "  const %s = c.req.param('%s');\n", toCamelCase(param), param)
 		}
 
 		b.WriteString("  return streamSSE(c, async (stream) => {\n")
@@ -639,15 +653,15 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 				// Timeout handler: setInterval that sends a periodic SSE message
 				ms := durationToMS(h.Timeout)
 				sseData := extractOutputValue(h.Body, &ctx)
-				b.WriteString(fmt.Sprintf("    // on timeout: %s\n", h.Timeout))
+				fmt.Fprintf(&b, "    // on timeout: %s\n", h.Timeout)
 				b.WriteString("    const _interval = setInterval(async () => {\n")
-				b.WriteString(fmt.Sprintf("      await stream.writeSSE({ event: 'ping', data: JSON.stringify(%s) });\n", sseData))
-				b.WriteString(fmt.Sprintf("    }, %s);\n", ms))
+				fmt.Fprintf(&b, "      await stream.writeSSE({ event: 'ping', data: JSON.stringify(%s) });\n", sseData)
+				fmt.Fprintf(&b, "    }, %s);\n", ms)
 				b.WriteString("    stream.onAbort(() => clearInterval(_interval));\n")
 			} else if h.EventName != "" {
 				// Event subscription: on('event_name', async (eventData) => { ... })
-				b.WriteString(fmt.Sprintf("    // on event: %s\n", h.EventName))
-				b.WriteString(fmt.Sprintf("    on('%s', async (eventData: any) => {\n", h.EventName))
+				fmt.Fprintf(&b, "    // on event: %s\n", h.EventName)
+				fmt.Fprintf(&b, "    on('%s', async (eventData: any) => {\n", h.EventName)
 
 				// Build handler context with eventData available
 				handlerCtx := ctx
@@ -666,14 +680,14 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 				if h.Condition != nil {
 					condCtx := handlerCtx
 					cond := streamCondToJS(h.Condition, &condCtx)
-					b.WriteString(fmt.Sprintf("      if (%s) {\n", cond))
+					fmt.Fprintf(&b, "      if (%s) {\n", cond)
 					// Get the output value from the handler body for writeSSE data
 					sseData := extractOutputValue(h.Body, &handlerCtx)
-					b.WriteString(fmt.Sprintf("        await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData))
+					fmt.Fprintf(&b, "        await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData)
 					b.WriteString("      }\n")
 				} else {
 					sseData := extractOutputValue(h.Body, &handlerCtx)
-					b.WriteString(fmt.Sprintf("      await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData))
+					fmt.Fprintf(&b, "      await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData)
 				}
 				b.WriteString("    });\n")
 			}
@@ -738,28 +752,28 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 
 	// Use a factory function so index.ts can pass the Node.js upgradeWebSocket at runtime
 	routeVar := toCamelCase(fileKey) + "Routes"
-	b.WriteString(fmt.Sprintf("export function create%sRoutes(upgradeWebSocket: UpgradeWebSocket) {\n",
-		toPascalCase(fileKey)))
-	b.WriteString(fmt.Sprintf("  const %s = new Hono();\n\n", routeVar))
+	fmt.Fprintf(&b, "export function create%sRoutes(upgradeWebSocket: UpgradeWebSocket) {\n",
+		toPascalCase(fileKey))
+	fmt.Fprintf(&b, "  const %s = new Hono();\n\n", routeVar)
 
 	// Room management: Map<roomId, Set<WebSocket>>
 	b.WriteString("  // Room management for join/leave/broadcast\n")
 	b.WriteString("  const _rooms = new Map<string, Set<any>>();\n\n")
 
 	for _, ep := range endpoints {
-		b.WriteString(fmt.Sprintf("// WS %s\n", ep.Path))
+		fmt.Fprintf(&b, "// WS %s\n", ep.Path)
 		if ep.Intent != nil {
-			b.WriteString(fmt.Sprintf("// %s\n", ep.Intent.Text))
+			fmt.Fprintf(&b, "// %s\n", ep.Intent.Text)
 		}
 
 		// Extract path params for this endpoint
 		pathParams := extractPathParams(ep.Path)
 
-		b.WriteString(fmt.Sprintf("%s.get('%s', upgradeWebSocket((c) => {\n", routeVar, ep.Path))
+		fmt.Fprintf(&b, "%s.get('%s', upgradeWebSocket((c) => {\n", routeVar, ep.Path)
 
 		// Extract path params into closure-scoped variables so all handlers can access them
 		for _, param := range pathParams {
-			b.WriteString(fmt.Sprintf("  const %s = c.req.param('%s') || '';\n", toCamelCase(param), param))
+			fmt.Fprintf(&b, "  const %s = c.req.param('%s') || '';\n", toCamelCase(param), param)
 		}
 
 		// Hoist variables from onConnect that are used across handlers.
@@ -772,7 +786,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		}
 		// Emit hoisted let declarations in the outer closure scope
 		for _, name := range sortedKeys2(hoistedVars) {
-			b.WriteString(fmt.Sprintf("  let %s: any;\n", name))
+			fmt.Fprintf(&b, "  let %s: any;\n", name)
 		}
 		b.WriteString("\n")
 
@@ -835,7 +849,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		b.WriteString("  }));\n\n")
 	}
 
-	b.WriteString(fmt.Sprintf("  return %s;\n", routeVar))
+	fmt.Fprintf(&b, "  return %s;\n", routeVar)
 	b.WriteString("}\n")
 
 	return codegen.OutputFile{

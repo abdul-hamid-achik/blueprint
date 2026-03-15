@@ -27,10 +27,6 @@ func (l *lexer) loc() Loc {
 	return Loc{File: l.file, Line: l.line, Col: l.col, Offset: l.pos}
 }
 
-func (l *lexer) locAt(offset, line, col, length int) Loc {
-	return Loc{File: l.file, Line: line, Col: col, Offset: offset, Len: length}
-}
-
 func (l *lexer) atEnd() bool {
 	return l.pos >= len(l.src)
 }

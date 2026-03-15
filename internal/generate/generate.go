@@ -159,11 +159,11 @@ func buildPrompt(slot Slot) string {
 
 	sb.WriteString("You are a Blueprint (.bp) language assistant. Blueprint is a declarative language for web services.\n")
 	sb.WriteString("Generate Blueprint arrow statements to implement the following step.\n\n")
-	sb.WriteString(fmt.Sprintf("Context: %s\n", slot.Context))
-	sb.WriteString(fmt.Sprintf("Step to implement: @> \"%s\"", slot.Text))
+	fmt.Fprintf(&sb, "Context: %s\n", slot.Context)
+	fmt.Fprintf(&sb, "Step to implement: @> %q", slot.Text)
 
 	if len(slot.Hints) > 0 {
-		sb.WriteString(fmt.Sprintf("\nHints: %s", strings.Join(slot.Hints, ", ")))
+		fmt.Fprintf(&sb, "\nHints: %s", strings.Join(slot.Hints, ", "))
 	}
 
 	sb.WriteString("\n\nRules:\n")
@@ -203,7 +203,9 @@ func callAnthropicAPI(prompt, apiKey string, client *http.Client) (string, error
 	if err != nil {
 		return "", fmt.Errorf("generate: HTTP request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		var buf bytes.Buffer
@@ -263,4 +265,3 @@ func Apply(src []byte, replacements map[int]string) []byte {
 	}
 	return []byte(strings.Join(lines, "\n"))
 }
-

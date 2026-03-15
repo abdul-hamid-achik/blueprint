@@ -68,6 +68,16 @@ func (p *printer) printTopLevel(node TopLevel) string {
 		return p.printSecret(n)
 	case *Env:
 		return p.printEnv(n)
+	case *Locale:
+		return p.printLocale(n)
+	case *Translation:
+		return p.printTranslation(n)
+	case *StateMachine:
+		return p.printStateMachine(n)
+	case *Analytics:
+		return p.printAnalytics(n)
+	case *SaveSchema:
+		return p.printSaveSchema(n)
 	case *Include:
 		return p.printInclude(n)
 	case *TypeDecl:
@@ -78,6 +88,8 @@ func (p *printer) printTopLevel(node TopLevel) string {
 		return p.printEnum(n)
 	case *Model:
 		return p.printModel(n)
+	case *Content:
+		return p.printContent(n)
 	case *Fn:
 		return p.printFn(n)
 	case *Pipe:
@@ -127,7 +139,7 @@ func (p *printer) printBlueprint(n *Blueprint) string {
 	}
 	sb.WriteString("blueprint " + blueprintQuote(n.Name) + " {\n")
 	for _, kv := range n.Entries {
-		sb.WriteString(fmt.Sprintf("  %s %s\n", kv.Key, p.printExpr(kv.Value)))
+		fmt.Fprintf(&sb, "  %s %s\n", kv.Key, p.printExpr(kv.Value))
 	}
 	for _, use := range n.Uses {
 		sb.WriteString("  ")
@@ -157,6 +169,101 @@ func (p *printer) printEnv(n *Env) string {
 	return fmt.Sprintf("env %s %s\n", n.Name, p.printExpr(n.Value))
 }
 
+func (p *printer) printLocale(n *Locale) string {
+	var parts []string
+	parts = append(parts, "locale", p.printLocaleCode(n.Code))
+	if n.Default {
+		parts = append(parts, "default")
+	}
+	if n.Fallback != "" {
+		parts = append(parts, fmt.Sprintf("fallback(%s)", p.printLocaleCode(n.Fallback)))
+	}
+	return strings.Join(parts, " ") + "\n"
+}
+
+func (p *printer) printTranslation(n *Translation) string {
+	var sb strings.Builder
+	sb.WriteString("translation " + n.Name + " {\n")
+	for _, key := range n.Keys {
+		sb.WriteString("  key " + blueprintQuote(key) + "\n")
+	}
+	for _, bundle := range n.Bundles {
+		sb.WriteString("  locale " + p.printLocaleCode(bundle.Locale) + " {\n")
+		for _, kv := range bundle.Values {
+			sb.WriteString("    " + blueprintQuote(kv.Key) + ": " + p.printExpr(kv.Value) + "\n")
+		}
+		sb.WriteString("  }\n")
+	}
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
+func (p *printer) printStateMachine(n *StateMachine) string {
+	var sb strings.Builder
+	if n.Intent != nil {
+		sb.WriteString(p.printIntent(n.Intent))
+	}
+	sb.WriteString("state " + n.Name + " {\n")
+	for _, tr := range n.Transitions {
+		sb.WriteString("  " + tr.From + " -> " + tr.To + "\n")
+	}
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
+func (p *printer) printAnalytics(n *Analytics) string {
+	var sb strings.Builder
+	if n.Intent != nil {
+		sb.WriteString(p.printIntent(n.Intent))
+	}
+	sb.WriteString("analytics " + n.Name + " {\n")
+	for _, event := range n.Events {
+		sb.WriteString("  event " + event + "\n")
+	}
+	for _, sink := range n.Sinks {
+		sb.WriteString("  sink " + sink.Kind)
+		if sink.Target != nil {
+			sb.WriteString("(" + p.printExpr(sink.Target) + ")")
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
+func (p *printer) printSaveSchema(n *SaveSchema) string {
+	var sb strings.Builder
+	if n.Intent != nil {
+		sb.WriteString(p.printIntent(n.Intent))
+	}
+	sb.WriteString("save " + n.Name + " {\n")
+	if n.Model != "" {
+		sb.WriteString("  model " + n.Model + "\n")
+	}
+	if n.VersionField != "" {
+		sb.WriteString("  version_field " + n.VersionField + "\n")
+	}
+	if n.Latest > 0 {
+		fmt.Fprintf(&sb, "  latest %d\n", n.Latest)
+	}
+	for _, mig := range n.Migrations {
+		fmt.Fprintf(&sb, "  migrate %d -> %d", mig.From, mig.To)
+		if mig.Module != "" {
+			sb.WriteString(" using " + blueprintQuote(mig.Module))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
+func (p *printer) printLocaleCode(code string) string {
+	if strings.Contains(code, "-") {
+		return blueprintQuote(code)
+	}
+	return code
+}
+
 // --- Include ---
 
 func (p *printer) printInclude(n *Include) string {
@@ -167,7 +274,7 @@ func (p *printer) printInclude(n *Include) string {
 
 func (p *printer) printTypeDecl(n *TypeDecl) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("type %s {\n", n.Name))
+	fmt.Fprintf(&sb, "type %s {\n", n.Name)
 	for _, f := range n.Fields {
 		sb.WriteString("  ")
 		sb.WriteString(p.printField(f))
@@ -181,7 +288,7 @@ func (p *printer) printTypeDecl(n *TypeDecl) string {
 
 func (p *printer) printAlias(n *Alias) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("alias %s = %s", n.Name, p.printType(n.Type)))
+	fmt.Fprintf(&sb, "alias %s = %s", n.Name, p.printType(n.Type))
 	for _, c := range n.Constraints {
 		sb.WriteString(" ")
 		sb.WriteString(p.printConstraint(c))
@@ -197,16 +304,16 @@ func (p *printer) printEnum(n *Enum) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("enum %s {\n", n.Name))
+	fmt.Fprintf(&sb, "enum %s {\n", n.Name)
 	for _, v := range n.Variants {
-		sb.WriteString(fmt.Sprintf("  %s", v.Name))
+		fmt.Fprintf(&sb, "  %s", v.Name)
 		if v.Body != nil && len(v.Body.Entries) > 0 {
 			sb.WriteString(" { ")
 			for i, kv := range v.Body.Entries {
 				if i > 0 {
 					sb.WriteString(",  ")
 				}
-				sb.WriteString(fmt.Sprintf("%s: %s", kv.Key, p.printExpr(kv.Value)))
+				fmt.Fprintf(&sb, "%s: %s", kv.Key, p.printExpr(kv.Value))
 			}
 			sb.WriteString(" }")
 		}
@@ -223,7 +330,7 @@ func (p *printer) printModel(n *Model) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("model %s {\n", n.Name))
+	fmt.Fprintf(&sb, "model %s {\n", n.Name)
 	for _, f := range n.Fields {
 		sb.WriteString("  ")
 		sb.WriteString(p.printField(f))
@@ -233,11 +340,24 @@ func (p *printer) printModel(n *Model) string {
 	return sb.String()
 }
 
+func (p *printer) printContent(n *Content) string {
+	var sb strings.Builder
+	if n.Intent != nil {
+		sb.WriteString(p.printIntent(n.Intent))
+	}
+	sb.WriteString("content " + n.Name + " {\n")
+	for _, f := range n.Fields {
+		sb.WriteString("  " + p.printField(f) + "\n")
+	}
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
 // --- Field ---
 
 func (p *printer) printField(f *Field) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s %s", f.Name, p.printType(f.Type)))
+	fmt.Fprintf(&sb, "%s %s", f.Name, p.printType(f.Type))
 	for _, c := range f.Constraints {
 		sb.WriteString(" ")
 		sb.WriteString(p.printConstraint(c))
@@ -252,7 +372,7 @@ func (p *printer) printFn(n *Fn) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("fn %s {\n", n.Name))
+	fmt.Fprintf(&sb, "fn %s {\n", n.Name)
 	for _, inp := range n.Inputs {
 		sb.WriteString("  ")
 		sb.WriteString(p.printArrowStmt(inp, "  "))
@@ -284,23 +404,23 @@ func (p *printer) printFn(n *Fn) string {
 
 func (p *printer) printImplBlock(impl *ImplBlock, indent string) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%simpl %s {\n", indent, impl.Strategy))
+	fmt.Fprintf(&sb, "%simpl %s {\n", indent, impl.Strategy)
 	for _, kv := range impl.Entries {
-		sb.WriteString(fmt.Sprintf("%s  %s: %s\n", indent, kv.Key, p.printExpr(kv.Value)))
+		fmt.Fprintf(&sb, "%s  %s: %s\n", indent, kv.Key, p.printExpr(kv.Value))
 	}
-	sb.WriteString(fmt.Sprintf("%s}\n", indent))
+	fmt.Fprintf(&sb, "%s}\n", indent)
 	return sb.String()
 }
 
 func (p *printer) printLogicBlock(logic *LogicBlock, indent string) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%slogic {\n", indent))
+	fmt.Fprintf(&sb, "%slogic {\n", indent)
 	for _, stmt := range logic.Stmts {
 		sb.WriteString(indent + "  ")
 		sb.WriteString(p.printArrowStmt(stmt, indent+"  "))
 		sb.WriteString("\n")
 	}
-	sb.WriteString(fmt.Sprintf("%s}\n", indent))
+	fmt.Fprintf(&sb, "%s}\n", indent)
 	return sb.String()
 }
 
@@ -311,7 +431,7 @@ func (p *printer) printPipe(n *Pipe) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("pipe %s {\n", n.Name))
+	fmt.Fprintf(&sb, "pipe %s {\n", n.Name)
 	sb.WriteString(p.printArrowStmtsBlock(n.Stmts, "  "))
 	sb.WriteString("}\n")
 	return sb.String()
@@ -324,9 +444,9 @@ func (p *printer) printMiddleware(n *Middleware) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("middleware %s {\n", n.Name))
+	fmt.Fprintf(&sb, "middleware %s {\n", n.Name)
 	for _, kv := range n.Entries {
-		sb.WriteString(fmt.Sprintf("  %s  %s\n", kv.Key, p.printExpr(kv.Value)))
+		fmt.Fprintf(&sb, "  %s  %s\n", kv.Key, p.printExpr(kv.Value))
 	}
 	if len(n.Before) > 0 {
 		sb.WriteString("  before {\n")
@@ -349,7 +469,7 @@ func (p *printer) printEndpoint(n *Endpoint) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("%s %s {\n", n.Method, n.Path))
+	fmt.Fprintf(&sb, "%s %s {\n", n.Method, n.Path)
 	for _, meta := range n.Meta {
 		sb.WriteString("  ")
 		sb.WriteString(p.printEndpointMeta(meta))
@@ -360,7 +480,7 @@ func (p *printer) printEndpoint(n *Endpoint) string {
 	}
 	sb.WriteString(p.printArrowStmtsBlock(n.Stmts, "  "))
 	if n.OnError != nil {
-		sb.WriteString(fmt.Sprintf("  on_error -> %s %q\n", n.OnError.Status, n.OnError.Message))
+		fmt.Fprintf(&sb, "  on_error -> %s %q\n", n.OnError.Status, n.OnError.Message)
 	}
 	sb.WriteString("}\n")
 	return sb.String()
@@ -400,7 +520,7 @@ func (p *printer) printUseStmt(u *UseStmt) string {
 		for i, a := range u.Args {
 			args[i] = p.printExpr(a)
 		}
-		sb.WriteString(fmt.Sprintf("(%s)", strings.Join(args, ", ")))
+		fmt.Fprintf(&sb, "(%s)", strings.Join(args, ", "))
 	}
 	if u.Body != nil && len(u.Body.Entries) > 0 {
 		sb.WriteString(" { ")
@@ -408,7 +528,7 @@ func (p *printer) printUseStmt(u *UseStmt) string {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			sb.WriteString(fmt.Sprintf("%s: %s", kv.Key, p.printExpr(kv.Value)))
+			fmt.Fprintf(&sb, "%s: %s", kv.Key, p.printExpr(kv.Value))
 		}
 		sb.WriteString(" }")
 	}
@@ -422,7 +542,7 @@ func (p *printer) printStreamEndpoint(n *StreamEndpoint) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("STREAM %s {\n", n.Path))
+	fmt.Fprintf(&sb, "STREAM %s {\n", n.Path)
 	for _, meta := range n.Meta {
 		sb.WriteString("  ")
 		sb.WriteString(p.printEndpointMeta(meta))
@@ -441,16 +561,16 @@ func (p *printer) printStreamEndpoint(n *StreamEndpoint) string {
 
 func (p *printer) printStreamHandler(h *StreamHandler, indent string) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%son %s", indent, h.EventName))
+	fmt.Fprintf(&sb, "%son %s", indent, h.EventName)
 	if h.Condition != nil {
-		sb.WriteString(fmt.Sprintf("(%s)", p.printExpr(h.Condition)))
+		fmt.Fprintf(&sb, "(%s)", p.printExpr(h.Condition))
 	}
 	if h.Timeout != "" {
-		sb.WriteString(fmt.Sprintf(" timeout(%s)", h.Timeout))
+		fmt.Fprintf(&sb, " timeout(%s)", h.Timeout)
 	}
 	sb.WriteString(" {\n")
 	sb.WriteString(p.printArrowStmtsBlock(h.Body, indent+"  "))
-	sb.WriteString(fmt.Sprintf("%s}\n", indent))
+	fmt.Fprintf(&sb, "%s}\n", indent)
 	return sb.String()
 }
 
@@ -461,7 +581,7 @@ func (p *printer) printWsEndpoint(n *WsEndpoint) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("WS %s {\n", n.Path))
+	fmt.Fprintf(&sb, "WS %s {\n", n.Path)
 	for _, meta := range n.Meta {
 		sb.WriteString("  ")
 		sb.WriteString(p.printEndpointMeta(meta))
@@ -493,7 +613,7 @@ func (p *printer) printWorker(n *Worker) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("worker %s {\n", n.Name))
+	fmt.Fprintf(&sb, "worker %s {\n", n.Name)
 	for _, meta := range n.Meta {
 		sb.WriteString("  ")
 		sb.WriteString(p.printWorkerMeta(meta))
@@ -516,7 +636,7 @@ func (p *printer) printWorkerMeta(m *WorkerMeta) string {
 	var sb strings.Builder
 	sb.WriteString(m.Kind)
 	if m.Value != nil {
-		sb.WriteString(fmt.Sprintf("  %s", p.printExpr(m.Value)))
+		fmt.Fprintf(&sb, "  %s", p.printExpr(m.Value))
 	}
 	if len(m.Extra) > 0 {
 		sb.WriteString(" {")
@@ -524,7 +644,7 @@ func (p *printer) printWorkerMeta(m *WorkerMeta) string {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			sb.WriteString(fmt.Sprintf(" %s: %s", kv.Key, p.printExpr(kv.Value)))
+			fmt.Fprintf(&sb, " %s: %s", kv.Key, p.printExpr(kv.Value))
 		}
 		sb.WriteString(" }")
 	}
@@ -538,8 +658,8 @@ func (p *printer) printSchedule(n *Schedule) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("schedule %s {\n", n.Name))
-	sb.WriteString(fmt.Sprintf("  cron %q\n", n.Cron))
+	fmt.Fprintf(&sb, "schedule %s {\n", n.Name)
+	fmt.Fprintf(&sb, "  cron %q\n", n.Cron)
 	sb.WriteString("\n")
 	sb.WriteString(p.printArrowStmtsBlock(n.Stmts, "  "))
 	sb.WriteString("}\n")
@@ -550,9 +670,9 @@ func (p *printer) printSchedule(n *Schedule) string {
 
 func (p *printer) printExternal(n *External) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("external %q {\n", n.Name))
+	fmt.Fprintf(&sb, "external %q {\n", n.Name)
 	for _, kv := range n.Entries {
-		sb.WriteString(fmt.Sprintf("  %s: %s\n", kv.Key, p.printExpr(kv.Value)))
+		fmt.Fprintf(&sb, "  %s: %s\n", kv.Key, p.printExpr(kv.Value))
 	}
 	sb.WriteString("}\n")
 	return sb.String()
@@ -565,9 +685,9 @@ func (p *printer) printSubscribe(n *Subscribe) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("subscribe %q", n.Event))
+	fmt.Fprintf(&sb, "subscribe %q", n.Event)
 	if n.From != "" {
-		sb.WriteString(fmt.Sprintf(" from(%s)", n.From))
+		fmt.Fprintf(&sb, " from(%s)", n.From)
 	}
 	sb.WriteString(" {\n")
 	sb.WriteString(p.printArrowStmtsBlock(n.Stmts, "  "))
@@ -583,14 +703,14 @@ func (p *printer) printFixture(n *Fixture) string {
 	}
 	if n.SeedModel != "" {
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("fixture %q seed %s", n.Name, n.SeedModel))
+		fmt.Fprintf(&sb, "fixture %q seed %s", n.Name, n.SeedModel)
 		if n.SeedBody != nil && len(n.SeedBody.Entries) > 0 {
 			sb.WriteString(" { ")
 			for i, kv := range n.SeedBody.Entries {
 				if i > 0 {
 					sb.WriteString(", ")
 				}
-				sb.WriteString(fmt.Sprintf("%s: %s", kv.Key, p.printExpr(kv.Value)))
+				fmt.Fprintf(&sb, "%s: %s", kv.Key, p.printExpr(kv.Value))
 			}
 			sb.WriteString(" }")
 		}
@@ -599,14 +719,14 @@ func (p *printer) printFixture(n *Fixture) string {
 	}
 	if n.Generated != nil {
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("fixture %q generated", n.Name))
+		fmt.Fprintf(&sb, "fixture %q generated", n.Name)
 		if len(n.Generated.Entries) > 0 {
 			sb.WriteString(" { ")
 			for i, kv := range n.Generated.Entries {
 				if i > 0 {
 					sb.WriteString(", ")
 				}
-				sb.WriteString(fmt.Sprintf("%s: %s", kv.Key, p.printExpr(kv.Value)))
+				fmt.Fprintf(&sb, "%s: %s", kv.Key, p.printExpr(kv.Value))
 			}
 			sb.WriteString(" }")
 		}
@@ -623,9 +743,9 @@ func (p *printer) printTest(n *Test) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("test %s {\n", n.Name))
+	fmt.Fprintf(&sb, "test %s {\n", n.Name)
 	if n.Target != nil {
-		sb.WriteString(fmt.Sprintf("  target %s %s\n", n.Target.Method, n.Target.Path))
+		fmt.Fprintf(&sb, "  target %s %s\n", n.Target.Method, n.Target.Path)
 		sb.WriteString("\n")
 	}
 	if len(n.Setup) > 0 {
@@ -640,7 +760,7 @@ func (p *printer) printTest(n *Test) string {
 	if len(n.Expect) > 0 {
 		sb.WriteString("  expect {\n")
 		for _, a := range n.Expect {
-			sb.WriteString(fmt.Sprintf("    %s\n", a.Raw))
+			fmt.Fprintf(&sb, "    %s\n", a.Raw)
 		}
 		sb.WriteString("  }\n")
 	}
@@ -657,19 +777,19 @@ func (p *printer) printTest(n *Test) string {
 func (p *printer) printTestRequest(r *TestRequest, indent string) string {
 	var sb strings.Builder
 	if r.Repeat > 0 {
-		sb.WriteString(fmt.Sprintf("%srequest repeat(%d) {\n", indent, r.Repeat))
+		fmt.Fprintf(&sb, "%srequest repeat(%d) {\n", indent, r.Repeat)
 	} else {
-		sb.WriteString(fmt.Sprintf("%srequest {\n", indent))
+		fmt.Fprintf(&sb, "%srequest {\n", indent)
 	}
 	for _, kv := range r.Entries {
 		if kv.Value != nil {
-			sb.WriteString(fmt.Sprintf("%s  %s %s\n", indent, kv.Key, p.printExpr(kv.Value)))
+			fmt.Fprintf(&sb, "%s  %s %s\n", indent, kv.Key, p.printExpr(kv.Value))
 		} else {
 			// nested block like "body { ... }" is stored with nil Value sometimes
-			sb.WriteString(fmt.Sprintf("%s  %s\n", indent, kv.Key))
+			fmt.Fprintf(&sb, "%s  %s\n", indent, kv.Key)
 		}
 	}
-	sb.WriteString(fmt.Sprintf("%s}\n", indent))
+	fmt.Fprintf(&sb, "%s}\n", indent)
 	return sb.String()
 }
 
@@ -680,7 +800,7 @@ func (p *printer) printTestGroup(n *TestGroup) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	sb.WriteString(fmt.Sprintf("test_group %s {\n", n.Name))
+	fmt.Fprintf(&sb, "test_group %s {\n", n.Name)
 	if len(n.SharedSetup) > 0 {
 		sb.WriteString("  shared_setup {\n")
 		sb.WriteString(p.printArrowStmtsBlock(n.SharedSetup, "    "))
@@ -689,7 +809,7 @@ func (p *printer) printTestGroup(n *TestGroup) string {
 	if len(n.Tests) > 0 {
 		sb.WriteString("  tests [\n")
 		for _, t := range n.Tests {
-			sb.WriteString(fmt.Sprintf("    %s\n", t))
+			fmt.Fprintf(&sb, "    %s\n", t)
 		}
 		sb.WriteString("  ]\n")
 	}
@@ -734,7 +854,7 @@ func (p *printer) printArrowStmt(stmt ArrowStmt, indent string) string {
 
 func (p *printer) printInputStmt(s *InputStmt) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("<- %s  %s", s.Name, p.printType(s.Type)))
+	fmt.Fprintf(&sb, "<- %s  %s", s.Name, p.printType(s.Type))
 	for _, c := range s.Constraints {
 		sb.WriteString("  ")
 		sb.WriteString(p.printConstraint(c))
@@ -761,14 +881,14 @@ func (p *printer) printWhenStmt(s *WhenStmt, indent string) string {
 		return fmt.Sprintf("|> when %s: %s", p.printExpr(s.Condition), p.printExpr(s.Inline))
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("|> when %s {\n", p.printExpr(s.Condition)))
+	fmt.Fprintf(&sb, "|> when %s {\n", p.printExpr(s.Condition))
 	inner := indent + "  "
 	for _, st := range s.Body {
 		sb.WriteString(inner)
 		sb.WriteString(p.printArrowStmt(st, inner))
 		sb.WriteString("\n")
 	}
-	sb.WriteString(fmt.Sprintf("%s}", indent))
+	fmt.Fprintf(&sb, "%s}", indent)
 	return sb.String()
 }
 
@@ -794,24 +914,24 @@ func (p *printer) printTryRecover(s *TryRecover, indent string) string {
 		sb.WriteString(p.printArrowStmt(st, inner))
 		sb.WriteString("\n")
 	}
-	sb.WriteString(fmt.Sprintf("%s} recover {\n", indent))
+	fmt.Fprintf(&sb, "%s} recover {\n", indent)
 	for _, st := range s.Recover {
 		sb.WriteString(inner)
 		sb.WriteString(p.printArrowStmt(st, inner))
 		sb.WriteString("\n")
 	}
-	sb.WriteString(fmt.Sprintf("%s}", indent))
+	fmt.Fprintf(&sb, "%s}", indent)
 	return sb.String()
 }
 
 func (p *printer) printGenerateStep(s *GenerateStep) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("@> %q", s.Text))
+	fmt.Fprintf(&sb, "@> %q", s.Text)
 	for _, h := range s.Hints {
 		if h.Value != nil {
-			sb.WriteString(fmt.Sprintf(" %s(%s)", h.Name, p.printExpr(h.Value)))
+			fmt.Fprintf(&sb, " %s(%s)", h.Name, p.printExpr(h.Value))
 		} else {
-			sb.WriteString(fmt.Sprintf(" %s", h.Name))
+			fmt.Fprintf(&sb, " %s", h.Name)
 		}
 	}
 	return sb.String()
@@ -892,7 +1012,7 @@ func (p *printer) printBlockExpr(n *BlockExpr) string {
 	var sb strings.Builder
 	sb.WriteString("{\n")
 	for _, kv := range n.Entries {
-		sb.WriteString(fmt.Sprintf("  %s: %s,\n", kv.Key, p.printExpr(kv.Value)))
+		fmt.Fprintf(&sb, "  %s: %s,\n", kv.Key, p.printExpr(kv.Value))
 	}
 	sb.WriteString("}")
 	return sb.String()
@@ -907,6 +1027,10 @@ func (p *printer) printType(t TypeExpr) string {
 	switch n := t.(type) {
 	case *PrimitiveType:
 		return n.Name
+	case *TypedJSONType:
+		return fmt.Sprintf("json<%s>", p.printType(n.Inner))
+	case *TranslationKeyType:
+		return fmt.Sprintf("tkey(%s)", n.Namespace)
 	case *NamedType:
 		return n.Name
 	case *EnumInline:

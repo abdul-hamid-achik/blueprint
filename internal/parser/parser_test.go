@@ -377,6 +377,118 @@ model item {
 	}
 }
 
+func TestParseContent(t *testing.T) {
+	f := parseString(t, `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+
+content mission {
+  data json<string>
+}`)
+
+	c, ok := f.Blocks[0].(*ast.Content)
+	if !ok {
+		t.Fatalf("expected *ast.Content, got %T", f.Blocks[0])
+	}
+	if c.Name != "mission" {
+		t.Fatalf("expected content mission, got %q", c.Name)
+	}
+	if len(c.Fields) != 1 {
+		t.Fatalf("expected 1 explicit field, got %d", len(c.Fields))
+	}
+	model := c.AsModel()
+	if len(model.Fields) < 6 {
+		t.Fatalf("expected content to expand to versioned model fields, got %d", len(model.Fields))
+	}
+}
+
+func TestParseLocaleAndTranslation(t *testing.T) {
+	f := parseString(t, `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+
+locale en default
+locale "fr-FR" fallback(en)
+
+translation mission_text {
+  key "mission.start"
+  key "mission.complete"
+  locale en {
+    "mission.start": "Start mission"
+  }
+}`)
+
+	loc1, ok := f.Blocks[0].(*ast.Locale)
+	if !ok {
+		t.Fatalf("expected first block to be locale, got %T", f.Blocks[0])
+	}
+	if loc1.Code != "en" || !loc1.Default {
+		t.Fatalf("unexpected first locale: %+v", loc1)
+	}
+	loc2, ok := f.Blocks[1].(*ast.Locale)
+	if !ok {
+		t.Fatalf("expected second block to be locale, got %T", f.Blocks[1])
+	}
+	if loc2.Code != "fr-FR" || loc2.Fallback != "en" {
+		t.Fatalf("unexpected second locale: %+v", loc2)
+	}
+	tr, ok := f.Blocks[2].(*ast.Translation)
+	if !ok {
+		t.Fatalf("expected translation block, got %T", f.Blocks[2])
+	}
+	if tr.Name != "mission_text" || len(tr.Keys) != 2 {
+		t.Fatalf("unexpected translation: %+v", tr)
+	}
+	if len(tr.Bundles) != 1 || tr.Bundles[0].Locale != "en" || tr.Bundles[0].Values[0].Key != "mission.start" {
+		t.Fatalf("unexpected translation bundles: %+v", tr.Bundles)
+	}
+}
+
+func TestParseStateAnalyticsAndSaveSchema(t *testing.T) {
+	f := parseString(t, `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+
+state mission_status {
+  draft -> published
+}
+
+analytics gameplay {
+  event mission_started
+  sink console
+}
+
+save player_progress {
+  model save_slot
+  version_field save_version
+  latest 3
+  migrate 1 -> 2 using "./player-progress"
+}`)
+
+	if _, ok := f.Blocks[0].(*ast.StateMachine); !ok {
+		t.Fatalf("expected state machine, got %T", f.Blocks[0])
+	}
+	if _, ok := f.Blocks[1].(*ast.Analytics); !ok {
+		t.Fatalf("expected analytics block, got %T", f.Blocks[1])
+	}
+	save, ok := f.Blocks[2].(*ast.SaveSchema)
+	if !ok {
+		t.Fatalf("expected save schema, got %T", f.Blocks[2])
+	}
+	if save.Model != "save_slot" || save.VersionField != "save_version" || save.Latest != 3 {
+		t.Fatalf("unexpected save schema: %+v", save)
+	}
+	if len(save.Migrations) != 1 || save.Migrations[0].From != 1 || save.Migrations[0].To != 2 || save.Migrations[0].Module != "./player-progress" {
+		t.Fatalf("unexpected save migrations: %+v", save.Migrations)
+	}
+}
+
 // --- Endpoint Tests ---
 
 func TestParseSimpleGetEndpoint(t *testing.T) {
@@ -1123,6 +1235,62 @@ POST /api/test {
 	}
 }
 
+func TestParseTypedJSONType(t *testing.T) {
+	f := parseString(t, `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+
+type MissionDefinition {
+  title string required
+}
+
+POST /api/test {
+  <- mission json<MissionDefinition> required
+  -> 200 "ok"
+}`)
+
+	ep := f.Blocks[1].(*ast.Endpoint)
+	input := ep.Stmts[0].(*ast.InputStmt)
+	jt, ok := input.Type.(*ast.TypedJSONType)
+	if !ok {
+		t.Fatalf("expected *ast.TypedJSONType, got %T", input.Type)
+	}
+	inner, ok := jt.Inner.(*ast.NamedType)
+	if !ok {
+		t.Fatalf("expected typed json inner to be *ast.NamedType, got %T", jt.Inner)
+	}
+	if inner.Name != "MissionDefinition" {
+		t.Errorf("expected inner type MissionDefinition, got %q", inner.Name)
+	}
+}
+
+func TestParseTranslationKeyType(t *testing.T) {
+	f := parseString(t, `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+
+translation mission_text {
+  key "mission.start"
+}
+
+type MissionDefinition {
+  title_key tkey(mission_text) required
+}`)
+
+	td := f.Blocks[1].(*ast.TypeDecl)
+	tk, ok := td.Fields[0].Type.(*ast.TranslationKeyType)
+	if !ok {
+		t.Fatalf("expected translation key type, got %T", td.Fields[0].Type)
+	}
+	if tk.Namespace != "mission_text" {
+		t.Fatalf("expected mission_text namespace, got %q", tk.Namespace)
+	}
+}
+
 // --- Output Statement Tests ---
 
 func TestParseOutputWithBlockBody(t *testing.T) {
@@ -1431,10 +1599,10 @@ func TestInvalidFixtures(t *testing.T) {
 	// Files that require future-milestone features to detect errors.
 	futureFeature := map[string]bool{
 		"blueprint_in_include.bp": true,
-		"circular_include.bp":    true,
-		"invalid_cron.bp":        true,
-		"unknown_function.bp":    true,
-		"empty_endpoint.bp":      true,
+		"circular_include.bp":     true,
+		"invalid_cron.bp":         true,
+		"unknown_function.bp":     true,
+		"empty_endpoint.bp":       true,
 	}
 
 	fixtures, err := filepath.Glob("../../testdata/invalid/*.bp")

@@ -54,6 +54,7 @@ const (
 
 	// Keywords (alphabetical)
 	TokenAfter
+	TokenAnalytics
 	TokenAlias
 	TokenAnd
 	TokenAs
@@ -66,6 +67,7 @@ const (
 	TokenCall
 	TokenCleanup
 	TokenClose
+	TokenContent
 	TokenCount
 	TokenCronKw // cron keyword
 	TokenDefault
@@ -96,6 +98,7 @@ const (
 	TokenJoin
 	TokenLeave
 	TokenLimit
+	TokenLocale
 	TokenLog
 	TokenLogic
 	TokenMap
@@ -131,6 +134,7 @@ const (
 	TokenSeed
 	TokenSetup
 	TokenSleep
+	TokenState
 	TokenStream
 	TokenStreamMethod // STREAM
 	TokenSubscribe
@@ -139,6 +143,7 @@ const (
 	TokenTest
 	TokenTestGroup
 	TokenTimeout
+	TokenTranslation
 	TokenTo
 	TokenTrigger
 	TokenTry
@@ -200,6 +205,7 @@ var tokenNames = map[TokenKind]string{
 	TokenSlash:        "/",
 	TokenAssign:       "=",
 	TokenAfter:        "after",
+	TokenAnalytics:    "analytics",
 	TokenAlias:        "alias",
 	TokenAnd:          "and",
 	TokenAs:           "as",
@@ -212,6 +218,7 @@ var tokenNames = map[TokenKind]string{
 	TokenCall:         "call",
 	TokenCleanup:      "cleanup",
 	TokenClose:        "close",
+	TokenContent:      "content",
 	TokenCount:        "count",
 	TokenCronKw:       "cron",
 	TokenDefault:      "default",
@@ -242,6 +249,7 @@ var tokenNames = map[TokenKind]string{
 	TokenJoin:         "join",
 	TokenLeave:        "leave",
 	TokenLimit:        "limit",
+	TokenLocale:       "locale",
 	TokenLog:          "log",
 	TokenLogic:        "logic",
 	TokenMap:          "map",
@@ -277,6 +285,7 @@ var tokenNames = map[TokenKind]string{
 	TokenSeed:         "seed",
 	TokenSetup:        "setup",
 	TokenSleep:        "sleep",
+	TokenState:        "state",
 	TokenStream:       "stream",
 	TokenStreamMethod: "STREAM",
 	TokenSubscribe:    "subscribe",
@@ -285,6 +294,7 @@ var tokenNames = map[TokenKind]string{
 	TokenTest:         "test",
 	TokenTestGroup:    "test_group",
 	TokenTimeout:      "timeout",
+	TokenTranslation:  "translation",
 	TokenTo:           "to",
 	TokenTrigger:      "trigger",
 	TokenTry:          "try",
@@ -314,6 +324,7 @@ func (k TokenKind) String() string {
 // keywords maps keyword strings to their token kinds.
 var keywords = map[string]TokenKind{
 	"after":         TokenAfter,
+	"analytics":     TokenAnalytics,
 	"alias":         TokenAlias,
 	"and":           TokenAnd,
 	"as":            TokenAs,
@@ -326,6 +337,7 @@ var keywords = map[string]TokenKind{
 	"call":          TokenCall,
 	"cleanup":       TokenCleanup,
 	"close":         TokenClose,
+	"content":       TokenContent,
 	"count":         TokenCount,
 	"cron":          TokenCronKw,
 	"default":       TokenDefault,
@@ -356,6 +368,7 @@ var keywords = map[string]TokenKind{
 	"join":          TokenJoin,
 	"leave":         TokenLeave,
 	"limit":         TokenLimit,
+	"locale":        TokenLocale,
 	"log":           TokenLog,
 	"logic":         TokenLogic,
 	"map":           TokenMap,
@@ -393,6 +406,7 @@ var keywords = map[string]TokenKind{
 	"seed":          TokenSeed,
 	"setup":         TokenSetup,
 	"sleep":         TokenSleep,
+	"state":         TokenState,
 	"stream":        TokenStream,
 	"STREAM":        TokenStreamMethod,
 	"subscribe":     TokenSubscribe,
@@ -401,6 +415,7 @@ var keywords = map[string]TokenKind{
 	"test":          TokenTest,
 	"test_group":    TokenTestGroup,
 	"timeout":       TokenTimeout,
+	"translation":   TokenTranslation,
 	"to":            TokenTo,
 	"trigger":       TokenTrigger,
 	"true":          TokenTrue,

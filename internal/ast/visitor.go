@@ -6,11 +6,17 @@ type Visitor interface {
 	VisitBlueprint(node *Blueprint) bool
 	VisitSecret(node *Secret) bool
 	VisitEnv(node *Env) bool
+	VisitLocale(node *Locale) bool
+	VisitTranslation(node *Translation) bool
+	VisitStateMachine(node *StateMachine) bool
+	VisitAnalytics(node *Analytics) bool
+	VisitSaveSchema(node *SaveSchema) bool
 	VisitInclude(node *Include) bool
 	VisitTypeDecl(node *TypeDecl) bool
 	VisitAlias(node *Alias) bool
 	VisitEnum(node *Enum) bool
 	VisitModel(node *Model) bool
+	VisitContent(node *Content) bool
 	VisitFn(node *Fn) bool
 	VisitPipe(node *Pipe) bool
 	VisitMiddleware(node *Middleware) bool
@@ -54,6 +60,8 @@ type Visitor interface {
 
 	// Type expressions
 	VisitPrimitiveType(node *PrimitiveType) bool
+	VisitTypedJSONType(node *TypedJSONType) bool
+	VisitTranslationKeyType(node *TranslationKeyType) bool
 	VisitNamedType(node *NamedType) bool
 	VisitListType(node *ListType) bool
 	VisitMapType(node *MapType) bool
@@ -65,58 +73,68 @@ type Visitor interface {
 // Embed this in your visitor to only override the methods you care about.
 type BaseVisitor struct{}
 
-func (v *BaseVisitor) VisitFile(node *File) bool                   { return true }
-func (v *BaseVisitor) VisitBlueprint(node *Blueprint) bool         { return true }
-func (v *BaseVisitor) VisitSecret(node *Secret) bool               { return true }
-func (v *BaseVisitor) VisitEnv(node *Env) bool                     { return true }
-func (v *BaseVisitor) VisitInclude(node *Include) bool             { return true }
-func (v *BaseVisitor) VisitTypeDecl(node *TypeDecl) bool           { return true }
-func (v *BaseVisitor) VisitAlias(node *Alias) bool                 { return true }
-func (v *BaseVisitor) VisitEnum(node *Enum) bool                   { return true }
-func (v *BaseVisitor) VisitModel(node *Model) bool                 { return true }
-func (v *BaseVisitor) VisitFn(node *Fn) bool                       { return true }
-func (v *BaseVisitor) VisitPipe(node *Pipe) bool                   { return true }
-func (v *BaseVisitor) VisitMiddleware(node *Middleware) bool        { return true }
-func (v *BaseVisitor) VisitEndpoint(node *Endpoint) bool           { return true }
+func (v *BaseVisitor) VisitFile(node *File) bool                     { return true }
+func (v *BaseVisitor) VisitBlueprint(node *Blueprint) bool           { return true }
+func (v *BaseVisitor) VisitSecret(node *Secret) bool                 { return true }
+func (v *BaseVisitor) VisitEnv(node *Env) bool                       { return true }
+func (v *BaseVisitor) VisitLocale(node *Locale) bool                 { return true }
+func (v *BaseVisitor) VisitTranslation(node *Translation) bool       { return true }
+func (v *BaseVisitor) VisitStateMachine(node *StateMachine) bool     { return true }
+func (v *BaseVisitor) VisitAnalytics(node *Analytics) bool           { return true }
+func (v *BaseVisitor) VisitSaveSchema(node *SaveSchema) bool         { return true }
+func (v *BaseVisitor) VisitInclude(node *Include) bool               { return true }
+func (v *BaseVisitor) VisitTypeDecl(node *TypeDecl) bool             { return true }
+func (v *BaseVisitor) VisitAlias(node *Alias) bool                   { return true }
+func (v *BaseVisitor) VisitEnum(node *Enum) bool                     { return true }
+func (v *BaseVisitor) VisitModel(node *Model) bool                   { return true }
+func (v *BaseVisitor) VisitContent(node *Content) bool               { return true }
+func (v *BaseVisitor) VisitFn(node *Fn) bool                         { return true }
+func (v *BaseVisitor) VisitPipe(node *Pipe) bool                     { return true }
+func (v *BaseVisitor) VisitMiddleware(node *Middleware) bool         { return true }
+func (v *BaseVisitor) VisitEndpoint(node *Endpoint) bool             { return true }
 func (v *BaseVisitor) VisitStreamEndpoint(node *StreamEndpoint) bool { return true }
-func (v *BaseVisitor) VisitWsEndpoint(node *WsEndpoint) bool       { return true }
-func (v *BaseVisitor) VisitWorker(node *Worker) bool               { return true }
-func (v *BaseVisitor) VisitSchedule(node *Schedule) bool           { return true }
-func (v *BaseVisitor) VisitExternal(node *External) bool           { return true }
-func (v *BaseVisitor) VisitSubscribe(node *Subscribe) bool         { return true }
-func (v *BaseVisitor) VisitTest(node *Test) bool                   { return true }
-func (v *BaseVisitor) VisitTestGroup(node *TestGroup) bool         { return true }
-func (v *BaseVisitor) VisitFixture(node *Fixture) bool             { return true }
-func (v *BaseVisitor) VisitInputStmt(node *InputStmt) bool         { return true }
-func (v *BaseVisitor) VisitStepStmt(node *StepStmt) bool           { return true }
-func (v *BaseVisitor) VisitGuardStmt(node *GuardStmt) bool         { return true }
-func (v *BaseVisitor) VisitWhenStmt(node *WhenStmt) bool           { return true }
-func (v *BaseVisitor) VisitOutputStmt(node *OutputStmt) bool       { return true }
-func (v *BaseVisitor) VisitTryRecover(node *TryRecover) bool       { return true }
-func (v *BaseVisitor) VisitIntentStep(node *IntentStep) bool       { return true }
-func (v *BaseVisitor) VisitGenerateStep(node *GenerateStep) bool   { return true }
-func (v *BaseVisitor) VisitBinaryExpr(node *BinaryExpr) bool       { return true }
-func (v *BaseVisitor) VisitUnaryExpr(node *UnaryExpr) bool         { return true }
-func (v *BaseVisitor) VisitFnCall(node *FnCall) bool               { return true }
-func (v *BaseVisitor) VisitFieldAccess(node *FieldAccess) bool     { return true }
-func (v *BaseVisitor) VisitIndexAccess(node *IndexAccess) bool     { return true }
-func (v *BaseVisitor) VisitIdent(node *Ident) bool                 { return true }
-func (v *BaseVisitor) VisitStringLit(node *StringLit) bool         { return true }
-func (v *BaseVisitor) VisitIntLit(node *IntLit) bool               { return true }
-func (v *BaseVisitor) VisitFloatLit(node *FloatLit) bool           { return true }
-func (v *BaseVisitor) VisitBoolLit(node *BoolLit) bool             { return true }
-func (v *BaseVisitor) VisitNullLit(node *NullLit) bool             { return true }
-func (v *BaseVisitor) VisitNowLit(node *NowLit) bool               { return true }
-func (v *BaseVisitor) VisitDurationLit(node *DurationLit) bool     { return true }
-func (v *BaseVisitor) VisitSizeLit(node *SizeLit) bool             { return true }
-func (v *BaseVisitor) VisitRateLit(node *RateLit) bool             { return true }
-func (v *BaseVisitor) VisitParenExpr(node *ParenExpr) bool         { return true }
-func (v *BaseVisitor) VisitListExpr(node *ListExpr) bool           { return true }
-func (v *BaseVisitor) VisitBlockExpr(node *BlockExpr) bool         { return true }
-func (v *BaseVisitor) VisitPathExpr(node *PathExpr) bool           { return true }
-func (v *BaseVisitor) VisitPrimitiveType(node *PrimitiveType) bool { return true }
-func (v *BaseVisitor) VisitNamedType(node *NamedType) bool         { return true }
-func (v *BaseVisitor) VisitListType(node *ListType) bool           { return true }
-func (v *BaseVisitor) VisitMapType(node *MapType) bool             { return true }
-func (v *BaseVisitor) VisitEnumInline(node *EnumInline) bool       { return true }
-func (v *BaseVisitor) VisitMimeTypeExpr(node *MimeTypeExpr) bool   { return true }
+func (v *BaseVisitor) VisitWsEndpoint(node *WsEndpoint) bool         { return true }
+func (v *BaseVisitor) VisitWorker(node *Worker) bool                 { return true }
+func (v *BaseVisitor) VisitSchedule(node *Schedule) bool             { return true }
+func (v *BaseVisitor) VisitExternal(node *External) bool             { return true }
+func (v *BaseVisitor) VisitSubscribe(node *Subscribe) bool           { return true }
+func (v *BaseVisitor) VisitTest(node *Test) bool                     { return true }
+func (v *BaseVisitor) VisitTestGroup(node *TestGroup) bool           { return true }
+func (v *BaseVisitor) VisitFixture(node *Fixture) bool               { return true }
+func (v *BaseVisitor) VisitInputStmt(node *InputStmt) bool           { return true }
+func (v *BaseVisitor) VisitStepStmt(node *StepStmt) bool             { return true }
+func (v *BaseVisitor) VisitGuardStmt(node *GuardStmt) bool           { return true }
+func (v *BaseVisitor) VisitWhenStmt(node *WhenStmt) bool             { return true }
+func (v *BaseVisitor) VisitOutputStmt(node *OutputStmt) bool         { return true }
+func (v *BaseVisitor) VisitTryRecover(node *TryRecover) bool         { return true }
+func (v *BaseVisitor) VisitIntentStep(node *IntentStep) bool         { return true }
+func (v *BaseVisitor) VisitGenerateStep(node *GenerateStep) bool     { return true }
+func (v *BaseVisitor) VisitBinaryExpr(node *BinaryExpr) bool         { return true }
+func (v *BaseVisitor) VisitUnaryExpr(node *UnaryExpr) bool           { return true }
+func (v *BaseVisitor) VisitFnCall(node *FnCall) bool                 { return true }
+func (v *BaseVisitor) VisitFieldAccess(node *FieldAccess) bool       { return true }
+func (v *BaseVisitor) VisitIndexAccess(node *IndexAccess) bool       { return true }
+func (v *BaseVisitor) VisitIdent(node *Ident) bool                   { return true }
+func (v *BaseVisitor) VisitStringLit(node *StringLit) bool           { return true }
+func (v *BaseVisitor) VisitIntLit(node *IntLit) bool                 { return true }
+func (v *BaseVisitor) VisitFloatLit(node *FloatLit) bool             { return true }
+func (v *BaseVisitor) VisitBoolLit(node *BoolLit) bool               { return true }
+func (v *BaseVisitor) VisitNullLit(node *NullLit) bool               { return true }
+func (v *BaseVisitor) VisitNowLit(node *NowLit) bool                 { return true }
+func (v *BaseVisitor) VisitDurationLit(node *DurationLit) bool       { return true }
+func (v *BaseVisitor) VisitSizeLit(node *SizeLit) bool               { return true }
+func (v *BaseVisitor) VisitRateLit(node *RateLit) bool               { return true }
+func (v *BaseVisitor) VisitParenExpr(node *ParenExpr) bool           { return true }
+func (v *BaseVisitor) VisitListExpr(node *ListExpr) bool             { return true }
+func (v *BaseVisitor) VisitBlockExpr(node *BlockExpr) bool           { return true }
+func (v *BaseVisitor) VisitPathExpr(node *PathExpr) bool             { return true }
+func (v *BaseVisitor) VisitPrimitiveType(node *PrimitiveType) bool   { return true }
+func (v *BaseVisitor) VisitTypedJSONType(node *TypedJSONType) bool   { return true }
+func (v *BaseVisitor) VisitTranslationKeyType(node *TranslationKeyType) bool {
+	return true
+}
+func (v *BaseVisitor) VisitNamedType(node *NamedType) bool       { return true }
+func (v *BaseVisitor) VisitListType(node *ListType) bool         { return true }
+func (v *BaseVisitor) VisitMapType(node *MapType) bool           { return true }
+func (v *BaseVisitor) VisitEnumInline(node *EnumInline) bool     { return true }
+func (v *BaseVisitor) VisitMimeTypeExpr(node *MimeTypeExpr) bool { return true }

@@ -1,14 +1,37 @@
 package js
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/checker"
 	"github.com/abdul-hamid-achik/blueprint/internal/parser"
 )
+
+func requireTypeScriptCompile(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm is not available")
+	}
+	run := func(timeout time.Duration, args ...string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "npm", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("npm %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+		}
+	}
+	run(3*time.Minute, "install", "--silent")
+	run(2*time.Minute, "exec", "--", "tsc", "--noEmit")
+}
 
 func TestHelpers(t *testing.T) {
 	tests := []struct {
@@ -158,6 +181,207 @@ model user {
 	}
 	if !strings.Contains(string(dbContent), "drizzle(pool, { schema })") {
 		t.Error("db.ts should pass schema to drizzle()")
+	}
+}
+
+func TestGenerateTypedJSONContracts(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+type MissionDefinition {
+  title string required
+  tags  list(string)
+}
+
+model mission {
+  id   uuid primary
+  data json<MissionDefinition> required
+}
+
+POST /api/missions {
+  <- data json<MissionDefinition> required
+  |> mission = save mission { data: data }
+  -> 201 { id: mission.id, data: mission.data }
+}`
+
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker errors: %v", checkErrs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	schemaContent, err := os.ReadFile(filepath.Join(outDir, "src/models/schema.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := string(schemaContent)
+	if !strings.Contains(schema, "import type { MissionDefinition } from '../types.js';") {
+		t.Error("schema should import named types used by typed json fields")
+	}
+	if !strings.Contains(schema, "jsonb('data').$type<MissionDefinition>()") {
+		t.Error("schema should preserve typed json field types in Drizzle")
+	}
+
+	validationContent, err := os.ReadFile(filepath.Join(outDir, "src/validation/schemas.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation := string(validationContent)
+	if !strings.Contains(validation, "import { MissionDefinitionSchema } from '../types/schemas.js';") {
+		t.Error("validation schema should import typed json schemas from generated types schemas")
+	}
+	if !strings.Contains(validation, "data: MissionDefinitionSchema") {
+		t.Error("validation schema should use the referenced typed json schema")
+	}
+
+	apiContent, err := os.ReadFile(filepath.Join(outDir, "src/types/api.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := string(apiContent)
+	if !strings.Contains(api, "data: MissionDefinition;") {
+		t.Error("API contracts should expose typed json payloads as concrete types")
+	}
+}
+
+func TestGenerateContentBlockAsVersionedModel(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+type MissionDefinition {
+  title string required
+}
+
+content mission {
+  data json<MissionDefinition> required
+}
+`
+
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker errors: %v", checkErrs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	schemaContent, err := os.ReadFile(filepath.Join(outDir, "src/models/schema.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := string(schemaContent)
+	for _, expected := range []string{"pgTable('missions'", "key: text('key').notNull().unique()", "version: integer('version').default(1)", "status: missionStatusEnum('status').default(\"draft\")", "published: timestamp('published')", "created: timestamp('created').defaultNow()", "updated: timestamp('updated').defaultNow()"} {
+		if !strings.Contains(schema, expected) {
+			t.Fatalf("expected generated content schema to contain %q\n%s", expected, schema)
+		}
+	}
+
+	apiContent, err := os.ReadFile(filepath.Join(outDir, "src/types/api.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := string(apiContent)
+	if !strings.Contains(api, "export interface Mission") {
+		t.Fatal("content blocks should generate frontend model contracts")
+	}
+	if !strings.Contains(api, "data: MissionDefinition;") {
+		t.Fatal("content data field should remain typed in frontend contracts")
+	}
+}
+
+func TestGenerateContentWorkflowBuiltins(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+type MissionDefinition {
+  title string required
+}
+
+content mission {
+  data json<MissionDefinition> required
+}
+
+POST /api/admin/missions/:key/publish {
+  <- key string required
+
+  |> mission = fetch mission where(key == key)
+  |> guard mission -> 404 "Mission not found"
+  |> published = publish(mission)
+
+  -> 200 { key: published.key, status: published.status }
+}
+
+POST /api/admin/missions/:key/rollback {
+  <- key string required
+  <- version int required
+
+  |> mission = fetch mission where(key == key)
+  |> guard mission -> 404 "Mission not found"
+  |> restored = rollback(mission, version)
+
+  -> 200 { key: restored.key, version: restored.version, status: restored.status }
+}`
+
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker errors: %v", checkErrs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/admin.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := string(routeContent)
+	for _, expected := range []string{
+		"db.update(schema.mission).set({ status: \"published\", published: new Date(), updated: new Date() })",
+		"db.update(schema.mission).set({ status: \"archived\", updated: new Date() })",
+		"eq(schema.mission.version, version)",
+		"return (await db.update(schema.mission).set({ status: \"published\", published: new Date(), updated: new Date() })",
+	} {
+		if !strings.Contains(route, expected) {
+			t.Fatalf("expected content workflow code in route: %q\n%s", expected, route)
+		}
 	}
 }
 
@@ -752,12 +976,17 @@ func TestGenerateAllFeatures(t *testing.T) {
 
 	// Count total generated files
 	count := 0
-	filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
 		if !info.IsDir() {
 			count++
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walk generated output: %v", err)
+	}
 	if count < 36 {
 		t.Errorf("expected at least 36 generated files, got %d", count)
 	}
@@ -1637,43 +1866,460 @@ worker process_job {
 	}
 	workerStr := string(content)
 
-	// Worker function must be camelCase of 'process_job' → 'processJob'
 	if !strings.Contains(workerStr, "processJob") {
 		t.Errorf("expected processJob function name, got:\n%s", workerStr)
 	}
-
-	// Must be an async function accepting (data: any)
 	if !strings.Contains(workerStr, "export async function processJob(data: any)") {
 		t.Errorf("expected 'export async function processJob(data: any)', got:\n%s", workerStr)
 	}
-
-	// Must return Promise<void>
 	if !strings.Contains(workerStr, "Promise<void>") {
 		t.Errorf("expected Promise<void> return type, got:\n%s", workerStr)
 	}
-
-	// |> log "Processing job" → console.log("Processing job")
 	if !strings.Contains(workerStr, `console.log("Processing job")`) {
 		t.Errorf("expected console.log for log step, got:\n%s", workerStr)
 	}
-
-	// on_fail block should generate a separate OnFail function
 	if !strings.Contains(workerStr, "processJobOnFail") {
 		t.Errorf("expected processJobOnFail function for on_fail block, got:\n%s", workerStr)
 	}
 	if !strings.Contains(workerStr, "export async function processJobOnFail(data: any, error: Error)") {
 		t.Errorf("expected 'export async function processJobOnFail(data: any, error: Error)', got:\n%s", workerStr)
 	}
-
-	// on_fail log step should also produce console.log
 	if !strings.Contains(workerStr, `console.log("Job failed")`) {
 		t.Errorf("expected console.log(\"Job failed\") in on_fail handler, got:\n%s", workerStr)
 	}
-
-	// File should have the Blueprint generated header
 	if !strings.Contains(workerStr, "Generated by Blueprint") {
 		t.Errorf("expected Generated by Blueprint header, got:\n%s", workerStr)
 	}
+}
+
+func TestGen_WorkerMetadataWiring(t *testing.T) {
+	src := `blueprint "x" {
+  version "1.0"
+  port 8080
+  runtime node
+  queue redis
+}
+
+secret REDIS_URL required
+
+worker process_job {
+  trigger queue("process_jobs")
+  retry 3 backoff(exponential, base: 1s, max: 30s)
+  timeout 5min
+
+  |> log "Processing job"
+
+  on_fail {
+    |> log "Job failed"
+  }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	workerContent, err := os.ReadFile(filepath.Join(outDir, "src/workers/process-job.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerStr := string(workerContent)
+	for _, expected := range []string{
+		`export const processJobQueueName = "process_jobs";`,
+		`export const processJobTimeoutMs = 300000;`,
+		`export const processJobRetryCount = 3;`,
+		`export const processJobBackoff = { strategy: exponential, base: 1 * 1000, max: 30 * 1000 };`,
+		`export async function processJobOnFail(data: any, error: Error): Promise<void> {`,
+	} {
+		if !strings.Contains(workerStr, expected) {
+			t.Fatalf("expected worker metadata output %q\n%s", expected, workerStr)
+		}
+	}
+
+	indexContent, err := os.ReadFile(filepath.Join(outDir, "src/index.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexStr := string(indexContent)
+	for _, expected := range []string{
+		`import { processJob, processJobOnFail, processJobQueueName, processJobTimeoutMs } from './workers/process-job.js'`,
+		`new Worker(processJobQueueName, async (job) => {`,
+		`await Promise.race([processJob(job.data), new Promise((_, reject) => setTimeout(() => reject(new Error('Worker timeout')), processJobTimeoutMs))]);`,
+		`await processJobOnFail(job.data, error instanceof Error ? error : new Error(String(error)));`,
+	} {
+		if !strings.Contains(indexStr, expected) {
+			t.Fatalf("expected worker runtime wiring %q\n%s", expected, indexStr)
+		}
+	}
+}
+
+func TestGenerateLocalizationMetadata(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+locale en default
+locale "fr-FR" fallback(en)
+
+translation mission_text {
+  key "mission.start"
+  key "mission.complete"
+  locale en {
+    "mission.start": "Start mission"
+  }
+}
+
+type MissionDefinition {
+  title_key tkey(mission_text) required
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	i18nContent, err := os.ReadFile(filepath.Join(outDir, "src/lib/i18n.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	i18n := string(i18nContent)
+	for _, expected := range []string{
+		`export const locales = ["en", "fr-FR"] as const;`,
+		`export const defaultLocale = "en";`,
+		`export const localeFallbacks = { "en": "en", "fr-FR": "en" } as const;`,
+		`missionText: ["mission.start", "mission.complete"]`,
+		`export const translationValues = { missionText: { "en": { "mission.start": "Start mission" } } } as const;`,
+		`export type LocaleCode = (typeof locales)[number];`,
+	} {
+		if !strings.Contains(i18n, expected) {
+			t.Fatalf("expected i18n metadata %q\n%s", expected, i18n)
+		}
+	}
+
+	frontendI18n, err := os.ReadFile(filepath.Join(outDir, "frontend/src/i18n.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(frontendI18n), `export const locales = ["en", "fr-FR"] as const;`) {
+		t.Fatal("frontend package should include generated i18n metadata")
+	}
+	frontendIndex, err := os.ReadFile(filepath.Join(outDir, "frontend/src/index.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(frontendIndex), "export * from './i18n.js';") {
+		t.Fatal("frontend package index should re-export i18n metadata")
+	}
+	typesContent, err := os.ReadFile(filepath.Join(outDir, "src/types.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(typesContent), `titleKey: "mission.start" | "mission.complete";`) {
+		t.Fatal("translation key types should generate literal unions in TypeScript contracts")
+	}
+}
+
+func TestGenerateStateMachineAndAnalyticsAndSaveHelpers(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+state mission_status {
+  draft -> reviewed
+  reviewed -> published
+}
+
+analytics gameplay {
+  event mission_started
+  sink console
+  sink http("https://analytics.example.com/events")
+}
+
+model save_slot {
+  id uuid primary
+  save_version int default(1)
+}
+
+save player_progress {
+  model save_slot
+  version_field save_version
+  latest 3
+  migrate 1 -> 2 using "./custom-player-progress"
+}
+
+POST /api/test {
+  <- payload json required
+  |> track("mission_started", payload)
+  |> status = transition(mission_status, "draft", "reviewed")
+  |> upgraded = upgrade_save(player_progress, payload)
+  -> 200 { ok: true, status: status, upgraded: upgraded }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	typesContent, err := os.ReadFile(filepath.Join(outDir, "src/types.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	types := string(typesContent)
+	for _, expected := range []string{
+		`export const MissionStatusStates = ["draft", "reviewed", "published"] as const;`,
+		`export type MissionStatus = (typeof MissionStatusStates)[number];`,
+		`export const MissionStatusTransitions = {`,
+	} {
+		if !strings.Contains(types, expected) {
+			t.Fatalf("expected state machine output %q\n%s", expected, types)
+		}
+	}
+
+	stateContent, err := os.ReadFile(filepath.Join(outDir, "src/lib/state.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateLib := string(stateContent)
+	for _, expected := range []string{
+		`export function canTransitionMissionStatus(from: string, to: string): boolean {`,
+		`export function transitionMissionStatus<T extends string>(from: T, to: T): T {`,
+		`if (!canTransitionMissionStatus(from, to)) throw new InvalidTransitionError("mission_status", from, to);`,
+	} {
+		if !strings.Contains(stateLib, expected) {
+			t.Fatalf("expected state lib output %q\n%s", expected, stateLib)
+		}
+	}
+
+	analyticsContent, err := os.ReadFile(filepath.Join(outDir, "src/lib/analytics.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	analytics := string(analyticsContent)
+	for _, expected := range []string{
+		`export const analyticsNamespaces = { gameplay: ["mission_started"] } as const;`,
+		`export const analyticsSinks = { gameplay: [{ kind: "console" }, { kind: "http", target: "https://analytics.example.com/events" }] } as const;`,
+		`const analyticsBatchSize = 25;`,
+		`async function sendAnalyticsBatch(target: string, batch: Array<{ namespace: AnalyticsNamespace; event: string; payload: unknown; at: string }>): Promise<void> {`,
+		`queueAnalytics(String(sink.target), { namespace, event, payload, at: new Date().toISOString() });`,
+	} {
+		if !strings.Contains(analytics, expected) {
+			t.Fatalf("expected analytics output %q\n%s", expected, analytics)
+		}
+	}
+
+	saveContent, err := os.ReadFile(filepath.Join(outDir, "src/lib/save-migrations.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveLib := string(saveContent)
+	for _, expected := range []string{
+		`export const playerProgressSaveConfig = { model: "save_slot", versionField: "save_version", latest: 3 } as const;`,
+		`export async function upgradePlayerProgressSave<T extends Record<string, any>>(save: T): Promise<T> {`,
+		`current = await migratePlayerProgressSaveFrom1To2(current);`,
+		`current = await migratePlayerProgressSaveFrom2To3(current);`,
+		`import { migratePlayerProgressSaveFrom1To2 } from "../saves/custom-player-progress.js";`,
+	} {
+		if !strings.Contains(saveLib, expected) {
+			t.Fatalf("expected save migration output %q\n%s", expected, saveLib)
+		}
+	}
+
+	customMigrationContent, err := os.ReadFile(filepath.Join(outDir, "src/saves/custom-player-progress.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(customMigrationContent), `export async function migratePlayerProgressSaveFrom1To2(save: any): Promise<any> {`) {
+		t.Fatal("custom migration hook stubs should be generated for using paths")
+	}
+
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/test.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := string(routeContent)
+	for _, expected := range []string{
+		`import { track } from '../lib/analytics.js';`,
+		`import { upgradePlayerProgressSave } from '../lib/save-migrations.js';`,
+		`import { transitionMissionStatus } from '../lib/state.js';`,
+		`await track("mission_started", payload)`,
+		`transitionMissionStatus("draft", "reviewed")`,
+		`await upgradePlayerProgressSave(payload)`,
+	} {
+		if !strings.Contains(route, expected) {
+			t.Fatalf("expected route integration %q\n%s", expected, route)
+		}
+	}
+}
+
+func TestGenerateContentBundleOps(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+type MissionDefinition {
+  name string required
+}
+
+content mission {
+  data json<MissionDefinition> required
+}
+
+POST /api/missions/import {
+  <- bundle json required
+  |> imported = import_bundle(mission, bundle)
+  -> 200 { items: imported }
+}
+
+GET /api/missions/export {
+  |> bundle = export_bundle(mission)
+  -> 200 { items: bundle }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/missions.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := string(routeContent)
+	for _, expected := range []string{
+		`await Promise.all((bundle ?? []).map(async (item: any) => {`,
+		`db.select().from(schema.mission).where(and(eq(schema.mission.key, item.key), eq(schema.mission.version, item.version))).limit(1)`,
+		`db.update(schema.mission).set({ ...item, updated: new Date(), published: item.published ?? null })`,
+		`await db.select().from(schema.mission).orderBy(asc(schema.mission.key), desc(schema.mission.version))`,
+	} {
+		if !strings.Contains(route, expected) {
+			t.Fatalf("expected content bundle op code %q\n%s", expected, route)
+		}
+	}
+}
+
+func TestGenerateGamePlatformTypeScriptCompiles(t *testing.T) {
+	src := `blueprint "game-platform" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+locale en default
+locale "fr-FR" fallback(en)
+
+translation mission_text {
+  key "mission.start"
+  key "mission.complete"
+
+  locale en {
+    "mission.start": "Start mission"
+    "mission.complete": "Mission complete"
+  }
+}
+
+state mission_status {
+  draft -> reviewed
+  reviewed -> published
+}
+
+analytics gameplay {
+  event mission_started
+  sink console
+  sink http("https://analytics.example.com/events")
+}
+
+type MissionDefinition {
+  title_key tkey(mission_text) required
+  status    mission_status required
+}
+
+content mission {
+  data json<MissionDefinition> required
+}
+
+model save_slot {
+  id           uuid primary
+  save_version int default(1)
+  status       mission_status default("draft")
+}
+
+save player_progress {
+  model save_slot
+  version_field save_version
+  latest 3
+  migrate 1 -> 2 using "./custom-player-progress"
+}
+
+POST /api/missions/import {
+  <- bundle json required
+  |> imported = import_bundle(mission, bundle)
+  -> 200 { items: imported }
+}
+
+GET /api/missions/export {
+  |> bundle = export_bundle(mission)
+  -> 200 { items: bundle }
+}
+
+POST /api/test {
+  <- payload json required
+  |> track("mission_started", payload)
+  |> status = transition(mission_status, "draft", "reviewed")
+  |> upgraded = upgrade_save(player_progress, payload)
+  -> 200 { ok: true, status: status, upgraded: upgraded }
+}
+`
+	file, errs := parser.ParseFile("game-platform.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker errors: %v", checkErrs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	requireTypeScriptCompile(t, outDir)
+	requireTypeScriptCompile(t, filepath.Join(outDir, "frontend"))
 }
 
 func TestGen_CallExternal(t *testing.T) {

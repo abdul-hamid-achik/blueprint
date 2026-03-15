@@ -21,12 +21,14 @@ const (
 	SymInput
 	SymSecret
 	SymEnv
+	SymAnalytics
+	SymSave
 )
 
 func (k SymbolKind) String() string {
 	names := [...]string{
 		"model", "fn", "pipe", "middleware", "enum", "type", "alias",
-		"external", "variable", "input", "secret", "env",
+		"external", "variable", "input", "secret", "env", "analytics", "save",
 	}
 	if int(k) < len(names) {
 		return names[k]

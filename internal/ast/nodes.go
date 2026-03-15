@@ -79,6 +79,91 @@ func (n *Env) nodeType() string    { return "Env" }
 func (n *Env) Location() lexer.Loc { return n.Loc }
 func (n *Env) topLevel()           {}
 
+type Locale struct {
+	Loc      lexer.Loc
+	Code     string
+	Default  bool
+	Fallback string
+}
+
+func (n *Locale) nodeType() string    { return "Locale" }
+func (n *Locale) Location() lexer.Loc { return n.Loc }
+func (n *Locale) topLevel()           {}
+
+type Translation struct {
+	Loc     lexer.Loc
+	Name    string
+	Keys    []string
+	Bundles []*TranslationBundle
+}
+
+func (n *Translation) nodeType() string    { return "Translation" }
+func (n *Translation) Location() lexer.Loc { return n.Loc }
+func (n *Translation) topLevel()           {}
+
+type TranslationBundle struct {
+	Loc    lexer.Loc
+	Locale string
+	Values []KVPair
+}
+
+type StateMachine struct {
+	Loc         lexer.Loc
+	Intent      *Intent
+	Name        string
+	States      []string
+	Transitions []*StateTransition
+}
+
+func (n *StateMachine) nodeType() string    { return "StateMachine" }
+func (n *StateMachine) Location() lexer.Loc { return n.Loc }
+func (n *StateMachine) topLevel()           {}
+
+type StateTransition struct {
+	Loc  lexer.Loc
+	From string
+	To   string
+}
+
+type Analytics struct {
+	Loc    lexer.Loc
+	Intent *Intent
+	Name   string
+	Events []string
+	Sinks  []*AnalyticsSink
+}
+
+func (n *Analytics) nodeType() string    { return "Analytics" }
+func (n *Analytics) Location() lexer.Loc { return n.Loc }
+func (n *Analytics) topLevel()           {}
+
+type AnalyticsSink struct {
+	Loc    lexer.Loc
+	Kind   string
+	Target Expr
+}
+
+type SaveSchema struct {
+	Loc          lexer.Loc
+	Intent       *Intent
+	Name         string
+	Model        string
+	VersionField string
+	Latest       int
+	Migrations   []*SaveMigration
+}
+
+func (n *SaveSchema) nodeType() string    { return "SaveSchema" }
+func (n *SaveSchema) Location() lexer.Loc { return n.Loc }
+func (n *SaveSchema) topLevel()           {}
+
+type SaveMigration struct {
+	Loc    lexer.Loc
+	From   int
+	To     int
+	Module string
+}
+
 type Include struct {
 	Loc  lexer.Loc
 	Path string
@@ -136,6 +221,42 @@ type Model struct {
 func (n *Model) nodeType() string    { return "Model" }
 func (n *Model) Location() lexer.Loc { return n.Loc }
 func (n *Model) topLevel()           {}
+
+type Content struct {
+	Loc    lexer.Loc
+	Intent *Intent
+	Name   string
+	Fields []*Field
+}
+
+func (n *Content) nodeType() string    { return "Content" }
+func (n *Content) Location() lexer.Loc { return n.Loc }
+func (n *Content) topLevel()           {}
+
+func (n *Content) AsModel() *Model {
+	fields := make([]*Field, 0, len(n.Fields)+6)
+	seen := map[string]bool{}
+	for _, f := range n.Fields {
+		fields = append(fields, f)
+		seen[f.Name] = true
+	}
+	appendField := func(field *Field) {
+		if seen[field.Name] {
+			return
+		}
+		fields = append(fields, field)
+		seen[field.Name] = true
+	}
+
+	appendField(&Field{Loc: n.Loc, Name: "key", Type: &PrimitiveType{Loc: n.Loc, Name: "string"}, Constraints: []*Constraint_{{Loc: n.Loc, Kind: "required"}, {Loc: n.Loc, Kind: "unique"}}})
+	appendField(&Field{Loc: n.Loc, Name: "version", Type: &PrimitiveType{Loc: n.Loc, Name: "int"}, Constraints: []*Constraint_{{Loc: n.Loc, Kind: "default", Value: &IntLit{Loc: n.Loc, Value: "1"}}}})
+	appendField(&Field{Loc: n.Loc, Name: "status", Type: &EnumInline{Loc: n.Loc, Variants: []string{"draft", "published", "archived"}}, Constraints: []*Constraint_{{Loc: n.Loc, Kind: "default", Value: &StringLit{Loc: n.Loc, Value: "draft"}}}})
+	appendField(&Field{Loc: n.Loc, Name: "published", Type: &PrimitiveType{Loc: n.Loc, Name: "timestamp"}, Constraints: []*Constraint_{{Loc: n.Loc, Kind: "optional"}}})
+	appendField(&Field{Loc: n.Loc, Name: "created", Type: &PrimitiveType{Loc: n.Loc, Name: "timestamp"}, Constraints: []*Constraint_{{Loc: n.Loc, Kind: "default", Value: &NowLit{Loc: n.Loc}}}})
+	appendField(&Field{Loc: n.Loc, Name: "updated", Type: &PrimitiveType{Loc: n.Loc, Name: "timestamp"}, Constraints: []*Constraint_{{Loc: n.Loc, Kind: "default", Value: &NowLit{Loc: n.Loc}}, {Loc: n.Loc, Kind: "auto"}}})
+
+	return &Model{Loc: n.Loc, Intent: n.Intent, Name: n.Name, Fields: fields}
+}
 
 type Fn struct {
 	Loc     lexer.Loc
@@ -293,10 +414,10 @@ func (n *TestGroup) topLevel()           {}
 type Fixture struct {
 	Loc       lexer.Loc
 	Name      string
-	FromPath  string          // "from" variant
-	Generated *BlockBody      // "generated" variant
-	SeedModel string          // "seed" variant
-	SeedBody  *BlockBody      // "seed" variant
+	FromPath  string     // "from" variant
+	Generated *BlockBody // "generated" variant
+	SeedModel string     // "seed" variant
+	SeedBody  *BlockBody // "seed" variant
 }
 
 func (n *Fixture) nodeType() string    { return "Fixture" }
@@ -317,9 +438,9 @@ func (n *InputStmt) Location() lexer.Loc { return n.Loc }
 func (n *InputStmt) arrowStmt()          {}
 
 type StepStmt struct {
-	Loc      lexer.Loc
-	Binding  string // variable name if "x = expr", else ""
-	Expr     Expr
+	Loc     lexer.Loc
+	Binding string // variable name if "x = expr", else ""
+	Expr    Expr
 }
 
 func (n *StepStmt) nodeType() string    { return "StepStmt" }
@@ -574,6 +695,25 @@ type PrimitiveType struct {
 func (n *PrimitiveType) nodeType() string    { return "PrimitiveType" }
 func (n *PrimitiveType) Location() lexer.Loc { return n.Loc }
 func (n *PrimitiveType) typeExpr()           {}
+
+type TypedJSONType struct {
+	Loc   lexer.Loc
+	Inner TypeExpr
+}
+
+func (n *TypedJSONType) nodeType() string    { return "TypedJSONType" }
+func (n *TypedJSONType) Location() lexer.Loc { return n.Loc }
+func (n *TypedJSONType) typeExpr()           {}
+
+type TranslationKeyType struct {
+	Loc       lexer.Loc
+	Namespace string
+	Keys      []string
+}
+
+func (n *TranslationKeyType) nodeType() string    { return "TranslationKeyType" }
+func (n *TranslationKeyType) Location() lexer.Loc { return n.Loc }
+func (n *TranslationKeyType) typeExpr()           {}
 
 type NamedType struct {
 	Loc  lexer.Loc

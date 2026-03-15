@@ -124,6 +124,7 @@ middleware auth {
     |> log "checking auth"
   }
 }
+
 middleware auth {
   before {
     |> log "checking auth"
@@ -132,6 +133,57 @@ middleware auth {
 `)
 	expectErrors(t, errs, 1)
 	expectErrorContaining(t, errs, "duplicate middleware")
+}
+
+func TestTranslationBundleRejectsUnknownKey(t *testing.T) {
+	errs := check(t, header+`
+locale en default
+
+translation mission_text {
+  key "mission.start"
+  locale en {
+    "mission.missing": "Missing"
+  }
+}
+`)
+	expectErrorContaining(t, errs, "defines unknown key")
+}
+
+func TestTranslationKeyTypeRejectsUnknownNamespace(t *testing.T) {
+	errs := check(t, header+`
+type MissionDefinition {
+  title_key tkey(mission_text)
+}
+`)
+	expectErrorContaining(t, errs, "unknown translation namespace")
+}
+
+func TestSaveSchemaRejectsUnknownModel(t *testing.T) {
+	errs := check(t, header+`
+save player_progress {
+  model save_slot
+  version_field save_version
+  latest 2
+}
+`)
+	expectErrorContaining(t, errs, "references unknown model")
+}
+
+func TestSaveSchemaRejectsMigrationBeyondLatest(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model save_slot {
+  id uuid primary
+  save_version int
+}
+
+save player_progress {
+  model save_slot
+  version_field save_version
+  latest 2
+  migrate 2 -> 3
+}
+`)
+	expectErrorContaining(t, errs, "exceeds latest version")
 }
 
 func TestDuplicateEnumNames(t *testing.T) {
@@ -852,12 +904,12 @@ func TestSuggestName(t *testing.T) {
 		name string
 		want string
 	}{
-		{"usr", "user"},      // close to "user"
-		{"itm", "item"},      // close to "item"
-		{"ordr", "order"},    // close to "order"
+		{"usr", "user"},       // close to "user"
+		{"itm", "item"},       // close to "item"
+		{"ordr", "order"},     // close to "order"
 		{"produc", "product"}, // close to "product"
-		{"zzzzzzzzz", ""},    // too far from everything
-		{"User", "user"},     // case insensitive
+		{"zzzzzzzzz", ""},     // too far from everything
+		{"User", "user"},      // case insensitive
 	}
 	for _, tt := range tests {
 		got := suggestName(tt.name, candidates)
@@ -963,4 +1015,3 @@ func TestNamesOfKind(t *testing.T) {
 		t.Fatalf("expected 0 pipe names, got %d", len(pipes))
 	}
 }
-

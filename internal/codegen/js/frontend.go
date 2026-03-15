@@ -30,7 +30,7 @@ type frontendEndpointInputs struct {
 	body  []*ast.InputStmt
 }
 
-func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl, aliases []*ast.Alias, enums []*ast.Enum, endpoints []*ast.Endpoint, streams []*ast.StreamEndpoint, ws []*ast.WsEndpoint) codegen.OutputFile {
+func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl, aliases []*ast.Alias, enums []*ast.Enum, states []*ast.StateMachine, endpoints []*ast.Endpoint, streams []*ast.StreamEndpoint, ws []*ast.WsEndpoint) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("// Frontend-safe types generated from your Blueprint schema and endpoints\n\n")
@@ -47,46 +47,56 @@ func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl,
 	if len(enums) > 0 {
 		for _, e := range enums {
 			name := e.Name
-			b.WriteString(fmt.Sprintf("export const %s = {\n", name))
+			fmt.Fprintf(&b, "export const %s = {\n", name)
 			for _, v := range e.Variants {
-				b.WriteString(fmt.Sprintf("  %s: '%s',\n", v.Name, v.Name))
+				fmt.Fprintf(&b, "  %s: '%s',\n", v.Name, v.Name)
 			}
 			b.WriteString("} as const;\n")
-			b.WriteString(fmt.Sprintf("export type %s = keyof typeof %s;\n\n", name, name))
+			fmt.Fprintf(&b, "export type %s = keyof typeof %s;\n\n", name, name)
 			if g.structEnums[e.Name] {
-				b.WriteString(fmt.Sprintf("export const %sConfig = {\n", name))
+				fmt.Fprintf(&b, "export const %sConfig = {\n", name)
 				for _, v := range e.Variants {
 					if v.Body != nil && len(v.Body.Entries) > 0 {
 						parts := make([]string, len(v.Body.Entries))
 						for i, kv := range v.Body.Entries {
 							parts[i] = fmt.Sprintf("%s: %s", toCamelCase(kv.Key), exprToJS(kv.Value))
 						}
-						b.WriteString(fmt.Sprintf("  %s: { %s },\n", v.Name, strings.Join(parts, ", ")))
+						fmt.Fprintf(&b, "  %s: { %s },\n", v.Name, strings.Join(parts, ", "))
 					} else {
-						b.WriteString(fmt.Sprintf("  %s: {},\n", v.Name))
+						fmt.Fprintf(&b, "  %s: {},\n", v.Name)
 					}
 				}
 				b.WriteString("} as const;\n")
-				b.WriteString(fmt.Sprintf("export type %sConfig = typeof %sConfig[%s];\n\n", name, name, name))
+				fmt.Fprintf(&b, "export type %sConfig = typeof %sConfig[%s];\n\n", name, name, name)
 			}
 		}
 	}
 
 	if len(aliases) > 0 {
 		for _, a := range aliases {
-			b.WriteString(fmt.Sprintf("export type %s = %s;\n\n", a.Name, typeToTS(a.Type)))
+			fmt.Fprintf(&b, "export type %s = %s;\n\n", a.Name, typeToTS(a.Type))
 		}
+	}
+
+	for _, s := range states {
+		name := toPascalCase(s.Name)
+		parts := make([]string, len(s.States))
+		for i, state := range s.States {
+			parts[i] = fmt.Sprintf("%q", state)
+		}
+		fmt.Fprintf(&b, "export const %sStates = [%s] as const;\n", name, strings.Join(parts, ", "))
+		fmt.Fprintf(&b, "export type %s = (typeof %sStates)[number];\n\n", name, name)
 	}
 
 	if len(types) > 0 {
 		for _, t := range types {
-			b.WriteString(fmt.Sprintf("export interface %s {\n", toPascalCase(t.Name)))
+			fmt.Fprintf(&b, "export interface %s {\n", toPascalCase(t.Name))
 			for _, f := range t.Fields {
 				opt := ""
 				if frontendConstraintsOptional(f.Constraints) {
 					opt = "?"
 				}
-				b.WriteString(fmt.Sprintf("  %s%s: %s;\n", toCamelCase(f.Name), opt, typeToTS(f.Type)))
+				fmt.Fprintf(&b, "  %s%s: %s;\n", toCamelCase(f.Name), opt, typeToTS(f.Type))
 			}
 			b.WriteString("}\n\n")
 		}
@@ -94,10 +104,10 @@ func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl,
 
 	if len(models) > 0 {
 		for _, m := range models {
-			b.WriteString(fmt.Sprintf("export interface %s {\n", toPascalCase(m.Name)))
+			fmt.Fprintf(&b, "export interface %s {\n", toPascalCase(m.Name))
 			for _, f := range m.Fields {
 				info := g.frontendTypeInfoFromModelField(f)
-				b.WriteString(fmt.Sprintf("  %s: %s;\n", toCamelCase(f.Name), info.ts))
+				fmt.Fprintf(&b, "  %s: %s;\n", toCamelCase(f.Name), info.ts)
 			}
 			b.WriteString("}\n\n")
 		}
@@ -107,42 +117,42 @@ func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl,
 		baseName := frontendEndpointBaseName(ep.Method, ep.Path)
 		inputs := frontendEndpointInputGroups(ep)
 		if len(inputs.all) > 0 {
-			b.WriteString(fmt.Sprintf("export interface %sRequest {\n", baseName))
+			fmt.Fprintf(&b, "export interface %sRequest {\n", baseName)
 			for _, inp := range inputs.all {
 				opt := ""
 				if frontendInputOptional(inp) {
 					opt = "?"
 				}
-				b.WriteString(fmt.Sprintf("  %s%s: %s;\n", inp.Name, opt, typeToTS(inp.Type)))
+				fmt.Fprintf(&b, "  %s%s: %s;\n", inp.Name, opt, typeToTS(inp.Type))
 			}
 			b.WriteString("}\n\n")
 		}
 		resp := g.frontendEndpointResponseInfo(ep)
-		b.WriteString(fmt.Sprintf("export type %sResponse = %s;\n\n", baseName, indentMultiline(resp.ts, "  ")))
+		fmt.Fprintf(&b, "export type %sResponse = %s;\n\n", baseName, indentMultiline(resp.ts, "  "))
 	}
 
 	for _, se := range streams {
 		baseName := frontendStreamBaseName(se.Path)
 		params := extractPathParams(se.Path)
 		if len(params) > 0 {
-			b.WriteString(fmt.Sprintf("export interface %sRequest {\n", baseName))
+			fmt.Fprintf(&b, "export interface %sRequest {\n", baseName)
 			for _, param := range params {
-				b.WriteString(fmt.Sprintf("  %s: string;\n", param))
+				fmt.Fprintf(&b, "  %s: string;\n", param)
 			}
 			b.WriteString("}\n\n")
 		}
 		for _, h := range se.Handlers {
 			payloadName := frontendStreamEventTypeName(baseName, frontendStreamEventName(h))
 			info := g.frontendStreamHandlerInfo(h)
-			b.WriteString(fmt.Sprintf("export type %s = %s;\n\n", payloadName, indentMultiline(info.ts, "  ")))
+			fmt.Fprintf(&b, "export type %s = %s;\n\n", payloadName, indentMultiline(info.ts, "  "))
 		}
-		b.WriteString(fmt.Sprintf("export interface %sHandlers {\n", baseName))
+		fmt.Fprintf(&b, "export interface %sHandlers {\n", baseName)
 		b.WriteString("  onOpen?: () => void;\n")
 		b.WriteString("  onError?: (error: unknown) => void;\n")
 		for _, h := range se.Handlers {
 			eventName := frontendStreamEventName(h)
 			payloadName := frontendStreamEventTypeName(baseName, eventName)
-			b.WriteString(fmt.Sprintf("  %s?: (payload: %s) => void;\n", eventName, payloadName))
+			fmt.Fprintf(&b, "  %s?: (payload: %s) => void;\n", eventName, payloadName)
 		}
 		b.WriteString("}\n\n")
 	}
@@ -151,17 +161,17 @@ func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl,
 		baseName := frontendWsBaseName(we.Path)
 		params := extractPathParams(we.Path)
 		if len(params) > 0 {
-			b.WriteString(fmt.Sprintf("export interface %sRequest {\n", baseName))
+			fmt.Fprintf(&b, "export interface %sRequest {\n", baseName)
 			for _, param := range params {
-				b.WriteString(fmt.Sprintf("  %s: string;\n", param))
+				fmt.Fprintf(&b, "  %s: string;\n", param)
 			}
 			b.WriteString("}\n\n")
 		}
 		messageTypeNames := g.writeFrontendWsPayloadTypes(&b, baseName, we)
 		if len(messageTypeNames) == 0 {
-			b.WriteString(fmt.Sprintf("export type %sMessage = unknown;\n\n", baseName))
+			fmt.Fprintf(&b, "export type %sMessage = unknown;\n\n", baseName)
 		} else {
-			b.WriteString(fmt.Sprintf("export type %sMessage = %s;\n\n", baseName, strings.Join(messageTypeNames, " | ")))
+			fmt.Fprintf(&b, "export type %sMessage = %s;\n\n", baseName, strings.Join(messageTypeNames, " | "))
 		}
 	}
 
@@ -180,9 +190,9 @@ func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl,
 		baseName := frontendEndpointBaseName(ep.Method, ep.Path)
 		methodName := frontendRestMethodName(ep.Method, ep.Path)
 		if len(frontendEndpointInputGroups(ep).all) > 0 {
-			b.WriteString(fmt.Sprintf("  %s(input: %sRequest): Promise<%sResponse>;\n", methodName, baseName, baseName))
+			fmt.Fprintf(&b, "  %s(input: %sRequest): Promise<%sResponse>;\n", methodName, baseName, baseName)
 		} else {
-			b.WriteString(fmt.Sprintf("  %s(): Promise<%sResponse>;\n", methodName, baseName))
+			fmt.Fprintf(&b, "  %s(): Promise<%sResponse>;\n", methodName, baseName)
 		}
 	}
 	b.WriteString("}\n\n")
@@ -192,9 +202,9 @@ func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl,
 		baseName := frontendStreamBaseName(se.Path)
 		methodName := frontendStreamMethodName(se.Path)
 		if len(extractPathParams(se.Path)) > 0 {
-			b.WriteString(fmt.Sprintf("  %s(handlers: %sHandlers, input: %sRequest): () => void;\n", methodName, baseName, baseName))
+			fmt.Fprintf(&b, "  %s(handlers: %sHandlers, input: %sRequest): () => void;\n", methodName, baseName, baseName)
 		} else {
-			b.WriteString(fmt.Sprintf("  %s(handlers: %sHandlers): () => void;\n", methodName, baseName))
+			fmt.Fprintf(&b, "  %s(handlers: %sHandlers): () => void;\n", methodName, baseName)
 		}
 	}
 	b.WriteString("}\n\n")
@@ -204,9 +214,9 @@ func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl,
 		baseName := frontendWsBaseName(we.Path)
 		methodName := frontendWsMethodName(we.Path)
 		if len(extractPathParams(we.Path)) > 0 {
-			b.WriteString(fmt.Sprintf("  %s(input: %sRequest): WsConnection<%sMessage>;\n", methodName, baseName, baseName))
+			fmt.Fprintf(&b, "  %s(input: %sRequest): WsConnection<%sMessage>;\n", methodName, baseName, baseName)
 		} else {
-			b.WriteString(fmt.Sprintf("  %s(): WsConnection<%sMessage>;\n", methodName, baseName))
+			fmt.Fprintf(&b, "  %s(): WsConnection<%sMessage>;\n", methodName, baseName)
 		}
 	}
 	b.WriteString("}\n\n")
@@ -220,7 +230,7 @@ func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl,
 	return codegen.OutputFile{Path: "src/types/api.ts", Content: []byte(b.String())}
 }
 
-func (g *Generator) genFrontendSchemas(models []*ast.Model, types []*ast.TypeDecl, aliases []*ast.Alias, enums []*ast.Enum, endpoints []*ast.Endpoint, streams []*ast.StreamEndpoint, ws []*ast.WsEndpoint) codegen.OutputFile {
+func (g *Generator) genFrontendSchemas(models []*ast.Model, types []*ast.TypeDecl, aliases []*ast.Alias, enums []*ast.Enum, states []*ast.StateMachine, endpoints []*ast.Endpoint, streams []*ast.StreamEndpoint, ws []*ast.WsEndpoint) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { z } from 'zod';\n\n")
@@ -237,27 +247,35 @@ func (g *Generator) genFrontendSchemas(models []*ast.Model, types []*ast.TypeDec
 		for i, v := range e.Variants {
 			variants[i] = fmt.Sprintf(`"%s"`, v.Name)
 		}
-		b.WriteString(fmt.Sprintf("export const %s = z.enum([%s]);\n\n", frontendSchemaName(e.Name), strings.Join(variants, ", ")))
+		fmt.Fprintf(&b, "export const %s = z.enum([%s]);\n\n", frontendSchemaName(e.Name), strings.Join(variants, ", "))
 	}
 
 	for _, a := range aliases {
-		b.WriteString(fmt.Sprintf("export const %s = %s%s;\n\n", frontendSchemaName(a.Name), frontendTypeToZod(a.Type), constraintsToZod(a.Constraints)))
+		fmt.Fprintf(&b, "export const %s = %s%s;\n\n", frontendSchemaName(a.Name), frontendTypeToZod(a.Type), constraintsToZod(a.Constraints))
+	}
+
+	for _, s := range states {
+		variants := make([]string, len(s.States))
+		for i, state := range s.States {
+			variants[i] = fmt.Sprintf(`"%s"`, state)
+		}
+		fmt.Fprintf(&b, "export const %s = z.enum([%s]);\n\n", frontendSchemaName(s.Name), strings.Join(variants, ", "))
 	}
 
 	for _, t := range types {
-		b.WriteString(fmt.Sprintf("export const %s = z.object({\n", frontendSchemaName(t.Name)))
+		fmt.Fprintf(&b, "export const %s = z.object({\n", frontendSchemaName(t.Name))
 		for _, f := range t.Fields {
 			fieldSchema := frontendTypeToZod(f.Type) + constraintsToZod(f.Constraints)
-			b.WriteString(fmt.Sprintf("  %s: %s,\n", toCamelCase(f.Name), fieldSchema))
+			fmt.Fprintf(&b, "  %s: %s,\n", toCamelCase(f.Name), fieldSchema)
 		}
 		b.WriteString("});\n\n")
 	}
 
 	for _, m := range models {
-		b.WriteString(fmt.Sprintf("export const %s = z.object({\n", frontendSchemaName(m.Name)))
+		fmt.Fprintf(&b, "export const %s = z.object({\n", frontendSchemaName(m.Name))
 		for _, f := range m.Fields {
 			info := g.frontendTypeInfoFromModelField(f)
-			b.WriteString(fmt.Sprintf("  %s: %s,\n", toCamelCase(f.Name), info.zod))
+			fmt.Fprintf(&b, "  %s: %s,\n", toCamelCase(f.Name), info.zod)
 		}
 		b.WriteString("});\n\n")
 	}
@@ -266,15 +284,15 @@ func (g *Generator) genFrontendSchemas(models []*ast.Model, types []*ast.TypeDec
 		baseName := frontendEndpointBaseName(ep.Method, ep.Path)
 		inputs := frontendEndpointInputGroups(ep)
 		if len(inputs.all) > 0 {
-			b.WriteString(fmt.Sprintf("export const %sRequestSchema = z.object({\n", baseName))
+			fmt.Fprintf(&b, "export const %sRequestSchema = z.object({\n", baseName)
 			for _, inp := range inputs.all {
-				b.WriteString(fmt.Sprintf("  %s: %s%s,\n", inp.Name, frontendTypeToZod(inp.Type), constraintsToZod(inp.Constraints)))
+				fmt.Fprintf(&b, "  %s: %s%s,\n", inp.Name, frontendTypeToZod(inp.Type), constraintsToZod(inp.Constraints))
 			}
 			b.WriteString("});\n\n")
 		}
 		resp := g.frontendEndpointResponseInfo(ep)
 		if resp.ts != "void" {
-			b.WriteString(fmt.Sprintf("export const %sResponseSchema = %s;\n\n", baseName, indentMultiline(resp.zod, "  ")))
+			fmt.Fprintf(&b, "export const %sResponseSchema = %s;\n\n", baseName, indentMultiline(resp.zod, "  "))
 		}
 	}
 
@@ -282,16 +300,16 @@ func (g *Generator) genFrontendSchemas(models []*ast.Model, types []*ast.TypeDec
 		baseName := frontendStreamBaseName(se.Path)
 		params := extractPathParams(se.Path)
 		if len(params) > 0 {
-			b.WriteString(fmt.Sprintf("export const %sRequestSchema = z.object({\n", baseName))
+			fmt.Fprintf(&b, "export const %sRequestSchema = z.object({\n", baseName)
 			for _, param := range params {
-				b.WriteString(fmt.Sprintf("  %s: z.string(),\n", param))
+				fmt.Fprintf(&b, "  %s: z.string(),\n", param)
 			}
 			b.WriteString("});\n\n")
 		}
 		for _, h := range se.Handlers {
 			payloadName := frontendStreamEventTypeName(baseName, frontendStreamEventName(h))
 			info := g.frontendStreamHandlerInfo(h)
-			b.WriteString(fmt.Sprintf("export const %sSchema = %s;\n\n", payloadName, indentMultiline(info.zod, "  ")))
+			fmt.Fprintf(&b, "export const %sSchema = %s;\n\n", payloadName, indentMultiline(info.zod, "  "))
 		}
 	}
 
@@ -299,19 +317,19 @@ func (g *Generator) genFrontendSchemas(models []*ast.Model, types []*ast.TypeDec
 		baseName := frontendWsBaseName(we.Path)
 		params := extractPathParams(we.Path)
 		if len(params) > 0 {
-			b.WriteString(fmt.Sprintf("export const %sRequestSchema = z.object({\n", baseName))
+			fmt.Fprintf(&b, "export const %sRequestSchema = z.object({\n", baseName)
 			for _, param := range params {
-				b.WriteString(fmt.Sprintf("  %s: z.string(),\n", param))
+				fmt.Fprintf(&b, "  %s: z.string(),\n", param)
 			}
 			b.WriteString("});\n\n")
 		}
 		messageSchemaNames := g.writeFrontendWsPayloadSchemas(&b, baseName, we)
 		if len(messageSchemaNames) == 0 {
-			b.WriteString(fmt.Sprintf("export const %sMessageSchema = z.unknown();\n\n", baseName))
+			fmt.Fprintf(&b, "export const %sMessageSchema = z.unknown();\n\n", baseName)
 		} else if len(messageSchemaNames) == 1 {
-			b.WriteString(fmt.Sprintf("export const %sMessageSchema = %s;\n\n", baseName, messageSchemaNames[0]))
+			fmt.Fprintf(&b, "export const %sMessageSchema = %s;\n\n", baseName, messageSchemaNames[0])
 		} else {
-			b.WriteString(fmt.Sprintf("export const %sMessageSchema = z.union([%s]);\n\n", baseName, strings.Join(messageSchemaNames, ", ")))
+			fmt.Fprintf(&b, "export const %sMessageSchema = z.union([%s]);\n\n", baseName, strings.Join(messageSchemaNames, ", "))
 		}
 	}
 
@@ -428,25 +446,22 @@ func (g *Generator) genFrontendClient(endpoints []*ast.Endpoint, streams []*ast.
 	b.WriteString("  const createWebSocket = options.createWebSocket ?? ((url: string) => new (globalThis as any).WebSocket(url));\n\n")
 	b.WriteString("  return {\n")
 	b.WriteString("    rest: {\n")
-	for i, ep := range endpoints {
+	for _, ep := range endpoints {
 		baseName := frontendEndpointBaseName(ep.Method, ep.Path)
 		methodName := frontendRestMethodName(ep.Method, ep.Path)
 		inputs := frontendEndpointInputGroups(ep)
-		if i > 0 {
-			// keep method blocks visually separated
-		}
 		if len(inputs.all) > 0 {
-			b.WriteString(fmt.Sprintf("      async %s(input: Api.%sRequest): Promise<Api.%sResponse> {\n", methodName, baseName, baseName))
-			b.WriteString(fmt.Sprintf("        const request = Schemas.%sRequestSchema.parse(input);\n", baseName))
+			fmt.Fprintf(&b, "      async %s(input: Api.%sRequest): Promise<Api.%sResponse> {\n", methodName, baseName, baseName)
+			fmt.Fprintf(&b, "        const request = Schemas.%sRequestSchema.parse(input);\n", baseName)
 		} else {
-			b.WriteString(fmt.Sprintf("      async %s(): Promise<Api.%sResponse> {\n", methodName, baseName))
+			fmt.Fprintf(&b, "      async %s(): Promise<Api.%sResponse> {\n", methodName, baseName)
 		}
-		b.WriteString(fmt.Sprintf("        const url = new URL('%s', `${baseUrl}/`);\n", ep.Path))
+		fmt.Fprintf(&b, "        const url = new URL('%s', `${baseUrl}/`);\n", ep.Path)
 		for _, inp := range inputs.path {
-			b.WriteString(fmt.Sprintf("        url.pathname = url.pathname.replace(':%s', encodeURIComponent(serializeValue(request.%s)));\n", inp.Name, inp.Name))
+			fmt.Fprintf(&b, "        url.pathname = url.pathname.replace(':%s', encodeURIComponent(serializeValue(request.%s)));\n", inp.Name, inp.Name)
 		}
 		for _, inp := range inputs.query {
-			b.WriteString(fmt.Sprintf("        appendQuery(url.searchParams, '%s', request.%s);\n", inp.Name, inp.Name))
+			fmt.Fprintf(&b, "        appendQuery(url.searchParams, '%s', request.%s);\n", inp.Name, inp.Name)
 		}
 		b.WriteString("        const headers = buildHeaders(options.getAuthHeader);\n")
 		bodyKeys := make([]string, len(inputs.body))
@@ -465,18 +480,18 @@ func (g *Generator) genFrontendClient(endpoints []*ast.Endpoint, streams []*ast.
 			b.WriteString("        return requestJson(\n")
 			b.WriteString("          doFetch,\n")
 			b.WriteString("          url.toString(),\n")
-			b.WriteString(fmt.Sprintf("          { method: '%s', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) },\n", ep.Method))
+			fmt.Fprintf(&b, "          { method: '%s', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) },\n", ep.Method)
 		} else {
 			b.WriteString("        return requestJson(\n")
 			b.WriteString("          doFetch,\n")
 			b.WriteString("          url.toString(),\n")
-			b.WriteString(fmt.Sprintf("          { method: '%s', headers },\n", ep.Method))
+			fmt.Fprintf(&b, "          { method: '%s', headers },\n", ep.Method)
 		}
 		resp := g.frontendEndpointResponseInfo(ep)
 		if resp.ts == "void" {
 			b.WriteString("          null,\n")
 		} else {
-			b.WriteString(fmt.Sprintf("          Schemas.%sResponseSchema,\n", baseName))
+			fmt.Fprintf(&b, "          Schemas.%sResponseSchema,\n", baseName)
 		}
 		b.WriteString("          validateResponses,\n")
 		b.WriteString("        ) as Promise<Api.")
@@ -490,14 +505,14 @@ func (g *Generator) genFrontendClient(endpoints []*ast.Endpoint, streams []*ast.
 		baseName := frontendStreamBaseName(se.Path)
 		methodName := frontendStreamMethodName(se.Path)
 		if len(extractPathParams(se.Path)) > 0 {
-			b.WriteString(fmt.Sprintf("      %s(handlers: Api.%sHandlers, input: Api.%sRequest): () => void {\n", methodName, baseName, baseName))
-			b.WriteString(fmt.Sprintf("        const request = Schemas.%sRequestSchema.parse(input);\n", baseName))
+			fmt.Fprintf(&b, "      %s(handlers: Api.%sHandlers, input: Api.%sRequest): () => void {\n", methodName, baseName, baseName)
+			fmt.Fprintf(&b, "        const request = Schemas.%sRequestSchema.parse(input);\n", baseName)
 		} else {
-			b.WriteString(fmt.Sprintf("      %s(handlers: Api.%sHandlers): () => void {\n", methodName, baseName))
+			fmt.Fprintf(&b, "      %s(handlers: Api.%sHandlers): () => void {\n", methodName, baseName)
 		}
-		b.WriteString(fmt.Sprintf("        const url = new URL('%s', `${baseUrl}/`);\n", se.Path))
+		fmt.Fprintf(&b, "        const url = new URL('%s', `${baseUrl}/`);\n", se.Path)
 		for _, param := range extractPathParams(se.Path) {
-			b.WriteString(fmt.Sprintf("        url.pathname = url.pathname.replace(':%s', encodeURIComponent(serializeValue(request.%s)));\n", param, param))
+			fmt.Fprintf(&b, "        url.pathname = url.pathname.replace(':%s', encodeURIComponent(serializeValue(request.%s)));\n", param, param)
 		}
 		b.WriteString("        const source = createEventSource(url.toString());\n")
 		b.WriteString("        if (handlers.onOpen && source.onopen !== undefined) source.onopen = () => handlers.onOpen?.();\n")
@@ -505,10 +520,10 @@ func (g *Generator) genFrontendClient(endpoints []*ast.Endpoint, streams []*ast.
 		for _, h := range se.Handlers {
 			eventName := frontendStreamEventName(h)
 			payloadName := frontendStreamEventTypeName(baseName, eventName)
-			b.WriteString(fmt.Sprintf("        if (handlers.%s) {\n", eventName))
-			b.WriteString(fmt.Sprintf("          source.addEventListener('%s', (event: { data: string }) => {\n", eventName))
-			b.WriteString(fmt.Sprintf("            const payload = parseEventPayload<Api.%s>(Schemas.%sSchema, event.data, validateResponses);\n", payloadName, payloadName))
-			b.WriteString(fmt.Sprintf("            handlers.%s?.(payload);\n", eventName))
+			fmt.Fprintf(&b, "        if (handlers.%s) {\n", eventName)
+			fmt.Fprintf(&b, "          source.addEventListener('%s', (event: { data: string }) => {\n", eventName)
+			fmt.Fprintf(&b, "            const payload = parseEventPayload<Api.%s>(Schemas.%sSchema, event.data, validateResponses);\n", payloadName, payloadName)
+			fmt.Fprintf(&b, "            handlers.%s?.(payload);\n", eventName)
 			b.WriteString("          });\n")
 			b.WriteString("        }\n")
 		}
@@ -521,14 +536,14 @@ func (g *Generator) genFrontendClient(endpoints []*ast.Endpoint, streams []*ast.
 		baseName := frontendWsBaseName(we.Path)
 		methodName := frontendWsMethodName(we.Path)
 		if len(extractPathParams(we.Path)) > 0 {
-			b.WriteString(fmt.Sprintf("      %s(input: Api.%sRequest): Api.WsConnection<Api.%sMessage> {\n", methodName, baseName, baseName))
-			b.WriteString(fmt.Sprintf("        const request = Schemas.%sRequestSchema.parse(input);\n", baseName))
+			fmt.Fprintf(&b, "      %s(input: Api.%sRequest): Api.WsConnection<Api.%sMessage> {\n", methodName, baseName, baseName)
+			fmt.Fprintf(&b, "        const request = Schemas.%sRequestSchema.parse(input);\n", baseName)
 		} else {
-			b.WriteString(fmt.Sprintf("      %s(): Api.WsConnection<Api.%sMessage> {\n", methodName, baseName))
+			fmt.Fprintf(&b, "      %s(): Api.WsConnection<Api.%sMessage> {\n", methodName, baseName)
 		}
-		b.WriteString(fmt.Sprintf("        const url = new URL('%s', `${baseUrl}/`);\n", we.Path))
+		fmt.Fprintf(&b, "        const url = new URL('%s', `${baseUrl}/`);\n", we.Path)
 		for _, param := range extractPathParams(we.Path) {
-			b.WriteString(fmt.Sprintf("        url.pathname = url.pathname.replace(':%s', encodeURIComponent(serializeValue(request.%s)));\n", param, param))
+			fmt.Fprintf(&b, "        url.pathname = url.pathname.replace(':%s', encodeURIComponent(serializeValue(request.%s)));\n", param, param)
 		}
 		b.WriteString("        const socket = createWebSocket(toWebSocketUrl(baseUrl, url.pathname + url.search));\n")
 		b.WriteString("        return {\n")
@@ -546,7 +561,7 @@ func (g *Generator) genFrontendClient(endpoints []*ast.Endpoint, streams []*ast.
 		b.WriteString(baseName)
 		b.WriteString("Message) => void) {\n")
 		b.WriteString("            socket.addEventListener('message', (event: { data?: unknown }) => {\n")
-		b.WriteString(fmt.Sprintf("              const payload = parseEventPayload<Api.%sMessage>(Schemas.%sMessageSchema, String(event.data ?? ''), validateResponses);\n", baseName, baseName))
+		fmt.Fprintf(&b, "              const payload = parseEventPayload<Api.%sMessage>(Schemas.%sMessageSchema, String(event.data ?? ''), validateResponses);\n", baseName, baseName)
 		b.WriteString("              handler(payload);\n")
 		b.WriteString("            });\n")
 		b.WriteString("          },\n")
@@ -593,29 +608,29 @@ func (g *Generator) genFrontendReactQuery(endpoints []*ast.Endpoint) codegen.Out
 		if ep.Method == "GET" {
 			queryKeyName := methodName + "QueryKey"
 			if len(inputs.all) > 0 {
-				b.WriteString(fmt.Sprintf("export const %s = (input: Api.%sRequest) => ['%s', input] as const;\n\n", queryKeyName, baseName, methodName))
-				b.WriteString(fmt.Sprintf("export function use%sQuery<TData = Api.%sResponse>(\n", baseName, baseName))
-				b.WriteString(fmt.Sprintf("  input: Api.%sRequest,\n", baseName))
+				fmt.Fprintf(&b, "export const %s = (input: Api.%sRequest) => ['%s', input] as const;\n\n", queryKeyName, baseName, methodName)
+				fmt.Fprintf(&b, "export function use%sQuery<TData = Api.%sResponse>(\n", baseName, baseName)
+				fmt.Fprintf(&b, "  input: Api.%sRequest,\n", baseName)
 				b.WriteString("  clientOptions: ReactQueryClientOptions,\n")
-				b.WriteString(fmt.Sprintf("  options?: Omit<UseQueryOptions<Api.%sResponse, ApiClientError, TData, ReturnType<typeof %s>>, 'queryKey' | 'queryFn'>,\n", baseName, queryKeyName))
-				b.WriteString(fmt.Sprintf("): UseQueryResult<TData, ApiClientError> {\n"))
+				fmt.Fprintf(&b, "  options?: Omit<UseQueryOptions<Api.%sResponse, ApiClientError, TData, ReturnType<typeof %s>>, 'queryKey' | 'queryFn'>,\n", baseName, queryKeyName)
+				b.WriteString("): UseQueryResult<TData, ApiClientError> {\n")
 				b.WriteString("  const client = resolveRestClient(clientOptions);\n")
 				b.WriteString("  return useQuery({\n")
-				b.WriteString(fmt.Sprintf("    queryKey: %s(input),\n", queryKeyName))
-				b.WriteString(fmt.Sprintf("    queryFn: () => client.%s(input),\n", methodName))
+				fmt.Fprintf(&b, "    queryKey: %s(input),\n", queryKeyName)
+				fmt.Fprintf(&b, "    queryFn: () => client.%s(input),\n", methodName)
 				b.WriteString("    ...options,\n")
 				b.WriteString("  });\n")
 				b.WriteString("}\n\n")
 			} else {
-				b.WriteString(fmt.Sprintf("export const %s = () => ['%s'] as const;\n\n", queryKeyName, methodName))
-				b.WriteString(fmt.Sprintf("export function use%sQuery<TData = Api.%sResponse>(\n", baseName, baseName))
+				fmt.Fprintf(&b, "export const %s = () => ['%s'] as const;\n\n", queryKeyName, methodName)
+				fmt.Fprintf(&b, "export function use%sQuery<TData = Api.%sResponse>(\n", baseName, baseName)
 				b.WriteString("  clientOptions: ReactQueryClientOptions,\n")
-				b.WriteString(fmt.Sprintf("  options?: Omit<UseQueryOptions<Api.%sResponse, ApiClientError, TData, ReturnType<typeof %s>>, 'queryKey' | 'queryFn'>,\n", baseName, queryKeyName))
-				b.WriteString(fmt.Sprintf("): UseQueryResult<TData, ApiClientError> {\n"))
+				fmt.Fprintf(&b, "  options?: Omit<UseQueryOptions<Api.%sResponse, ApiClientError, TData, ReturnType<typeof %s>>, 'queryKey' | 'queryFn'>,\n", baseName, queryKeyName)
+				b.WriteString("): UseQueryResult<TData, ApiClientError> {\n")
 				b.WriteString("  const client = resolveRestClient(clientOptions);\n")
 				b.WriteString("  return useQuery({\n")
-				b.WriteString(fmt.Sprintf("    queryKey: %s(),\n", queryKeyName))
-				b.WriteString(fmt.Sprintf("    queryFn: () => client.%s(),\n", methodName))
+				fmt.Fprintf(&b, "    queryKey: %s(),\n", queryKeyName)
+				fmt.Fprintf(&b, "    queryFn: () => client.%s(),\n", methodName)
 				b.WriteString("    ...options,\n")
 				b.WriteString("  });\n")
 				b.WriteString("}\n\n")
@@ -623,21 +638,21 @@ func (g *Generator) genFrontendReactQuery(endpoints []*ast.Endpoint) codegen.Out
 			continue
 		}
 
-		b.WriteString(fmt.Sprintf("export function use%sMutation(\n", baseName))
+		fmt.Fprintf(&b, "export function use%sMutation(\n", baseName)
 		b.WriteString("  clientOptions: ReactQueryClientOptions,\n")
 		if len(inputs.all) > 0 {
-			b.WriteString(fmt.Sprintf("  options?: UseMutationOptions<Api.%sResponse, ApiClientError, Api.%sRequest>,\n", baseName, baseName))
-			b.WriteString(fmt.Sprintf("): UseMutationResult<Api.%sResponse, ApiClientError, Api.%sRequest> {\n", baseName, baseName))
+			fmt.Fprintf(&b, "  options?: UseMutationOptions<Api.%sResponse, ApiClientError, Api.%sRequest>,\n", baseName, baseName)
+			fmt.Fprintf(&b, "): UseMutationResult<Api.%sResponse, ApiClientError, Api.%sRequest> {\n", baseName, baseName)
 		} else {
-			b.WriteString(fmt.Sprintf("  options?: UseMutationOptions<Api.%sResponse, ApiClientError, void>,\n", baseName))
-			b.WriteString(fmt.Sprintf("): UseMutationResult<Api.%sResponse, ApiClientError, void> {\n", baseName))
+			fmt.Fprintf(&b, "  options?: UseMutationOptions<Api.%sResponse, ApiClientError, void>,\n", baseName)
+			fmt.Fprintf(&b, "): UseMutationResult<Api.%sResponse, ApiClientError, void> {\n", baseName)
 		}
 		b.WriteString("  const client = resolveRestClient(clientOptions);\n")
 		b.WriteString("  return useMutation({\n")
 		if len(inputs.all) > 0 {
-			b.WriteString(fmt.Sprintf("    mutationFn: (input) => client.%s(input),\n", methodName))
+			fmt.Fprintf(&b, "    mutationFn: (input) => client.%s(input),\n", methodName)
 		} else {
-			b.WriteString(fmt.Sprintf("    mutationFn: () => client.%s(),\n", methodName))
+			fmt.Fprintf(&b, "    mutationFn: () => client.%s(),\n", methodName)
 		}
 		b.WriteString("    ...options,\n")
 		b.WriteString("  });\n")
@@ -647,16 +662,20 @@ func (g *Generator) genFrontendReactQuery(endpoints []*ast.Endpoint) codegen.Out
 	return codegen.OutputFile{Path: "src/types/react-query.ts", Content: []byte(b.String())}
 }
 
-func (g *Generator) genFrontendPackage(baseDir string, bp *ast.Blueprint, apiFile, schemasFile, clientFile codegen.OutputFile, reactQueryFile *codegen.OutputFile) []codegen.OutputFile {
+func (g *Generator) genFrontendPackage(baseDir string, bp *ast.Blueprint, apiFile, schemasFile, clientFile codegen.OutputFile, i18nFile, reactQueryFile *codegen.OutputFile) []codegen.OutputFile {
+	hasI18n := i18nFile != nil
 	files := []codegen.OutputFile{
 		g.frontendPackageFile(baseDir, apiFile),
 		g.frontendPackageFile(baseDir, schemasFile),
 		g.frontendPackageFile(baseDir, clientFile),
-		g.genFrontendPackageIndex(baseDir, reactQueryFile != nil),
-		g.genFrontendPackageJSON(baseDir, bp, reactQueryFile != nil),
+		g.genFrontendPackageIndex(baseDir, hasI18n, reactQueryFile != nil),
+		g.genFrontendPackageJSON(baseDir, bp, hasI18n, reactQueryFile != nil),
 		g.genFrontendPackageREADME(baseDir, bp, reactQueryFile != nil),
 		g.genFrontendPackageTSConfig(baseDir),
 		g.genFrontendPackageGitignore(baseDir),
+	}
+	if i18nFile != nil {
+		files = append(files, g.frontendPackageFile(baseDir, *i18nFile))
 	}
 	if reactQueryFile != nil {
 		files = append(files, g.frontendPackageFile(baseDir, *reactQueryFile))
@@ -671,19 +690,27 @@ func (g *Generator) frontendPackageFile(baseDir string, file codegen.OutputFile)
 	}
 }
 
-func (g *Generator) genFrontendPackageIndex(baseDir string, hasReactQuery bool) codegen.OutputFile {
+func (g *Generator) genFrontendPackageIndex(baseDir string, hasI18n, hasReactQuery bool) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("export * from './api.js';\n")
 	b.WriteString("export * from './schemas.js';\n")
 	b.WriteString("export * from './client.js';\n")
+	if hasI18n {
+		b.WriteString("export * from './i18n.js';\n")
+	}
 	if hasReactQuery {
 		b.WriteString("export * from './react-query.js';\n")
 	}
 	return codegen.OutputFile{Path: filepath.Join(baseDir, "src", "index.ts"), Content: []byte(b.String())}
 }
 
-func (g *Generator) genFrontendPackageJSON(baseDir string, bp *ast.Blueprint, hasReactQuery bool) codegen.OutputFile {
+func (g *Generator) genFrontendI18n(locales []*ast.Locale, translations []*ast.Translation) codegen.OutputFile {
+	lib := g.genI18n(locales, translations)
+	return codegen.OutputFile{Path: "src/types/i18n.ts", Content: lib.Content}
+}
+
+func (g *Generator) genFrontendPackageJSON(baseDir string, bp *ast.Blueprint, hasI18n, hasReactQuery bool) codegen.OutputFile {
 	deps := map[string]string{
 		"zod": "^3.23.0",
 	}
@@ -702,9 +729,9 @@ func (g *Generator) genFrontendPackageJSON(baseDir string, bp *ast.Blueprint, ha
 	name := toKebabCase(bp.Name) + "-frontend"
 	var b strings.Builder
 	b.WriteString("{\n")
-	b.WriteString(fmt.Sprintf("  \"name\": %q,\n", name))
+	fmt.Fprintf(&b, "  \"name\": %q,\n", name)
 	b.WriteString("  \"version\": \"0.1.0\",\n")
-	b.WriteString(fmt.Sprintf("  \"description\": %q,\n", fmt.Sprintf("Generated frontend SDK for %s.", bp.Name)))
+	fmt.Fprintf(&b, "  \"description\": %q,\n", fmt.Sprintf("Generated frontend SDK for %s.", bp.Name))
 	b.WriteString("  \"license\": \"MIT\",\n")
 	b.WriteString("  \"type\": \"module\",\n")
 	b.WriteString("  \"sideEffects\": false,\n")
@@ -741,6 +768,13 @@ func (g *Generator) genFrontendPackageJSON(baseDir string, bp *ast.Blueprint, ha
 	b.WriteString("      \"types\": \"./dist/client.d.ts\",\n")
 	b.WriteString("      \"import\": \"./dist/client.js\"\n")
 	b.WriteString("    }")
+	if hasI18n {
+		b.WriteString(",\n")
+		b.WriteString("    \"./i18n\": {\n")
+		b.WriteString("      \"types\": \"./dist/i18n.d.ts\",\n")
+		b.WriteString("      \"import\": \"./dist/i18n.js\"\n")
+		b.WriteString("    }")
+	}
 	if hasReactQuery {
 		b.WriteString(",\n")
 		b.WriteString("    \"./react-query\": {\n")
@@ -761,7 +795,7 @@ func (g *Generator) genFrontendPackageJSON(baseDir string, bp *ast.Blueprint, ha
 		if i == len(depKeys)-1 {
 			comma = ""
 		}
-		b.WriteString(fmt.Sprintf("    %q: %q%s\n", k, deps[k], comma))
+		fmt.Fprintf(&b, "    %q: %q%s\n", k, deps[k], comma)
 	}
 	b.WriteString("  }")
 	if len(peerDeps) > 0 {
@@ -773,7 +807,7 @@ func (g *Generator) genFrontendPackageJSON(baseDir string, bp *ast.Blueprint, ha
 			if i == len(peerKeys)-1 {
 				comma = ""
 			}
-			b.WriteString(fmt.Sprintf("    %q: %q%s\n", k, peerDeps[k], comma))
+			fmt.Fprintf(&b, "    %q: %q%s\n", k, peerDeps[k], comma)
 		}
 		b.WriteString("  },\n")
 		b.WriteString("  \"devDependencies\": {\n")
@@ -783,7 +817,7 @@ func (g *Generator) genFrontendPackageJSON(baseDir string, bp *ast.Blueprint, ha
 			if i == len(devKeys)-1 {
 				comma = ""
 			}
-			b.WriteString(fmt.Sprintf("    %q: %q%s\n", k, devDeps[k], comma))
+			fmt.Fprintf(&b, "    %q: %q%s\n", k, devDeps[k], comma)
 		}
 		b.WriteString("  }\n")
 	} else {
@@ -795,7 +829,7 @@ func (g *Generator) genFrontendPackageJSON(baseDir string, bp *ast.Blueprint, ha
 			if i == len(devKeys)-1 {
 				comma = ""
 			}
-			b.WriteString(fmt.Sprintf("    %q: %q%s\n", k, devDeps[k], comma))
+			fmt.Fprintf(&b, "    %q: %q%s\n", k, devDeps[k], comma)
 		}
 		b.WriteString("  }\n")
 	}
@@ -1016,6 +1050,17 @@ func frontendTypeToZod(t ast.TypeExpr) string {
 		default:
 			return "z.unknown()"
 		}
+	case *ast.TypedJSONType:
+		return frontendTypeToZod(v.Inner)
+	case *ast.TranslationKeyType:
+		if len(v.Keys) > 0 {
+			parts := make([]string, len(v.Keys))
+			for i, key := range v.Keys {
+				parts[i] = fmt.Sprintf("%q", key)
+			}
+			return fmt.Sprintf("z.enum([%s])", strings.Join(parts, ", "))
+		}
+		return "z.string()"
 	case *ast.NamedType:
 		return fmt.Sprintf("z.lazy(() => %s)", frontendSchemaName(v.Name))
 	case *ast.ListType:
@@ -1536,8 +1581,8 @@ func indentMultiline(value, indent string) string {
 }
 
 func (g *Generator) lookupModel(name string) *ast.Model {
-	for _, block := range g.file.Blocks {
-		if model, ok := block.(*ast.Model); ok && model.Name == name {
+	for _, model := range g.models {
+		if model.Name == name {
 			return model
 		}
 	}
@@ -1579,7 +1624,7 @@ func (g *Generator) writeFrontendWsPayloadTypes(b *strings.Builder, baseName str
 		}
 		name := frontendWsPayloadTypeName(baseName, lifecycle.suffix)
 		info := g.frontendWsLifecycleInfo(lifecycle.stmts)
-		b.WriteString(fmt.Sprintf("export type %s = %s;\n\n", name, indentMultiline(info.ts, "  ")))
+		fmt.Fprintf(b, "export type %s = %s;\n\n", name, indentMultiline(info.ts, "  "))
 		names = append(names, name)
 	}
 	return names
@@ -1602,7 +1647,7 @@ func (g *Generator) writeFrontendWsPayloadSchemas(b *strings.Builder, baseName s
 		}
 		name := frontendWsPayloadTypeName(baseName, lifecycle.suffix) + "Schema"
 		info := g.frontendWsLifecycleInfo(lifecycle.stmts)
-		b.WriteString(fmt.Sprintf("export const %s = %s;\n\n", name, indentMultiline(info.zod, "  ")))
+		fmt.Fprintf(b, "export const %s = %s;\n\n", name, indentMultiline(info.zod, "  "))
 		names = append(names, name)
 	}
 	return names

@@ -139,6 +139,16 @@ func (p *Parser) parseTopLevelBlock() (block ast.TopLevel) {
 		return p.parseSecret()
 	case lexer.TokenEnv:
 		return p.parseEnv()
+	case lexer.TokenLocale:
+		return p.parseLocale()
+	case lexer.TokenTranslation:
+		return p.parseTranslation()
+	case lexer.TokenState:
+		return p.parseStateMachine(intent)
+	case lexer.TokenAnalytics:
+		return p.parseAnalytics(intent)
+	case lexer.TokenSave:
+		return p.parseSaveSchema(intent)
 	case lexer.TokenInclude:
 		return p.parseInclude()
 	case lexer.TokenType:
@@ -149,6 +159,8 @@ func (p *Parser) parseTopLevelBlock() (block ast.TopLevel) {
 		return p.parseEnum(intent)
 	case lexer.TokenModel:
 		return p.parseModel(intent)
+	case lexer.TokenContent:
+		return p.parseContent(intent)
 	case lexer.TokenFn:
 		return p.parseFn(intent)
 	case lexer.TokenPipe:
@@ -218,15 +230,6 @@ func (p *Parser) check(kind lexer.TokenKind) bool {
 	return p.peek().Kind == kind
 }
 
-func (p *Parser) match(kinds ...lexer.TokenKind) bool {
-	for _, k := range kinds {
-		if p.peek().Kind == k {
-			return true
-		}
-	}
-	return false
-}
-
 func (p *Parser) expect(kind lexer.TokenKind) lexer.Token {
 	tok := p.peek()
 	if tok.Kind != kind {
@@ -262,7 +265,9 @@ func (p *Parser) isTopLevelStart() bool {
 	kind := p.peek().Kind
 	switch kind {
 	case lexer.TokenBlueprint, lexer.TokenSecret, lexer.TokenEnv,
-		lexer.TokenModel, lexer.TokenFn, lexer.TokenPipe,
+		lexer.TokenLocale, lexer.TokenTranslation, lexer.TokenState,
+		lexer.TokenAnalytics, lexer.TokenSave,
+		lexer.TokenModel, lexer.TokenContent, lexer.TokenFn, lexer.TokenPipe,
 		lexer.TokenMiddleware, lexer.TokenWorker, lexer.TokenSchedule,
 		lexer.TokenExternal, lexer.TokenSubscribe, lexer.TokenTest,
 		lexer.TokenTestGroup, lexer.TokenFixture, lexer.TokenType,
@@ -352,6 +357,171 @@ func (p *Parser) parseEnv() *ast.Env {
 	return &ast.Env{Loc: loc, Name: name, Value: value}
 }
 
+func (p *Parser) parseLocale() *ast.Locale {
+	loc := p.expect(lexer.TokenLocale).Loc
+	code := p.parseLocaleCode()
+	l := &ast.Locale{Loc: loc, Code: code}
+	for !p.atEnd() {
+		if p.check(lexer.TokenDefault) {
+			p.advance()
+			l.Default = true
+			continue
+		}
+		if (p.check(lexer.TokenIdent) || p.isKeywordUsableAsIdent()) && p.peek().Value == "fallback" {
+			p.advance()
+			p.expect(lexer.TokenLParen)
+			l.Fallback = p.parseLocaleCode()
+			p.expect(lexer.TokenRParen)
+			continue
+		}
+		break
+	}
+	return l
+}
+
+func (p *Parser) parseTranslation() *ast.Translation {
+	loc := p.expect(lexer.TokenTranslation).Loc
+	name := p.expectIdent()
+	p.expect(lexer.TokenLBrace)
+	t := &ast.Translation{Loc: loc, Name: name}
+	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
+		if (p.check(lexer.TokenIdent) || p.isKeywordUsableAsIdent()) && p.peek().Value == "key" {
+			p.advance()
+			key := p.expect(lexer.TokenString)
+			t.Keys = append(t.Keys, key.Value)
+			continue
+		}
+		if p.check(lexer.TokenLocale) {
+			t.Bundles = append(t.Bundles, p.parseTranslationBundle())
+			continue
+		}
+		panic(ParseError{Loc: p.peek().Loc, Message: fmt.Sprintf("unexpected token %q in translation block", p.peek().Value), Hint: `Use lines like: key "mission.start"`})
+	}
+	p.expect(lexer.TokenRBrace)
+	return t
+}
+
+func (p *Parser) parseStateMachine(intent *ast.Intent) *ast.StateMachine {
+	loc := p.expect(lexer.TokenState).Loc
+	name := p.expectIdent()
+	p.expect(lexer.TokenLBrace)
+	sm := &ast.StateMachine{Loc: loc, Intent: intent, Name: name}
+	seenStates := map[string]bool{}
+	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
+		from := p.expectIdent()
+		p.expect(lexer.TokenArrowOut)
+		to := p.expectIdent()
+		sm.Transitions = append(sm.Transitions, &ast.StateTransition{Loc: p.peek().Loc, From: from, To: to})
+		if !seenStates[from] {
+			sm.States = append(sm.States, from)
+			seenStates[from] = true
+		}
+		if !seenStates[to] {
+			sm.States = append(sm.States, to)
+			seenStates[to] = true
+		}
+	}
+	p.expect(lexer.TokenRBrace)
+	return sm
+}
+
+func (p *Parser) parseAnalytics(intent *ast.Intent) *ast.Analytics {
+	loc := p.expect(lexer.TokenAnalytics).Loc
+	name := p.expectIdent()
+	p.expect(lexer.TokenLBrace)
+	a := &ast.Analytics{Loc: loc, Intent: intent, Name: name}
+	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
+		if (p.check(lexer.TokenIdent) || p.isKeywordUsableAsIdent()) && p.peek().Value == "event" {
+			p.advance()
+			a.Events = append(a.Events, p.expectIdent())
+			continue
+		}
+		if (p.check(lexer.TokenIdent) || p.isKeywordUsableAsIdent()) && p.peek().Value == "sink" {
+			p.advance()
+			kindLoc := p.peek().Loc
+			kind := p.expectIdent()
+			sink := &ast.AnalyticsSink{Loc: kindLoc, Kind: kind}
+			if p.check(lexer.TokenLParen) {
+				p.advance()
+				sink.Target = p.parseExpr()
+				p.expect(lexer.TokenRParen)
+			}
+			a.Sinks = append(a.Sinks, sink)
+			continue
+		}
+		panic(ParseError{Loc: p.peek().Loc, Message: fmt.Sprintf("unexpected token %q in analytics block", p.peek().Value), Hint: `Use lines like: event mission_started or sink http("https://...")`})
+	}
+	p.expect(lexer.TokenRBrace)
+	return a
+}
+
+func (p *Parser) parseSaveSchema(intent *ast.Intent) *ast.SaveSchema {
+	loc := p.expect(lexer.TokenSave).Loc
+	name := p.expectIdent()
+	p.expect(lexer.TokenLBrace)
+	s := &ast.SaveSchema{Loc: loc, Intent: intent, Name: name}
+	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
+		key := p.expectIdent()
+		switch key {
+		case "model":
+			s.Model = p.expectIdent()
+		case "version_field":
+			s.VersionField = p.expectIdent()
+		case "latest":
+			tok := p.expect(lexer.TokenInt)
+			n, err := strconv.Atoi(tok.Value)
+			if err != nil {
+				panic(ParseError{Loc: tok.Loc, Message: fmt.Sprintf("invalid latest version %q", tok.Value), Hint: "latest expects an integer"})
+			}
+			s.Latest = n
+		case "migrate":
+			mig := &ast.SaveMigration{Loc: p.peek().Loc}
+			fromTok := p.expect(lexer.TokenInt)
+			from, err := strconv.Atoi(fromTok.Value)
+			if err != nil {
+				panic(ParseError{Loc: fromTok.Loc, Message: fmt.Sprintf("invalid migration from version %q", fromTok.Value), Hint: "migrate expects integer versions"})
+			}
+			mig.From = from
+			p.expect(lexer.TokenArrowOut)
+			toTok := p.expect(lexer.TokenInt)
+			to, err := strconv.Atoi(toTok.Value)
+			if err != nil {
+				panic(ParseError{Loc: toTok.Loc, Message: fmt.Sprintf("invalid migration to version %q", toTok.Value), Hint: "migrate expects integer versions"})
+			}
+			mig.To = to
+			if p.check(lexer.TokenUsing) {
+				p.advance()
+				mig.Module = p.expect(lexer.TokenString).Value
+			}
+			s.Migrations = append(s.Migrations, mig)
+		default:
+			panic(ParseError{Loc: p.peek().Loc, Message: fmt.Sprintf("unexpected entry %q in save block", key), Hint: "Use model <name>, version_field <field>, latest <int>, migrate <from> -> <to> [using \"./module\"]"})
+		}
+	}
+	p.expect(lexer.TokenRBrace)
+	return s
+}
+
+func (p *Parser) parseTranslationBundle() *ast.TranslationBundle {
+	loc := p.expect(lexer.TokenLocale).Loc
+	locale := p.parseLocaleCode()
+	p.expect(lexer.TokenLBrace)
+	b := &ast.TranslationBundle{Loc: loc, Locale: locale}
+	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
+		kv := p.parseStringKVPair()
+		b.Values = append(b.Values, kv)
+	}
+	p.expect(lexer.TokenRBrace)
+	return b
+}
+
+func (p *Parser) parseLocaleCode() string {
+	if p.check(lexer.TokenString) {
+		return p.advance().Value
+	}
+	return p.expectIdent()
+}
+
 func (p *Parser) parseInclude() *ast.Include {
 	loc := p.expect(lexer.TokenInclude).Loc
 	path := p.expect(lexer.TokenString)
@@ -429,6 +599,22 @@ func (p *Parser) parseModel(intent *ast.Intent) *ast.Model {
 	return m
 }
 
+func (p *Parser) parseContent(intent *ast.Intent) *ast.Content {
+	loc := p.expect(lexer.TokenContent).Loc
+	name := p.expectIdent()
+	p.expect(lexer.TokenLBrace)
+
+	c := &ast.Content{Loc: loc, Intent: intent, Name: name}
+
+	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
+		f := p.parseField()
+		c.Fields = append(c.Fields, f)
+	}
+
+	p.expect(lexer.TokenRBrace)
+	return c
+}
+
 // --- Function ---
 
 func (p *Parser) parseFn(intent *ast.Intent) *ast.Fn {
@@ -468,7 +654,7 @@ func (p *Parser) parseFnOutputStmt() *ast.OutputStmt {
 	if !p.atEnd() && !p.check(lexer.TokenRBrace) && !p.check(lexer.TokenImpl) &&
 		!p.check(lexer.TokenLogic) && !p.check(lexer.TokenArrowIn) {
 		// Check for "name type" pattern: non-primitive ident followed by a type-ish token
-		if (p.check(lexer.TokenIdent) || p.isKeywordUsableAsIdent()) {
+		if p.check(lexer.TokenIdent) || p.isKeywordUsableAsIdent() {
 			next := p.peekAt(1)
 			// If next token looks like a type (ident/slash for MIME), it's "name type"
 			if next.Kind == lexer.TokenSlash ||
@@ -504,6 +690,10 @@ func typeExprToExpr(typ ast.TypeExpr) ast.Expr {
 	switch t := typ.(type) {
 	case *ast.PrimitiveType:
 		return &ast.Ident{Loc: t.Loc, Name: t.Name}
+	case *ast.TypedJSONType:
+		return &ast.Ident{Loc: t.Loc, Name: "json"}
+	case *ast.TranslationKeyType:
+		return &ast.Ident{Loc: t.Loc, Name: t.Namespace}
 	case *ast.NamedType:
 		return &ast.Ident{Loc: t.Loc, Name: t.Name}
 	case *ast.MimeTypeExpr:
@@ -511,18 +701,6 @@ func typeExprToExpr(typ ast.TypeExpr) ast.Expr {
 	default:
 		return &ast.Ident{Loc: typ.Location(), Name: "unknown"}
 	}
-}
-
-func (p *Parser) isTypeStartAt(offset int) bool {
-	tok := p.peekAt(offset)
-	switch tok.Value {
-	case "string", "text", "int", "float", "bool", "uuid", "timestamp", "json", "file", "money":
-		return true
-	}
-	if tok.Kind == lexer.TokenEnum {
-		return true
-	}
-	return false
 }
 
 func (p *Parser) parseImplBlock() *ast.ImplBlock {
@@ -1155,7 +1333,7 @@ func (p *Parser) parseStepExpr() ast.Expr {
 // parseRoomTargetOp parses: join room(id)  or  leave room(id)
 func (p *Parser) parseRoomTargetOp() ast.Expr {
 	loc := p.peek().Loc
-	op := p.advance().Value // "join" or "leave"
+	op := p.advance().Value   // "join" or "leave"
 	target := p.expectIdent() // "room" or "connection"
 	var targetArgs []ast.Expr
 	if p.check(lexer.TokenLParen) {
@@ -1171,7 +1349,7 @@ func (p *Parser) parseRoomTargetOp() ast.Expr {
 // parseBroadcastOp parses: broadcast room(id) { data }  or  whisper connection(id) { data }
 func (p *Parser) parseBroadcastOp() ast.Expr {
 	loc := p.peek().Loc
-	op := p.advance().Value // "broadcast" or "whisper"
+	op := p.advance().Value   // "broadcast" or "whisper"
 	target := p.expectIdent() // "room" or "connection"
 	var targetArgs []ast.Expr
 	if p.check(lexer.TokenLParen) {
@@ -1742,6 +1920,14 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	}
 
 	// Check for primitive types
+	if tok.Value == "json" && p.peekAt(1).Kind == lexer.TokenLt {
+		return p.parseTypedJSONType()
+	}
+	if tok.Value == "tkey" && p.peekAt(1).Kind == lexer.TokenLParen {
+		return p.parseTranslationKeyType()
+	}
+
+	// Check for primitive types
 	if p.isPrimitiveType() {
 		p.advance()
 		return &ast.PrimitiveType{Loc: tok.Loc, Name: tok.Value}
@@ -1775,6 +1961,22 @@ func (p *Parser) parseEnumInline() *ast.EnumInline {
 	}
 	p.expect(lexer.TokenRParen)
 	return &ast.EnumInline{Loc: loc, Variants: variants}
+}
+
+func (p *Parser) parseTypedJSONType() *ast.TypedJSONType {
+	loc := p.expect(lexer.TokenIdent).Loc
+	p.expect(lexer.TokenLt)
+	inner := p.parseTypeExpr()
+	p.expect(lexer.TokenGt)
+	return &ast.TypedJSONType{Loc: loc, Inner: inner}
+}
+
+func (p *Parser) parseTranslationKeyType() *ast.TranslationKeyType {
+	loc := p.expect(lexer.TokenIdent).Loc
+	p.expect(lexer.TokenLParen)
+	namespace := p.expectIdent()
+	p.expect(lexer.TokenRParen)
+	return &ast.TranslationKeyType{Loc: loc, Namespace: namespace}
 }
 
 func (p *Parser) parseListType() *ast.ListType {
@@ -1925,6 +2127,19 @@ func (p *Parser) parseKVPair() ast.KVPair {
 	}
 
 	return ast.KVPair{Loc: loc, Key: key, Value: val}
+}
+
+func (p *Parser) parseStringKVPair() ast.KVPair {
+	loc := p.peek().Loc
+	key := p.expect(lexer.TokenString)
+	if p.check(lexer.TokenColon) {
+		p.advance()
+	}
+	val := p.parseExpr()
+	if p.check(lexer.TokenComma) {
+		p.advance()
+	}
+	return ast.KVPair{Loc: loc, Key: key.Value, Value: val}
 }
 
 func (p *Parser) parseBlockBody() *ast.BlockBody {
@@ -2201,7 +2416,7 @@ func (p *Parser) isKeywordUsableAsIdent() bool {
 	// Many keywords can appear as identifiers in certain contexts
 	// (field names, block names, etc.)
 	switch p.peek().Kind {
-	case lexer.TokenAuth, lexer.TokenCache, lexer.TokenCall,
+	case lexer.TokenAnalytics, lexer.TokenAuth, lexer.TokenCache, lexer.TokenCall,
 		lexer.TokenClose, lexer.TokenCount, lexer.TokenCronKw,
 		lexer.TokenDefault, lexer.TokenDelete, lexer.TokenDownload,
 		lexer.TokenEmit, lexer.TokenEnv, lexer.TokenFetch, lexer.TokenFirst,
@@ -2224,6 +2439,7 @@ func (p *Parser) isKeywordUsableAsIdent() bool {
 		lexer.TokenGuard, lexer.TokenPipe, lexer.TokenModel,
 		lexer.TokenFn, lexer.TokenMiddleware, lexer.TokenWorker,
 		lexer.TokenSchedule, lexer.TokenExternal, lexer.TokenSubscribe,
+		lexer.TokenState,
 		lexer.TokenTest, lexer.TokenTestGroup, lexer.TokenFixture,
 		lexer.TokenType, lexer.TokenAlias, lexer.TokenEnum,
 		lexer.TokenInclude, lexer.TokenImpl,

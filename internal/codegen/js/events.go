@@ -50,9 +50,9 @@ func (g *Generator) genSubscribe(sub *ast.Subscribe) codegen.OutputFile {
 	handlerName := "on" + toPascalCase(strings.ReplaceAll(sub.Event, ".", "_"))
 
 	if sub.Intent != nil {
-		b.WriteString(fmt.Sprintf("// %s\n", sub.Intent.Text))
+		fmt.Fprintf(&b, "// %s\n", sub.Intent.Text)
 	}
-	b.WriteString(fmt.Sprintf("export async function %s(event: unknown): Promise<void> {\n", handlerName))
+	fmt.Fprintf(&b, "export async function %s(event: unknown): Promise<void> {\n", handlerName)
 
 	ctx := emitCtx{
 		kind:        "function",
@@ -83,22 +83,22 @@ func (g *Generator) genExternal(externals []*ast.External) codegen.OutputFile {
 		normalized := normalizeServiceName(rawName)
 		configName := toCamelCase(normalized)
 		pascalName := toPascalCase(normalized)
-		b.WriteString(fmt.Sprintf("// External service: %s\n", ext.Name))
-		b.WriteString(fmt.Sprintf("export const %s = {\n", configName))
+		fmt.Fprintf(&b, "// External service: %s\n", ext.Name)
+		fmt.Fprintf(&b, "export const %s = {\n", configName)
 		for _, kv := range ext.Entries {
-			b.WriteString(fmt.Sprintf("  %s: %s,\n", toCamelCase(kv.Key), exprToJS(kv.Value)))
+			fmt.Fprintf(&b, "  %s: %s,\n", toCamelCase(kv.Key), exprToJS(kv.Value))
 		}
 		b.WriteString("};\n\n")
 
 		// Generate the call helper function for this external service.
 		// call<PascalName>(method, path, body?) wraps fetch with the service config.
-		b.WriteString(fmt.Sprintf("export async function call%s(\n", pascalName))
+		fmt.Fprintf(&b, "export async function call%s(\n", pascalName)
 		b.WriteString("  method: string,\n")
 		b.WriteString("  path: string,\n")
 		b.WriteString("  body?: unknown,\n")
 		b.WriteString("): Promise<any> {\n")
-		b.WriteString(fmt.Sprintf("  const baseUrl = (%s as any).url ?? (%s as any).base ?? '';\n", configName, configName))
-		b.WriteString(fmt.Sprintf("  const timeout = (%s as any).timeout ?? 30000;\n", configName))
+		fmt.Fprintf(&b, "  const baseUrl = (%s as any).url ?? (%s as any).base ?? '';\n", configName, configName)
+		fmt.Fprintf(&b, "  const timeout = (%s as any).timeout ?? 30000;\n", configName)
 		b.WriteString("  const controller = new AbortController();\n")
 		b.WriteString("  const timer = setTimeout(() => controller.abort(), timeout);\n")
 		b.WriteString("  try {\n")

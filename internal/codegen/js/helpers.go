@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 )
@@ -102,9 +101,9 @@ func blueprintEntryInt(bp *ast.Blueprint, key string) int {
 	for _, e := range bp.Entries {
 		if e.Key == key {
 			if lit, ok := e.Value.(*ast.IntLit); ok {
-				n := 0
-				fmt.Sscanf(lit.Value, "%d", &n)
-				return n
+				if n, err := strconv.Atoi(lit.Value); err == nil {
+					return n
+				}
 			}
 		}
 	}
@@ -414,9 +413,33 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 					return fmt.Sprintf("%s.reduce((acc: number, r: any) => acc + %s, 0)", collectionName, bodyExpr)
 				}
 				// Fallback: just convert the argument
-				return fmt.Sprintf("/* sum: could not reduce */ 0")
+				return "/* sum: could not reduce */ 0"
 			}
 			return "0"
+		case "track":
+			if len(v.Args) >= 2 {
+				return fmt.Sprintf("await track(%s, %s)", exprToJSWithCtx(v.Args[0], ctx), exprToJSWithCtx(v.Args[1], ctx))
+			}
+			if len(v.Args) == 1 {
+				return fmt.Sprintf("await track(%s, {})", exprToJSWithCtx(v.Args[0], ctx))
+			}
+			return "await track(\"unknown\", {})"
+		case "upgrade_save":
+			if len(v.Args) >= 2 {
+				if saveName, ok := v.Args[0].(*ast.Ident); ok {
+					return fmt.Sprintf("await upgrade%sSave(%s)", toPascalCase(saveName.Name), exprToJSWithCtx(v.Args[1], ctx))
+				}
+			}
+			return "/* upgrade_save: expected save declaration and value */"
+		case "transition":
+			if len(v.Args) >= 3 {
+				if stateName, ok := v.Args[0].(*ast.Ident); ok {
+					return fmt.Sprintf("transition%s(%s, %s)", toPascalCase(stateName.Name), exprToJSWithCtx(v.Args[1], ctx), exprToJSWithCtx(v.Args[2], ctx))
+				}
+			}
+			return "/* transition: expected state machine, from, to */"
+		case "publish", "archive", "rollback":
+			return contentWorkflowToJS(v, ctx)
 		}
 		// Generic function call — await declared async functions (fns, pipes, storage built-ins)
 		args := make([]string, len(v.Args))
@@ -617,6 +640,17 @@ func typeToZod(t ast.TypeExpr) string {
 		default:
 			return "z.any()"
 		}
+	case *ast.TypedJSONType:
+		return typeToZod(v.Inner)
+	case *ast.TranslationKeyType:
+		if len(v.Keys) > 0 {
+			parts := make([]string, len(v.Keys))
+			for i, key := range v.Keys {
+				parts[i] = fmt.Sprintf("%q", key)
+			}
+			return fmt.Sprintf("z.enum([%s])", strings.Join(parts, ", "))
+		}
+		return "z.string()"
 	case *ast.NamedType:
 		return toCamelCase(v.Name) + "Schema"
 	case *ast.ListType:
@@ -672,6 +706,17 @@ func typeToTS(t ast.TypeExpr) string {
 		default:
 			return "unknown"
 		}
+	case *ast.TypedJSONType:
+		return typeToTS(v.Inner)
+	case *ast.TranslationKeyType:
+		if len(v.Keys) > 0 {
+			parts := make([]string, len(v.Keys))
+			for i, key := range v.Keys {
+				parts[i] = fmt.Sprintf("%q", key)
+			}
+			return strings.Join(parts, " | ")
+		}
+		return "string"
 	case *ast.NamedType:
 		return toPascalCase(v.Name)
 	case *ast.ListType:
@@ -715,6 +760,10 @@ func typeToDrizzle(t ast.TypeExpr) string {
 		default:
 			return "text"
 		}
+	case *ast.TypedJSONType:
+		return "jsonb"
+	case *ast.TranslationKeyType:
+		return "text"
 	case *ast.NamedType:
 		return "text" // custom types stored as text by default
 	case *ast.EnumInline:
@@ -869,11 +918,6 @@ func extractResource(path string) string {
 	return "root"
 }
 
-// isIdentRune returns true if r is valid in an identifier.
-func isIdentRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
-}
-
 // extractInjectedVars scans middleware stmts for inject(val, name) calls
 // and returns the set of injected variable names (e.g., {"auth": true}).
 func extractInjectedVars(stmts []ast.ArrowStmt) map[string]bool {
@@ -932,8 +976,8 @@ func findAutoFields(ctx *emitCtx, modelName string) []string {
 	if ctx == nil || ctx.generator == nil || ctx.generator.file == nil {
 		return nil
 	}
-	for _, block := range ctx.generator.file.Blocks {
-		if m, ok := block.(*ast.Model); ok && m.Name == modelName {
+	for _, m := range ctx.generator.models {
+		if m.Name == modelName {
 			var fields []string
 			for _, f := range m.Fields {
 				for _, c := range f.Constraints {
@@ -952,7 +996,7 @@ func findAutoFields(ctx *emitCtx, modelName string) []string {
 // isDataOp checks if a function name is a Blueprint data operation.
 func isDataOp(name string) bool {
 	switch name {
-	case "query", "save", "fetch", "update", "delete", "count", "seed":
+	case "query", "save", "fetch", "update", "delete", "count", "seed", "import_bundle", "export_bundle":
 		return true
 	}
 	return false
@@ -975,11 +1019,6 @@ func extractPathParams(path string) []string {
 	return params
 }
 
-// dataOpToJS converts a data operation FnCall to Drizzle ORM JavaScript code.
-func dataOpToJS(v *ast.FnCall) string {
-	return dataOpToJSWithCtx(v, nil)
-}
-
 // dataOpToJSWithCtx converts a data operation FnCall to Drizzle ORM JavaScript code,
 // using context to resolve bound variable names for WHERE clauses.
 func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
@@ -997,6 +1036,27 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 	schemaTable := "schema." + toCamelCase(modelName)
 
 	switch v.Name {
+	case "import_bundle":
+		if len(v.Args) < 2 {
+			return "/* import_bundle: missing bundle data */"
+		}
+		itemsExpr := exprToJSWithCtx(v.Args[1], ctx)
+		matchExpr := bundleMatchExpr(ctx, modelName, schemaTable, "item")
+		if matchExpr == "" {
+			return "/* import_bundle: model must have key[/version] or id fields */"
+		}
+		updateVals := bundleUpdateValues(ctx, modelName, "item")
+		return fmt.Sprintf("await Promise.all((%s ?? []).map(async (item: any) => { const existing = await db.select().from(%s).where(%s).limit(1); if (existing.length > 0) { return (await db.update(%s).set(%s).where(%s).returning())[0]; } return (await db.insert(%s).values(item).returning())[0]; }))", itemsExpr, schemaTable, matchExpr, schemaTable, updateVals, matchExpr, schemaTable)
+
+	case "export_bundle":
+		query := fmt.Sprintf("await db.select().from(%s)", schemaTable)
+		if bundleModelHasField(ctx, modelName, "key") && bundleModelHasField(ctx, modelName, "version") {
+			query += fmt.Sprintf(".orderBy(asc(%s.key), desc(%s.version))", schemaTable, schemaTable)
+		} else if bundleModelHasField(ctx, modelName, "key") {
+			query += fmt.Sprintf(".orderBy(asc(%s.key))", schemaTable)
+		}
+		return query
+
 	case "fetch":
 		// fetch model(id) -> (await db.select().from(schema.model).where(eq(schema.model.id, id)))[0]
 		// fetch model where(cond1, cond2) -> compound where with and()
@@ -1142,9 +1202,44 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 	return "/* unknown data op */"
 }
 
-// queryToJS converts a query data operation to Drizzle ORM code.
-func queryToJS(v *ast.FnCall, schemaTable string) string {
-	return queryToJSWithCtx(v, schemaTable, nil)
+func bundleModelHasField(ctx *emitCtx, modelName, fieldName string) bool {
+	if ctx == nil || ctx.generator == nil {
+		return false
+	}
+	model := ctx.generator.findModel(modelName)
+	if model == nil {
+		return false
+	}
+	for _, f := range model.Fields {
+		if f.Name == fieldName {
+			return true
+		}
+	}
+	return false
+}
+
+func bundleMatchExpr(ctx *emitCtx, modelName, schemaTable, itemRef string) string {
+	if bundleModelHasField(ctx, modelName, "key") && bundleModelHasField(ctx, modelName, "version") {
+		return fmt.Sprintf("and(eq(%s.key, %s.key), eq(%s.version, %s.version))", schemaTable, itemRef, schemaTable, itemRef)
+	}
+	if bundleModelHasField(ctx, modelName, "key") {
+		return fmt.Sprintf("eq(%s.key, %s.key)", schemaTable, itemRef)
+	}
+	if bundleModelHasField(ctx, modelName, "id") {
+		return fmt.Sprintf("eq(%s.id, %s.id)", schemaTable, itemRef)
+	}
+	return ""
+}
+
+func bundleUpdateValues(ctx *emitCtx, modelName, itemRef string) string {
+	parts := []string{fmt.Sprintf("...%s", itemRef)}
+	if bundleModelHasField(ctx, modelName, "updated") {
+		parts = append(parts, "updated: new Date()")
+	}
+	if bundleModelHasField(ctx, modelName, "published") {
+		parts = append(parts, fmt.Sprintf("published: %s.published ?? null", itemRef))
+	}
+	return fmt.Sprintf("{ %s }", strings.Join(parts, ", "))
 }
 
 // queryToJSWithCtx converts a query data operation to Drizzle ORM code with context.
@@ -1193,7 +1288,7 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 			} else if ident, ok := cond.(*ast.Ident); ok {
 				// Filter variable (e.g., where(filters)) — convert object entries to Drizzle conditions
 				filterVar := toCamelCase(ident.Name)
-				query.WriteString(fmt.Sprintf(".where(and(...Object.entries(%s).filter(([k]) => k in %s).map(([k, v]) => eq((%s as any)[k], v))))", filterVar, schemaTable, schemaTable))
+				fmt.Fprintf(&query, ".where(and(...Object.entries(%s).filter(([k]) => k in %s).map(([k, v]) => eq((%s as any)[k], v))))", filterVar, schemaTable, schemaTable)
 			} else {
 				query.WriteString(".where(" + exprToJSWithCtx(cond, ctx) + ")")
 			}
@@ -1222,7 +1317,7 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 		if len(orderMarker.Args) >= 2 {
 			direction = exprToString(orderMarker.Args[1])
 		}
-		query.WriteString(fmt.Sprintf(".orderBy(%s(%s.%s))", direction, schemaTable, toCamelCase(field)))
+		fmt.Fprintf(&query, ".orderBy(%s(%s.%s))", direction, schemaTable, toCamelCase(field))
 	}
 
 	// Handle paginate marker -> return {items, total} shape
@@ -1240,7 +1335,7 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 					wq.WriteString(".where(" + whereExprToJSWithCtx(cond, schemaTable, ctx) + ")")
 				} else if ident, ok := cond.(*ast.Ident); ok {
 					filterVar := toCamelCase(ident.Name)
-					wq.WriteString(fmt.Sprintf(".where(and(...Object.entries(%s).filter(([k]) => k in %s).map(([k, v]) => eq((%s as any)[k], v))))", filterVar, schemaTable, schemaTable))
+					fmt.Fprintf(&wq, ".where(and(...Object.entries(%s).filter(([k]) => k in %s).map(([k, v]) => eq((%s as any)[k], v))))", filterVar, schemaTable, schemaTable)
 				} else {
 					wq.WriteString(".where(" + exprToJSWithCtx(cond, ctx) + ")")
 				}
@@ -1288,11 +1383,6 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 	}
 
 	return "await " + query.String()
-}
-
-// whereExprToJS converts a where condition expression to Drizzle ORM filter code.
-func whereExprToJS(cond ast.Expr, schemaTable string) string {
-	return whereExprToJSWithCtx(cond, schemaTable, nil)
 }
 
 // whereExprToJSWithCtx converts a where condition expression to Drizzle ORM filter code with context.
@@ -1390,12 +1480,10 @@ func findTextColumns(schemaTable string, ctx *emitCtx) []string {
 	// Extract model name from schemaTable (e.g., "schema.note" -> "note")
 	modelCamel := strings.TrimPrefix(schemaTable, "schema.")
 	var model *ast.Model
-	for _, node := range ctx.generator.file.Blocks {
-		if m, ok := node.(*ast.Model); ok {
-			if toCamelCase(m.Name) == modelCamel {
-				model = m
-				break
-			}
+	for _, m := range ctx.generator.models {
+		if toCamelCase(m.Name) == modelCamel {
+			model = m
+			break
 		}
 	}
 	if model == nil {
@@ -1442,10 +1530,64 @@ func isBuiltinFn(name string) bool {
 	switch name {
 	case "log", "clock", "sleep", "inject", "map", "pipe",
 		"where", "order", "paginate", "limit", "offset",
-		"join", "leave", "broadcast", "emit", "on", "sum":
+		"join", "leave", "broadcast", "emit", "on", "sum",
+		"publish", "archive", "rollback", "track", "upgrade_save", "transition":
 		return true
 	}
 	return false
+}
+
+func isContentWorkflowFn(name string) bool {
+	switch name {
+	case "publish", "archive", "rollback":
+		return true
+	}
+	return false
+}
+
+func contentWorkflowToJS(v *ast.FnCall, ctx *emitCtx) string {
+	if len(v.Args) == 0 {
+		return fmt.Sprintf("/* %s: missing target */", v.Name)
+	}
+
+	target, modelName, ok := resolveContentWorkflowTarget(v.Args[0], ctx)
+	if !ok {
+		return fmt.Sprintf("/* %s: target must be a bound content/model variable */", v.Name)
+	}
+
+	schemaTable := "schema." + toCamelCase(modelName)
+	switch v.Name {
+	case "publish":
+		return fmt.Sprintf("(await db.update(%s).set({ status: \"published\", published: new Date(), updated: new Date() }).where(eq(%s.id, %s.id)).returning())[0]", schemaTable, schemaTable, target)
+	case "archive":
+		return fmt.Sprintf("(await db.update(%s).set({ status: \"archived\", updated: new Date() }).where(eq(%s.id, %s.id)).returning())[0]", schemaTable, schemaTable, target)
+	case "rollback":
+		if len(v.Args) < 2 {
+			return "/* rollback: missing target version */"
+		}
+		versionExpr := exprToJSWithCtx(v.Args[1], ctx)
+		return fmt.Sprintf("await (async () => { await db.update(%s).set({ status: \"archived\", updated: new Date() }).where(and(eq(%s.key, %s.key), eq(%s.status, \"published\"))); return (await db.update(%s).set({ status: \"published\", published: new Date(), updated: new Date() }).where(and(eq(%s.key, %s.key), eq(%s.version, %s))).returning())[0]; })()", schemaTable, schemaTable, target, schemaTable, schemaTable, schemaTable, target, schemaTable, versionExpr)
+	default:
+		return fmt.Sprintf("/* unknown content workflow op: %s */", v.Name)
+	}
+}
+
+func resolveContentWorkflowTarget(e ast.Expr, ctx *emitCtx) (target string, modelName string, ok bool) {
+	ident, ok := e.(*ast.Ident)
+	if !ok || ctx == nil {
+		return "", "", false
+	}
+	target = exprToJSWithCtx(ident, ctx)
+	if ctx.varModels != nil {
+		if modelName, ok := ctx.varModels[ident.Name]; ok {
+			return target, modelName, true
+		}
+		camel := toCamelCase(ident.Name)
+		if modelName, ok := ctx.varModels[camel]; ok {
+			return target, modelName, true
+		}
+	}
+	return "", "", false
 }
 
 // resolveWsRoomArg resolves a WS room argument like room(id) to just the
@@ -1512,8 +1654,9 @@ func walkExpr(e ast.Expr, fn func(ast.Expr)) {
 
 // sumArgToReduce analyzes the argument to sum() and extracts the collection name
 // and the reduce body expression. For example:
-//   sum(order_items.price_cents) -> ("orderItems", "r.priceCents", true)
-//   sum(order_items.price_cents * order_items.quantity) -> ("orderItems", "r.priceCents * r.quantity", true)
+//
+//	sum(order_items.price_cents) -> ("orderItems", "r.priceCents", true)
+//	sum(order_items.price_cents * order_items.quantity) -> ("orderItems", "r.priceCents * r.quantity", true)
 func sumArgToReduce(arg ast.Expr) (collection string, bodyExpr string, ok bool) {
 	// Find all collection bases (FieldAccess with Ident base)
 	var bases []string
@@ -1583,8 +1726,8 @@ func walkStmts(stmts []ast.ArrowStmt, fn func(ast.Expr)) {
 
 // findModel looks up a model by its .bp name from the Generator's AST.
 func (g *Generator) findModel(name string) *ast.Model {
-	for _, node := range g.file.Blocks {
-		if m, ok := node.(*ast.Model); ok && m.Name == name {
+	for _, m := range g.models {
+		if m.Name == name {
 			return m
 		}
 	}

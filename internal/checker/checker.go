@@ -61,6 +61,8 @@ func (c *Checker) collectDeclarations() {
 		switch n := block.(type) {
 		case *ast.Model:
 			c.define(n.Name, SymModel, n.Loc, n)
+		case *ast.Content:
+			c.define(n.Name, SymModel, n.Loc, n)
 		case *ast.Fn:
 			c.define(n.Name, SymFn, n.Loc, n)
 		case *ast.Pipe:
@@ -79,6 +81,14 @@ func (c *Checker) collectDeclarations() {
 			c.define(n.Name, SymSecret, n.Loc, n)
 		case *ast.Env:
 			c.define(n.Name, SymEnv, n.Loc, n)
+		case *ast.Translation:
+			c.define(n.Name, SymType, n.Loc, n)
+		case *ast.StateMachine:
+			c.define(n.Name, SymType, n.Loc, n)
+		case *ast.Analytics:
+			c.define(n.Name, SymAnalytics, n.Loc, n)
+		case *ast.SaveSchema:
+			c.define(n.Name, SymSave, n.Loc, n)
 		}
 	}
 }
@@ -130,6 +140,8 @@ func (c *Checker) validateBlocks() {
 		switch n := block.(type) {
 		case *ast.Model:
 			c.checkModel(n)
+		case *ast.Content:
+			c.checkContent(n)
 		case *ast.Fn:
 			c.checkFn(n)
 		case *ast.Pipe:
@@ -161,6 +173,16 @@ func (c *Checker) validateBlocks() {
 			c.checkSecret(n)
 		case *ast.Env:
 			c.checkEnv(n)
+		case *ast.Locale:
+			c.checkLocale(n)
+		case *ast.Translation:
+			c.checkTranslation(n)
+		case *ast.StateMachine:
+			c.checkStateMachine(n)
+		case *ast.Analytics:
+			c.checkAnalytics(n)
+		case *ast.SaveSchema:
+			c.checkSaveSchema(n)
 		case *ast.Test:
 			c.checkTest(n)
 		case *ast.TestGroup:
@@ -192,6 +214,11 @@ func (c *Checker) checkModel(n *ast.Model) {
 			}
 		}
 	}
+}
+
+func (c *Checker) checkContent(n *ast.Content) {
+	c.checkSnakeCase(n.Name, "content", n.Loc)
+	c.checkModel(n.AsModel())
 }
 
 // --- Fn ---
@@ -301,6 +328,7 @@ func (c *Checker) checkTypeDecl(n *ast.TypeDecl) {
 	c.checkPascalCase(n.Name, "type", n.Loc)
 	for _, f := range n.Fields {
 		c.checkSnakeCase(f.Name, "field", f.Loc)
+		c.checkTypeRef(f.Type)
 	}
 }
 
@@ -308,6 +336,7 @@ func (c *Checker) checkTypeDecl(n *ast.TypeDecl) {
 
 func (c *Checker) checkAlias(n *ast.Alias) {
 	c.checkPascalCase(n.Name, "alias", n.Loc)
+	c.checkTypeRef(n.Type)
 }
 
 // --- Secret ---
@@ -320,6 +349,156 @@ func (c *Checker) checkSecret(n *ast.Secret) {
 
 func (c *Checker) checkEnv(n *ast.Env) {
 	c.checkScreamingSnakeCase(n.Name, "env", n.Loc)
+}
+
+func (c *Checker) checkLocale(n *ast.Locale) {
+	if n.Code == "" {
+		c.addError(n.Loc, "locale code cannot be empty", `Use locale en default or locale "en-US"`)
+	}
+	if n.Fallback == n.Code && n.Fallback != "" {
+		c.addError(n.Loc, "locale fallback cannot point to itself", "Choose a different fallback locale")
+	}
+	defaultCount := 0
+	known := map[string]bool{}
+	for _, block := range c.file.Blocks {
+		loc, ok := block.(*ast.Locale)
+		if !ok {
+			continue
+		}
+		known[loc.Code] = true
+		if loc.Default {
+			defaultCount++
+		}
+	}
+	if defaultCount > 1 && n.Default {
+		c.addError(n.Loc, "multiple default locales declared", "Keep exactly one locale marked default")
+	}
+	if n.Fallback != "" && !known[n.Fallback] {
+		c.addError(n.Loc, fmt.Sprintf("locale %q references unknown fallback locale %q", n.Code, n.Fallback), "Declare the fallback locale before using it")
+	}
+}
+
+func (c *Checker) checkTranslation(n *ast.Translation) {
+	c.checkSnakeCase(n.Name, "translation", n.Loc)
+	seen := map[string]bool{}
+	for _, key := range n.Keys {
+		if seen[key] {
+			c.addError(n.Loc, fmt.Sprintf("duplicate translation key %q in translation %q", key, n.Name), "Remove the duplicate key or rename it")
+			continue
+		}
+		seen[key] = true
+	}
+	knownLocales := map[string]bool{}
+	for _, block := range c.file.Blocks {
+		if loc, ok := block.(*ast.Locale); ok {
+			knownLocales[loc.Code] = true
+		}
+	}
+	bundleLocales := map[string]bool{}
+	for _, bundle := range n.Bundles {
+		if !knownLocales[bundle.Locale] {
+			c.addError(bundle.Loc, fmt.Sprintf("translation %q references unknown locale %q", n.Name, bundle.Locale), "Declare the locale before using it in a translation bundle")
+		}
+		if bundleLocales[bundle.Locale] {
+			c.addError(bundle.Loc, fmt.Sprintf("translation %q has duplicate bundle for locale %q", n.Name, bundle.Locale), "Keep at most one bundle per locale")
+			continue
+		}
+		bundleLocales[bundle.Locale] = true
+		bundleKeys := map[string]bool{}
+		for _, kv := range bundle.Values {
+			if !seen[kv.Key] {
+				c.addError(kv.Loc, fmt.Sprintf("translation %q bundle for locale %q defines unknown key %q", n.Name, bundle.Locale, kv.Key), "Declare the key in the translation block before assigning localized values")
+			}
+			if bundleKeys[kv.Key] {
+				c.addError(kv.Loc, fmt.Sprintf("translation %q bundle for locale %q repeats key %q", n.Name, bundle.Locale, kv.Key), "Keep only one localized value per key")
+			}
+			bundleKeys[kv.Key] = true
+		}
+	}
+}
+
+func (c *Checker) checkStateMachine(n *ast.StateMachine) {
+	c.checkSnakeCase(n.Name, "state", n.Loc)
+	seen := map[string]bool{}
+	for _, tr := range n.Transitions {
+		key := tr.From + "->" + tr.To
+		if seen[key] {
+			c.addError(tr.Loc, fmt.Sprintf("duplicate state transition %s in %q", key, n.Name), "Remove the duplicate transition")
+			continue
+		}
+		seen[key] = true
+	}
+}
+
+func (c *Checker) checkAnalytics(n *ast.Analytics) {
+	c.checkSnakeCase(n.Name, "analytics", n.Loc)
+	seen := map[string]bool{}
+	for _, event := range n.Events {
+		if seen[event] {
+			c.addError(n.Loc, fmt.Sprintf("duplicate analytics event %q in %q", event, n.Name), "Remove the duplicate event")
+		}
+		seen[event] = true
+	}
+	for _, sink := range n.Sinks {
+		switch sink.Kind {
+		case "console", "http":
+		default:
+			c.addError(sink.Loc, fmt.Sprintf("unsupported analytics sink %q", sink.Kind), "Use sink console or sink http(\"https://...\")")
+		}
+	}
+}
+
+func (c *Checker) checkSaveSchema(n *ast.SaveSchema) {
+	c.checkSnakeCase(n.Name, "save", n.Loc)
+	if n.Model == "" {
+		c.addError(n.Loc, fmt.Sprintf("save %q is missing a model", n.Name), "Add: model <model_name>")
+		return
+	}
+	sym := c.global.Lookup(n.Model)
+	if sym == nil || sym.Kind != SymModel {
+		c.addError(n.Loc, fmt.Sprintf("save %q references unknown model %q", n.Name, n.Model), "Use an existing model or content block name")
+		return
+	}
+	if n.VersionField == "" {
+		c.addError(n.Loc, fmt.Sprintf("save %q is missing version_field", n.Name), "Add: version_field <field_name>")
+	}
+	if n.Latest < 1 {
+		c.addError(n.Loc, fmt.Sprintf("save %q must declare latest >= 1", n.Name), "Add: latest 1")
+	}
+	model, ok := sym.Node.(*ast.Model)
+	if !ok {
+		if content, ok := sym.Node.(*ast.Content); ok {
+			model = content.AsModel()
+		}
+	}
+	if model == nil {
+		return
+	}
+	found := false
+	for _, f := range model.Fields {
+		if f.Name == n.VersionField {
+			found = true
+			break
+		}
+	}
+	if n.VersionField != "" && !found {
+		c.addError(n.Loc, fmt.Sprintf("save %q version_field %q does not exist on model %q", n.Name, n.VersionField, n.Model), "Point version_field to a field on the referenced model")
+	}
+	seenMigrations := map[string]bool{}
+	for _, mig := range n.Migrations {
+		if mig.From >= mig.To {
+			c.addError(mig.Loc, fmt.Sprintf("save %q has invalid migration %d -> %d", n.Name, mig.From, mig.To), "Migration targets must increase version numbers")
+			continue
+		}
+		if n.Latest > 0 && mig.To > n.Latest {
+			c.addError(mig.Loc, fmt.Sprintf("save %q migration %d -> %d exceeds latest version %d", n.Name, mig.From, mig.To, n.Latest), "Keep migration targets within the declared latest version")
+		}
+		key := fmt.Sprintf("%d->%d", mig.From, mig.To)
+		if seenMigrations[key] {
+			c.addError(mig.Loc, fmt.Sprintf("save %q repeats migration %s", n.Name, key), "Declare each migration step once")
+		}
+		seenMigrations[key] = true
+	}
 }
 
 // --- Test ---
@@ -435,6 +614,20 @@ func (c *Checker) checkTypeRef(te ast.TypeExpr) {
 		return
 	}
 	switch t := te.(type) {
+	case *ast.TypedJSONType:
+		c.checkTypeRef(t.Inner)
+	case *ast.TranslationKeyType:
+		sym := c.global.Lookup(t.Namespace)
+		if sym == nil {
+			c.addError(t.Loc, fmt.Sprintf("unknown translation namespace %q", t.Namespace), "Define it with: translation <name> { ... }")
+			return
+		}
+		tr, ok := sym.Node.(*ast.Translation)
+		if !ok {
+			c.addError(t.Loc, fmt.Sprintf("%q is not a translation namespace", t.Namespace), "Use a translation block name in tkey(...) types")
+			return
+		}
+		t.Keys = append(t.Keys[:0], tr.Keys...)
 	case *ast.NamedType:
 		if !IsPrimitive(t.Name) {
 			if c.global.Lookup(t.Name) == nil {

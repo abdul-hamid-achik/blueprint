@@ -12,6 +12,7 @@ import (
 
 // GenerateOpenAPI generates an OpenAPI 3.1 JSON spec from a parsed Blueprint AST file.
 func GenerateOpenAPI(f *ast.File) ([]byte, error) {
+	resolveTranslationKeyTypes(f)
 	result := map[string]any{
 		"openapi": "3.1.0",
 	}
@@ -33,6 +34,31 @@ func GenerateOpenAPI(f *ast.File) ([]byte, error) {
 		return nil, fmt.Errorf("openapi: marshal error: %w", err)
 	}
 	return data, nil
+}
+
+func resolveTranslationKeyTypes(file *ast.File) {
+	if file == nil {
+		return
+	}
+	translations := map[string][]string{}
+	for _, block := range file.Blocks {
+		if tr, ok := block.(*ast.Translation); ok {
+			translations[tr.Name] = append([]string(nil), tr.Keys...)
+		}
+	}
+	ast.Walk(file, &translationKeyResolver{translations: translations})
+}
+
+type translationKeyResolver struct {
+	ast.BaseVisitor
+	translations map[string][]string
+}
+
+func (r *translationKeyResolver) VisitTranslationKeyType(node *ast.TranslationKeyType) bool {
+	if keys, ok := r.translations[node.Namespace]; ok {
+		node.Keys = append(node.Keys[:0], keys...)
+	}
+	return true
 }
 
 // buildInfo constructs the info object from the blueprint block.
@@ -454,6 +480,10 @@ func buildComponents(f *ast.File) map[string]any {
 			name := toPascalCase(b.Name)
 			schemas[name] = modelToSchema(b.Fields)
 
+		case *ast.Content:
+			name := toPascalCase(b.Name)
+			schemas[name] = modelToSchema(b.AsModel().Fields)
+
 		case *ast.TypeDecl:
 			name := toPascalCase(b.Name)
 			schemas[name] = fieldsToSchema(b.Fields)
@@ -492,6 +522,17 @@ func buildComponents(f *ast.File) map[string]any {
 					"enum":        variants,
 					"description": "Rich enum — see variant definitions for associated data",
 				}
+			}
+
+		case *ast.StateMachine:
+			name := toPascalCase(b.Name)
+			variants := make([]any, len(b.States))
+			for i, state := range b.States {
+				variants[i] = state
+			}
+			schemas[name] = map[string]any{
+				"type": "string",
+				"enum": variants,
 			}
 		}
 	}
@@ -547,6 +588,18 @@ func typeExprToJSONSchema(t ast.TypeExpr, constraints []*ast.Constraint_) map[st
 	switch v := t.(type) {
 	case *ast.PrimitiveType:
 		return primitiveToSchema(v.Name, constraints)
+	case *ast.TypedJSONType:
+		return typeExprToJSONSchema(v.Inner, constraints)
+	case *ast.TranslationKeyType:
+		schema := map[string]any{"type": "string"}
+		if len(v.Keys) > 0 {
+			enumVals := make([]any, len(v.Keys))
+			for i, key := range v.Keys {
+				enumVals[i] = key
+			}
+			schema["enum"] = enumVals
+		}
+		return schema
 	case *ast.NamedType:
 		return map[string]any{
 			"$ref": "#/components/schemas/" + toPascalCase(v.Name),
@@ -558,7 +611,7 @@ func typeExprToJSONSchema(t ast.TypeExpr, constraints []*ast.Constraint_) map[st
 		}
 	case *ast.MapType:
 		return map[string]any{
-			"type": "object",
+			"type":                 "object",
 			"additionalProperties": typeExprToJSONSchema(v.Value, nil),
 		}
 	case *ast.EnumInline:
@@ -710,9 +763,7 @@ func buildOperationId(method, path string) string {
 			continue
 		}
 		// Strip leading : for path params
-		if strings.HasPrefix(seg, ":") {
-			seg = seg[1:]
-		}
+		seg = strings.TrimPrefix(seg, ":")
 		// Split on - and _ for camelCase joining
 		subParts := strings.FieldsFunc(seg, func(r rune) bool {
 			return r == '-' || r == '_'

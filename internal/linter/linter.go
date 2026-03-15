@@ -42,9 +42,17 @@ func blockPriority(block ast.TopLevel) int {
 		return 3
 	case *ast.Env:
 		return 4
+	case *ast.Locale, *ast.Translation:
+		return 5
+	case *ast.StateMachine:
+		return 5
+	case *ast.Analytics, *ast.SaveSchema:
+		return 6
 	case *ast.TypeDecl, *ast.Alias, *ast.Enum:
 		return 5
 	case *ast.Model:
+		return 6
+	case *ast.Content:
 		return 6
 	case *ast.Fn:
 		return 7
@@ -82,6 +90,16 @@ func blockName(block ast.TopLevel) string {
 		return fmt.Sprintf("secret %s", n.Name)
 	case *ast.Env:
 		return fmt.Sprintf("env %s", n.Name)
+	case *ast.Locale:
+		return fmt.Sprintf("locale %s", n.Code)
+	case *ast.Translation:
+		return fmt.Sprintf("translation %s", n.Name)
+	case *ast.StateMachine:
+		return fmt.Sprintf("state %s", n.Name)
+	case *ast.Analytics:
+		return fmt.Sprintf("analytics %s", n.Name)
+	case *ast.SaveSchema:
+		return fmt.Sprintf("save %s", n.Name)
 	case *ast.TypeDecl:
 		return fmt.Sprintf("type %s", n.Name)
 	case *ast.Alias:
@@ -90,6 +108,8 @@ func blockName(block ast.TopLevel) string {
 		return fmt.Sprintf("enum %s", n.Name)
 	case *ast.Model:
 		return fmt.Sprintf("model %s", n.Name)
+	case *ast.Content:
+		return fmt.Sprintf("content %s", n.Name)
 	case *ast.Fn:
 		return fmt.Sprintf("fn %s", n.Name)
 	case *ast.Pipe:
@@ -132,6 +152,16 @@ func blockTypeName(block ast.TopLevel) string {
 		return "secret"
 	case *ast.Env:
 		return "env"
+	case *ast.Locale:
+		return "locale"
+	case *ast.Translation:
+		return "translation"
+	case *ast.StateMachine:
+		return "state"
+	case *ast.Analytics:
+		return "analytics"
+	case *ast.SaveSchema:
+		return "save"
 	case *ast.TypeDecl:
 		return "type"
 	case *ast.Alias:
@@ -140,6 +170,8 @@ func blockTypeName(block ast.TopLevel) string {
 		return "enum"
 	case *ast.Model:
 		return "model"
+	case *ast.Content:
+		return "content"
 	case *ast.Fn:
 		return "fn"
 	case *ast.Pipe:

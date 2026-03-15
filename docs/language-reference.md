@@ -9,9 +9,9 @@ Complete reference for the Blueprint (`.bp`) language.
 3. [Naming Conventions](#3-naming-conventions)
 4. [The Arrow System](#4-the-arrow-system)
 5. [blueprint Declaration](#5-blueprint-declaration)
-6. [secret and env](#6-secret-and-env)
-7. [model](#7-model)
-8. [type and alias](#8-type-and-alias)
+6. [secret, env, locale, and translation](#6-secret-env-locale-and-translation)
+7. [model, content, and save](#7-model-content-and-save)
+8. [type, alias, and extended type expressions](#8-type-alias-and-extended-type-expressions)
 9. [enum](#9-enum)
 10. [fn — Functions](#10-fn--functions)
 11. [pipe — Pipelines](#11-pipe--pipelines)
@@ -30,6 +30,7 @@ Complete reference for the Blueprint (`.bp`) language.
 24. [Built-in Operations](#24-built-in-operations)
 25. [Error Handling](#25-error-handling)
 26. [Guards and When](#26-guards-and-when)
+27. [Game and Content Workflows](#27-game-and-content-workflows)
 
 ---
 
@@ -42,11 +43,17 @@ blueprint "service-name" { ... }    # required, first
 
 secret API_KEY required              # secrets
 env MAX_SIZE 10mb                    # env vars
+locale en default                    # locales
+translation mission_text { ... }     # translation namespaces + bundles
 
 model user { ... }                   # data models
+content mission { ... }              # versioned content records
 type ImageFile { ... }               # custom types
 alias Email = string format(email)   # type aliases
 enum Status { ... }                  # enumerations
+state mission_status { ... }         # state machines
+analytics gameplay { ... }           # analytics events + sinks
+save player_progress { ... }         # save schema + migrations
 
 fn watermark { ... }                 # function declarations
 pipe validate_image { ... }          # reusable pipelines
@@ -226,7 +233,7 @@ blueprint "service-name" {
 
 ---
 
-## 6. `secret` and `env`
+## 6. `secret`, `env`, `locale`, and `translation`
 
 ### `secret`
 
@@ -258,7 +265,49 @@ Access in code: `env.MAX_FILE_SIZE`, `env.ALLOWED_TYPES`
 
 ---
 
-## 7. `model`
+### `locale`
+
+Locales declare the language codes your generated project understands, plus the default locale and fallback chain.
+
+```bp
+locale en default
+locale "fr-FR" fallback(en)
+```
+
+Generated output exposes these declarations in `src/lib/i18n.ts` and `frontend/src/i18n.ts` as `locales`, `defaultLocale`, and `localeFallbacks`.
+
+### `translation`
+
+Translation namespaces declare valid translation keys and can also embed localized values.
+
+```bp
+translation mission_text {
+  key "mission.start"
+  key "mission.complete"
+
+  locale en {
+    "mission.start": "Start mission"
+    "mission.complete": "Mission complete"
+  }
+
+  locale "fr-FR" {
+    "mission.start": "Commencer la mission"
+  }
+}
+```
+
+Rules enforced by the checker:
+
+- each translation key must be unique within the namespace
+- each locale bundle can appear once per namespace
+- locale bundles must reference declared locales
+- localized values can only use keys declared with `key "..."`
+
+Generated output exposes translation metadata as `translationNamespaces` and localized values as `translationValues`.
+
+---
+
+## 7. `model`, `content`, and `save`
 
 Data models define database tables, TypeScript types, and Zod schemas.
 
@@ -309,9 +358,49 @@ model job {
 - Field `api_key_id` → `apiKeyId` in TypeScript
 - Generated type: `Job` (PascalCase)
 
+### `content`
+
+`content` is a versioned record pattern for authored game/application data such as missions, dialogue trees, item definitions, and unit stats.
+
+```bp
+content mission {
+  data json<MissionDefinition> required
+}
+```
+
+Blueprint expands a `content` block into a generated model shape with these lifecycle fields unless you override them explicitly:
+
+- `key`
+- `version`
+- `status`
+- `published`
+- `created`
+- `updated`
+
+`content` records work with `publish(...)`, `archive(...)`, `rollback(...)`, `import_bundle(...)`, and `export_bundle(...)`.
+
+### `save`
+
+`save` declares save-data upgrade metadata for long-lived player data.
+
+```bp
+save player_progress {
+  model save_slot
+  version_field save_version
+  latest 3
+  migrate 1 -> 2 using "./custom-player-progress"
+}
+```
+
+Generated output includes:
+
+- `src/lib/save-migrations.ts` with `upgrade<SaveName>Save(...)`
+- `src/saves/<save-name>.ts` stubs for default migrations
+- custom hook stubs for `migrate ... using "./module"`
+
 ---
 
-## 8. `type` and `alias`
+## 8. `type`, `alias`, and extended type expressions
 
 ### `type` — Composite Types
 
@@ -359,6 +448,39 @@ alias FileSize = int min(0) max(100mb)
 ```
 
 Supported formats: `email`, `url`, `uuid`, `ip`, `date`
+
+### Extended Type Expressions
+
+#### `json<T>`
+
+Typed JSON keeps authored blobs strongly typed through generated TypeScript, Zod, OpenAPI, and Drizzle.
+
+```bp
+type MissionDefinition {
+  title string required
+}
+
+model mission {
+  data json<MissionDefinition> required
+}
+```
+
+#### `tkey(namespace)`
+
+Translation-key types restrict a field or input to keys declared in a `translation` block.
+
+```bp
+translation mission_text {
+  key "mission.start"
+  key "mission.complete"
+}
+
+type MissionDefinition {
+  title_key tkey(mission_text) required
+}
+```
+
+Generated output turns `tkey(mission_text)` into a string-literal union and a matching Zod/OpenAPI enum.
 
 ---
 
@@ -1123,6 +1245,18 @@ save <model> { field: value, ... }         # insert → inserted record
 update <model> { field: value, ... }       # update bound model variable
 delete <ref>                               # delete record(s)
 count <model> where(...)                   # count matching records
+import_bundle <model>, <items>             # upsert-style bulk import for content/save data
+export_bundle <model>                      # export ordered records for bundle generation
+```
+
+### Content and Lifecycle
+
+```bp
+publish(record)                            # mark content record as published
+archive(record)                            # mark content record as archived
+rollback(record, version)                  # restore a previous content version
+transition(state_machine, from, to)        # runtime-enforced state transition
+upgrade_save(save_decl, value)             # run generated save migrations
 ```
 
 ### Storage
@@ -1155,6 +1289,7 @@ log "message" level(info)         # structured logging (info|warn|error)
 sleep 1s                          # delay execution
 clock()                           # current timestamp in ms
 hash(value)                       # SHA-256 hash
+track("event", payload)          # analytics event dispatch
 ```
 
 ---
@@ -1229,5 +1364,82 @@ Execute a step or block only when a condition is true:
 |> when event.type == "checkout.session.completed" {
   |> update api_key { plan: plan }
   |> log "Upgraded {email} to {plan}"
+}
+```
+
+---
+
+## 27. Game and Content Workflows
+
+These constructs are useful when Blueprint drives a game backend, content platform, or live-ops service.
+
+### `state`
+
+State machines declare allowed transitions and generate runtime helpers.
+
+```bp
+state mission_status {
+  draft -> reviewed
+  reviewed -> published
+}
+```
+
+Generated output includes transition metadata plus helper functions like `canTransitionMissionStatus(...)` and `transitionMissionStatus(...)` in `src/lib/state.ts`.
+
+### `analytics`
+
+Analytics blocks declare valid event names and delivery sinks.
+
+```bp
+analytics gameplay {
+  event mission_started
+  event mission_completed
+  sink console
+  sink http("https://analytics.example.com/events")
+}
+```
+
+Generated output includes:
+
+- `analyticsNamespaces`
+- `analyticsSinks`
+- batched HTTP delivery with retry/backoff
+- the `track(...)` helper in `src/lib/analytics.ts`
+
+### Bundle import/export
+
+Use `import_bundle(...)` and `export_bundle(...)` to move authored data in and out of `content` tables.
+
+```bp
+POST /api/missions/import {
+  <- bundle json required
+  |> imported = import_bundle(mission, bundle)
+  -> 200 { items: imported }
+}
+
+GET /api/missions/export {
+  |> bundle = export_bundle(mission)
+  -> 200 { items: bundle }
+}
+```
+
+### End-to-end example
+
+```bp
+translation mission_text {
+  key "mission.start"
+}
+
+state mission_status {
+  draft -> reviewed
+}
+
+type MissionDefinition {
+  title_key tkey(mission_text)
+  status    mission_status
+}
+
+content mission {
+  data json<MissionDefinition> required
 }
 ```

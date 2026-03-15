@@ -35,6 +35,21 @@ func Walk(node Node, v Visitor) {
 			return
 		}
 		walkExpr(n.Value, v)
+	case *Locale:
+		v.VisitLocale(n)
+	case *Translation:
+		v.VisitTranslation(n)
+	case *StateMachine:
+		v.VisitStateMachine(n)
+	case *Analytics:
+		if !v.VisitAnalytics(n) {
+			return
+		}
+		for _, sink := range n.Sinks {
+			walkExpr(sink.Target, v)
+		}
+	case *SaveSchema:
+		v.VisitSaveSchema(n)
 	case *Include:
 		v.VisitInclude(n)
 	case *TypeDecl:
@@ -59,6 +74,11 @@ func Walk(node Node, v Visitor) {
 		}
 	case *Model:
 		if !v.VisitModel(n) {
+			return
+		}
+		walkFields(n.Fields, v)
+	case *Content:
+		if !v.VisitContent(n) {
 			return
 		}
 		walkFields(n.Fields, v)
@@ -264,6 +284,13 @@ func Walk(node Node, v Visitor) {
 	// Type expressions
 	case *PrimitiveType:
 		v.VisitPrimitiveType(n)
+	case *TypedJSONType:
+		if !v.VisitTypedJSONType(n) {
+			return
+		}
+		walkTypeExpr(n.Inner, v)
+	case *TranslationKeyType:
+		v.VisitTranslationKeyType(n)
 	case *NamedType:
 		v.VisitNamedType(n)
 	case *ListType:

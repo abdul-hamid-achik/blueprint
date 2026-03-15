@@ -28,7 +28,7 @@ func projectRoot() string {
 // copyDir recursively copies all files from src to dst, creating directories as needed.
 func copyDir(t *testing.T, src, dst string) {
 	t.Helper()
-	filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -42,7 +42,9 @@ func copyDir(t *testing.T, src, dst string) {
 			return err
 		}
 		return os.WriteFile(target, data, 0644)
-	})
+	}); err != nil {
+		t.Fatalf("copy dir %s -> %s: %v", src, dst, err)
+	}
 }
 
 func TestGoldenHelloWorld(t *testing.T) {
@@ -79,7 +81,7 @@ func TestGoldenHelloWorld(t *testing.T) {
 
 	// Compare each generated file against golden files
 	generatedCount := 0
-	filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
@@ -107,10 +109,12 @@ func TestGoldenHelloWorld(t *testing.T) {
 		}
 		generatedCount++
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walk generated hello-world output: %v", err)
+	}
 
 	// Also check that there are no extra golden files that are no longer generated
-	filepath.Walk(goldenDir, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(goldenDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
@@ -120,7 +124,9 @@ func TestGoldenHelloWorld(t *testing.T) {
 			t.Errorf("golden file %s exists but was not generated (stale golden file)", rel)
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walk hello-world golden dir: %v", err)
+	}
 
 	if generatedCount == 0 {
 		t.Error("no generated files were compared — something is wrong")
@@ -164,7 +170,7 @@ func TestGoldenTodoAPI(t *testing.T) {
 		t.Skip("golden files for todo-api not yet generated; run UPDATE_GOLDEN=1 go test ./internal/codegen/js/ -run TestGoldenTodoAPI")
 	}
 
-	filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
@@ -185,5 +191,7 @@ func TestGoldenTodoAPI(t *testing.T) {
 			t.Errorf("golden file mismatch: %s\nRun UPDATE_GOLDEN=1 to update", rel)
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walk generated todo-api output: %v", err)
+	}
 }

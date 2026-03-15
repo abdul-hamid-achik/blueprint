@@ -16,6 +16,7 @@ import (
 type Generator struct {
 	sourceFile   string
 	file         *ast.File
+	models       []*ast.Model
 	middlewares  map[string]*ast.Middleware // name -> middleware definition
 	reactQuery   bool
 	frontendOnly bool
@@ -24,6 +25,7 @@ type Generator struct {
 	declaredPipes     map[string]bool
 	declaredModels    map[string]bool
 	declaredEnums     map[string]bool
+	declaredSaves     map[string]bool
 	structEnums       map[string]bool // enums with struct-body variants (e.g., Plan)
 	declaredExternals map[string]bool // normalized camelCase external service names
 	hasStorage        bool
@@ -67,6 +69,7 @@ type emitCtx struct {
 // Generate implements codegen.Generator.
 func (g *Generator) Generate(file *ast.File, outDir string) error {
 	g.file = file
+	resolveTranslationKeyTypes(file)
 	g.sourceFile = file.Loc.File
 	if g.sourceFile == "" {
 		g.sourceFile = "main.bp"
@@ -89,6 +92,31 @@ func (g *Generator) Generate(file *ast.File, outDir string) error {
 	return nil
 }
 
+func resolveTranslationKeyTypes(file *ast.File) {
+	if file == nil {
+		return
+	}
+	translations := map[string][]string{}
+	for _, block := range file.Blocks {
+		if tr, ok := block.(*ast.Translation); ok {
+			translations[tr.Name] = append([]string(nil), tr.Keys...)
+		}
+	}
+	ast.Walk(file, &translationKeyResolver{translations: translations})
+}
+
+type translationKeyResolver struct {
+	ast.BaseVisitor
+	translations map[string][]string
+}
+
+func (r *translationKeyResolver) VisitTranslationKeyType(node *ast.TranslationKeyType) bool {
+	if keys, ok := r.translations[node.Namespace]; ok {
+		node.Keys = append(node.Keys[:0], keys...)
+	}
+	return true
+}
+
 // buildAsyncFns returns the set of camelCase function names that should be awaited in generated code.
 func (g *Generator) buildAsyncFns() map[string]bool {
 	fns := map[string]bool{
@@ -108,15 +136,16 @@ func (g *Generator) buildAsyncFns() map[string]bool {
 // If found, returns the target model name. This is used to resolve FK relation access patterns
 // like item.product.stock where cart_item has product_id ref(product).
 func (g *Generator) getModelFieldRef(modelName, fieldName string) (targetModel string, ok bool) {
-	for _, block := range g.file.Blocks {
-		if m, isModel := block.(*ast.Model); isModel && m.Name == modelName {
-			for _, f := range m.Fields {
-				if f.Name == fieldName+"_id" {
-					for _, c := range f.Constraints {
-						if c.Kind == "ref" {
-							if ident, isIdent := c.Value.(*ast.Ident); isIdent {
-								return ident.Name, true
-							}
+	for _, m := range g.models {
+		if m.Name != modelName {
+			continue
+		}
+		for _, f := range m.Fields {
+			if f.Name == fieldName+"_id" {
+				for _, c := range f.Constraints {
+					if c.Kind == "ref" {
+						if ident, isIdent := c.Value.(*ast.Ident); isIdent {
+							return ident.Name, true
 						}
 					}
 				}
@@ -218,8 +247,8 @@ func (g *Generator) scanFKAccessInStmt(stmt ast.ArrowStmt, ctx *emitCtx) []fkAcc
 func (g *Generator) emitFKSubQuery(b *strings.Builder, fk fkAccessInfo, indent string) string {
 	alias := "_" + toCamelCase(fk.fieldName)
 	schemaTable := "schema." + toCamelCase(fk.targetModel)
-	b.WriteString(fmt.Sprintf("%sconst %s = (await db.select().from(%s).where(eq(%s.id, %s.%s)))[0];\n",
-		indent, alias, schemaTable, schemaTable, fk.varName, fk.fkColumn))
+	fmt.Fprintf(b, "%sconst %s = (await db.select().from(%s).where(eq(%s.id, %s.%s)))[0];\n",
+		indent, alias, schemaTable, schemaTable, fk.varName, fk.fkColumn)
 	return alias
 }
 
@@ -254,24 +283,30 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 
 	// Classify blocks
 	var (
-		secrets     []*ast.Secret
-		envs        []*ast.Env
-		types       []*ast.TypeDecl
-		aliases     []*ast.Alias
-		enums       []*ast.Enum
-		models      []*ast.Model
-		fns         []*ast.Fn
-		pipes       []*ast.Pipe
-		middlewares []*ast.Middleware
-		endpoints   []*ast.Endpoint
-		streams     []*ast.StreamEndpoint
-		ws          []*ast.WsEndpoint
-		workers     []*ast.Worker
-		schedules   []*ast.Schedule
-		externals   []*ast.External
-		subscribes  []*ast.Subscribe
-		tests       []*ast.Test
-		fixtures    []*ast.Fixture
+		secrets      []*ast.Secret
+		envs         []*ast.Env
+		locales      []*ast.Locale
+		translations []*ast.Translation
+		states       []*ast.StateMachine
+		analytics    []*ast.Analytics
+		saves        []*ast.SaveSchema
+		types        []*ast.TypeDecl
+		aliases      []*ast.Alias
+		enums        []*ast.Enum
+		models       []*ast.Model
+		contents     []*ast.Content
+		fns          []*ast.Fn
+		pipes        []*ast.Pipe
+		middlewares  []*ast.Middleware
+		endpoints    []*ast.Endpoint
+		streams      []*ast.StreamEndpoint
+		ws           []*ast.WsEndpoint
+		workers      []*ast.Worker
+		schedules    []*ast.Schedule
+		externals    []*ast.External
+		subscribes   []*ast.Subscribe
+		tests        []*ast.Test
+		fixtures     []*ast.Fixture
 	)
 
 	g.middlewares = make(map[string]*ast.Middleware)
@@ -282,6 +317,16 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 			secrets = append(secrets, b)
 		case *ast.Env:
 			envs = append(envs, b)
+		case *ast.Locale:
+			locales = append(locales, b)
+		case *ast.Translation:
+			translations = append(translations, b)
+		case *ast.StateMachine:
+			states = append(states, b)
+		case *ast.Analytics:
+			analytics = append(analytics, b)
+		case *ast.SaveSchema:
+			saves = append(saves, b)
 		case *ast.TypeDecl:
 			types = append(types, b)
 		case *ast.Alias:
@@ -290,6 +335,8 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 			enums = append(enums, b)
 		case *ast.Model:
 			models = append(models, b)
+		case *ast.Content:
+			contents = append(contents, b)
 		case *ast.Fn:
 			fns = append(fns, b)
 		case *ast.Pipe:
@@ -317,6 +364,10 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 			fixtures = append(fixtures, b)
 		}
 	}
+	for _, c := range contents {
+		models = append(models, c.AsModel())
+	}
+	g.models = models
 
 	// Build lookup maps for import resolution
 	g.declaredFns = make(map[string]bool)
@@ -332,6 +383,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		g.declaredModels[m.Name] = true
 	}
 	g.declaredEnums = make(map[string]bool)
+	g.declaredSaves = make(map[string]bool)
 	g.structEnums = make(map[string]bool)
 	for _, e := range enums {
 		g.declaredEnums[e.Name] = true
@@ -341,6 +393,9 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 				break
 			}
 		}
+	}
+	for _, s := range saves {
+		g.declaredSaves[s.Name] = true
 	}
 	g.declaredExternals = make(map[string]bool)
 	for _, ext := range externals {
@@ -354,15 +409,20 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	g.hasStorage = hasStorage
 
 	if g.frontendOnly {
-		apiFile := g.genFrontendTypes(models, types, aliases, enums, endpoints, streams, ws)
-		schemasFile := g.genFrontendSchemas(models, types, aliases, enums, endpoints, streams, ws)
+		apiFile := g.genFrontendTypes(models, types, aliases, enums, states, endpoints, streams, ws)
+		schemasFile := g.genFrontendSchemas(models, types, aliases, enums, states, endpoints, streams, ws)
 		clientFile := g.genFrontendClient(endpoints, streams, ws)
+		var i18nFile *codegen.OutputFile
+		if len(locales) > 0 || len(translations) > 0 {
+			file := g.genFrontendI18n(locales, translations)
+			i18nFile = &file
+		}
 		var reactQueryFile *codegen.OutputFile
 		if g.reactQuery && len(endpoints) > 0 {
 			file := g.genFrontendReactQuery(endpoints)
 			reactQueryFile = &file
 		}
-		files = append(files, g.genFrontendPackage("", bp, apiFile, schemasFile, clientFile, reactQueryFile)...)
+		files = append(files, g.genFrontendPackage("", bp, apiFile, schemasFile, clientFile, i18nFile, reactQueryFile)...)
 		return files, nil
 	}
 
@@ -388,6 +448,12 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 
 	// src/lib/errors.ts
 	files = append(files, g.genErrors())
+	if len(states) > 0 {
+		files = append(files, g.genStateLib(states))
+	}
+	if len(locales) > 0 || len(translations) > 0 {
+		files = append(files, g.genI18n(locales, translations))
+	}
 
 	// src/lib/db.ts (if database)
 	if hasDB {
@@ -405,8 +471,8 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// src/types.ts
-	if len(types) > 0 || len(aliases) > 0 || len(enums) > 0 {
-		files = append(files, g.genTypes(types, aliases, enums))
+	if len(types) > 0 || len(aliases) > 0 || len(enums) > 0 || len(states) > 0 {
+		files = append(files, g.genTypes(types, aliases, enums, states))
 	}
 
 	// src/models/schema.ts
@@ -420,11 +486,18 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// src/types/api.ts, src/types/schemas.ts, src/types/client.ts
-	if len(models) > 0 || len(types) > 0 || len(aliases) > 0 || len(enums) > 0 || len(endpoints) > 0 || len(streams) > 0 || len(ws) > 0 {
-		apiFile := g.genFrontendTypes(models, types, aliases, enums, endpoints, streams, ws)
-		schemasFile := g.genFrontendSchemas(models, types, aliases, enums, endpoints, streams, ws)
+	if len(models) > 0 || len(types) > 0 || len(aliases) > 0 || len(enums) > 0 || len(states) > 0 || len(locales) > 0 || len(translations) > 0 || len(endpoints) > 0 || len(streams) > 0 || len(ws) > 0 {
+		apiFile := g.genFrontendTypes(models, types, aliases, enums, states, endpoints, streams, ws)
+		schemasFile := g.genFrontendSchemas(models, types, aliases, enums, states, endpoints, streams, ws)
 		clientFile := g.genFrontendClient(endpoints, streams, ws)
 		files = append(files, apiFile, schemasFile, clientFile)
+
+		var i18nFile *codegen.OutputFile
+		if len(locales) > 0 || len(translations) > 0 {
+			file := g.genFrontendI18n(locales, translations)
+			i18nFile = &file
+			files = append(files, file)
+		}
 
 		var reactQueryFile *codegen.OutputFile
 		if g.reactQuery && len(endpoints) > 0 {
@@ -433,7 +506,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 			files = append(files, file)
 		}
 
-		files = append(files, g.genFrontendPackage("frontend", bp, apiFile, schemasFile, clientFile, reactQueryFile)...)
+		files = append(files, g.genFrontendPackage("frontend", bp, apiFile, schemasFile, clientFile, i18nFile, reactQueryFile)...)
 	}
 
 	// src/routes/<resource>.ts — group endpoints by resource
@@ -482,8 +555,8 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		var sb strings.Builder
 		sb.WriteString("// Stub generated by Blueprint — implement these functions here\n")
 		for _, fn := range funcNames {
-			sb.WriteString(fmt.Sprintf("export async function %s(...args: any[]): Promise<any> {\n", fn))
-			sb.WriteString(fmt.Sprintf("  throw new Error('Not implemented: %s');\n", fn))
+			fmt.Fprintf(&sb, "export async function %s(...args: any[]): Promise<any> {\n", fn)
+			fmt.Fprintf(&sb, "  throw new Error('Not implemented: %s');\n", fn)
 			sb.WriteString("}\n\n")
 		}
 		merged := codegen.OutputFile{Path: stubPath, Content: []byte(sb.String())}
@@ -583,6 +656,29 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// src/lib/external.ts
 	if len(externals) > 0 {
 		files = append(files, g.genExternal(externals))
+	}
+	needsAnalyticsLib := len(analytics) > 0
+	if !needsAnalyticsLib {
+		for _, ep := range endpoints {
+			if stmtsHaveCall(ep.Stmts, "track") {
+				needsAnalyticsLib = true
+				break
+			}
+		}
+	}
+	if !needsAnalyticsLib {
+		for _, fn := range fns {
+			if fn.Logic != nil && stmtsHaveCall(fn.Logic.Stmts, "track") {
+				needsAnalyticsLib = true
+				break
+			}
+		}
+	}
+	if needsAnalyticsLib {
+		files = append(files, g.genAnalyticsLib(analytics))
+	}
+	if len(saves) > 0 {
+		files = append(files, g.genSaveMigrations(saves)...)
 	}
 
 	// Dockerfile
@@ -830,7 +926,7 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 
 	// Emit hoisted variable declarations before the main body
 	for name := range hoisted {
-		b.WriteString(fmt.Sprintf("%slet %s: any;\n", indent, name))
+		fmt.Fprintf(b, "%slet %s: any;\n", indent, name)
 		ctx.declared[name] = true
 	}
 
@@ -848,21 +944,21 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 					typeName := pathParamTypeName(s.Type)
 					switch typeName {
 					case "uuid":
-						b.WriteString(fmt.Sprintf("%s%s %s = z.string().uuid().parse(c.req.param('%s'));\n",
-							indent, decl, name, s.Name))
+						fmt.Fprintf(b, "%s%s %s = z.string().uuid().parse(c.req.param('%s'));\n",
+							indent, decl, name, s.Name)
 					case "int":
-						b.WriteString(fmt.Sprintf("%s%s %s = z.coerce.number().int().parse(c.req.param('%s'));\n",
-							indent, decl, name, s.Name))
+						fmt.Fprintf(b, "%s%s %s = z.coerce.number().int().parse(c.req.param('%s'));\n",
+							indent, decl, name, s.Name)
 					default:
-						b.WriteString(fmt.Sprintf("%s%s %s = c.req.param('%s') || '';\n",
-							indent, decl, name, s.Name))
+						fmt.Fprintf(b, "%s%s %s = c.req.param('%s') || '';\n",
+							indent, decl, name, s.Name)
 					}
 				} else if ctx.method == "GET" || ctx.method == "DELETE" {
-					b.WriteString(fmt.Sprintf("%s%s %s = c.req.valid('query').%s;\n",
-						indent, decl, name, s.Name))
+					fmt.Fprintf(b, "%s%s %s = c.req.valid('query').%s;\n",
+						indent, decl, name, s.Name)
 				} else {
-					b.WriteString(fmt.Sprintf("%s%s %s = c.req.valid('json').%s;\n",
-						indent, decl, name, s.Name))
+					fmt.Fprintf(b, "%s%s %s = c.req.valid('json').%s;\n",
+						indent, decl, name, s.Name)
 				}
 				ctx.declared[name] = true
 			}
@@ -900,12 +996,12 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 						schemaTable := "schema." + toCamelCase(modelName)
 						if ctx.singleVars[ident.Name] {
 							// Single record from fetch — use eq
-							b.WriteString(fmt.Sprintf("%sawait db.delete(%s).where(eq(%s.id, %s.id));\n",
-								indent, schemaTable, schemaTable, varName))
+							fmt.Fprintf(b, "%sawait db.delete(%s).where(eq(%s.id, %s.id));\n",
+								indent, schemaTable, schemaTable, varName)
 						} else {
 							// Collection from query — bulk delete
-							b.WriteString(fmt.Sprintf("%sawait db.delete(%s).where(inArray(%s.id, %s.map((r: any) => r.id)));\n",
-								indent, schemaTable, schemaTable, varName))
+							fmt.Fprintf(b, "%sawait db.delete(%s).where(inArray(%s.id, %s.map((r: any) => r.id)));\n",
+								indent, schemaTable, schemaTable, varName)
 						}
 						continue
 					}
@@ -948,8 +1044,8 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 								if _, already := innerCtx.fkAliases[key]; !already {
 									alias := "_" + toCamelCase(fk.fieldName)
 									schemaTable := "schema." + toCamelCase(fk.targetModel)
-									fkLines.WriteString(fmt.Sprintf("%s  const %s = (await db.select().from(%s).where(eq(%s.id, %s.%s)))[0];\n",
-										indent, alias, schemaTable, schemaTable, fk.varName, fk.fkColumn))
+									fmt.Fprintf(&fkLines, "%s  const %s = (await db.select().from(%s).where(eq(%s.id, %s.%s)))[0];\n",
+										indent, alias, schemaTable, schemaTable, fk.varName, fk.fkColumn)
 									innerCtx.fkAliases[key] = alias
 								}
 							}
@@ -963,11 +1059,11 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 
 							if mapResultVar != "" {
 								name := toCamelCase(mapResultVar)
-								b.WriteString(fmt.Sprintf("%sconst %s = await Promise.all(%s.map(async (%s: any) => {\n",
-									indent, name, collectionVar, itemVar))
+								fmt.Fprintf(b, "%sconst %s = await Promise.all(%s.map(async (%s: any) => {\n",
+									indent, name, collectionVar, itemVar)
 								b.WriteString(fkLines.String())
-								b.WriteString(fmt.Sprintf("%s  return %s;\n", indent, body))
-								b.WriteString(fmt.Sprintf("%s}));\n", indent))
+								fmt.Fprintf(b, "%s  return %s;\n", indent, body)
+								fmt.Fprintf(b, "%s}));\n", indent)
 								ctx.declared[name] = true
 								// Track the variable model for the result (pluralized model)
 								if bodyFn, ok := fn.Args[1].(*ast.FnCall); ok && isDataOp(bodyFn.Name) && len(bodyFn.Args) > 0 {
@@ -976,11 +1072,11 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 									}
 								}
 							} else {
-								b.WriteString(fmt.Sprintf("%sawait Promise.all(%s.map(async (%s: any) => {\n",
-									indent, collectionVar, itemVar))
+								fmt.Fprintf(b, "%sawait Promise.all(%s.map(async (%s: any) => {\n",
+									indent, collectionVar, itemVar)
 								b.WriteString(fkLines.String())
-								b.WriteString(fmt.Sprintf("%s  return %s;\n", indent, body))
-								b.WriteString(fmt.Sprintf("%s}));\n", indent))
+								fmt.Fprintf(b, "%s  return %s;\n", indent, body)
+								fmt.Fprintf(b, "%s}));\n", indent)
 							}
 						} else {
 							body := exprToJSWithCtx(fn.Args[1], &innerCtx)
@@ -993,8 +1089,8 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 
 							if mapResultVar != "" {
 								name := toCamelCase(mapResultVar)
-								b.WriteString(fmt.Sprintf("%sconst %s = await Promise.all(%s.map(async (%s: any) => %s));\n",
-									indent, name, collectionVar, itemVar, body))
+								fmt.Fprintf(b, "%sconst %s = await Promise.all(%s.map(async (%s: any) => %s));\n",
+									indent, name, collectionVar, itemVar, body)
 								ctx.declared[name] = true
 								if bodyFn, ok := fn.Args[1].(*ast.FnCall); ok && isDataOp(bodyFn.Name) && len(bodyFn.Args) > 0 {
 									if modelIdent, ok := bodyFn.Args[0].(*ast.Ident); ok {
@@ -1002,8 +1098,8 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 									}
 								}
 							} else {
-								b.WriteString(fmt.Sprintf("%sawait Promise.all(%s.map(async (%s: any) => %s));\n",
-									indent, collectionVar, itemVar, body))
+								fmt.Fprintf(b, "%sawait Promise.all(%s.map(async (%s: any) => %s));\n",
+									indent, collectionVar, itemVar, body)
 							}
 						}
 						continue
@@ -1026,7 +1122,7 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 
 				if ctx.declared[name] || hoisted[name] {
 					// Already declared (input reassignment or hoisted) — plain assignment
-					b.WriteString(fmt.Sprintf("%s%s = %s;\n", indent, name, expr))
+					fmt.Fprintf(b, "%s%s = %s;\n", indent, name, expr)
 				} else {
 					// Use `let` for reassigned vars; annotate filter-accumulator objects as Record<string, any>
 					decl := "const"
@@ -1034,9 +1130,9 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 						decl = "let"
 					}
 					if propMutated[name] {
-						b.WriteString(fmt.Sprintf("%s%s %s: Record<string, any> = %s;\n", indent, decl, name, expr))
+						fmt.Fprintf(b, "%s%s %s: Record<string, any> = %s;\n", indent, decl, name, expr)
 					} else {
-						b.WriteString(fmt.Sprintf("%s%s %s = %s;\n", indent, decl, name, expr))
+						fmt.Fprintf(b, "%s%s %s = %s;\n", indent, decl, name, expr)
 					}
 					ctx.declared[name] = true
 				}
@@ -1052,9 +1148,9 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 					}
 				}
 				if reassignVar != "" {
-					b.WriteString(fmt.Sprintf("%s%s = %s;\n", indent, reassignVar, expr))
+					fmt.Fprintf(b, "%s%s = %s;\n", indent, reassignVar, expr)
 				} else {
-					b.WriteString(fmt.Sprintf("%s%s;\n", indent, expr))
+					fmt.Fprintf(b, "%s%s;\n", indent, expr)
 				}
 			}
 
@@ -1069,19 +1165,19 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 			}
 			cond := exprToJSWithCtx(s.Condition, &ctx)
 			if ctx.kind == "endpoint" {
-				b.WriteString(fmt.Sprintf("%sif (!(%s)) return c.json({ error: %q }, %s as const);\n",
-					indent, cond, s.Message, s.Status))
+				fmt.Fprintf(b, "%sif (!(%s)) return c.json({ error: %q }, %s as const);\n",
+					indent, cond, s.Message, s.Status)
 			} else {
-				b.WriteString(fmt.Sprintf("%sif (!(%s)) throw new BpError(%s, %q);\n",
-					indent, cond, s.Status, s.Message))
+				fmt.Fprintf(b, "%sif (!(%s)) throw new BpError(%s, %q);\n",
+					indent, cond, s.Status, s.Message)
 			}
 
 		case *ast.WhenStmt:
 			cond := exprToJSWithCtx(s.Condition, &ctx)
 			if s.Inline != nil {
-				b.WriteString(fmt.Sprintf("%sif (%s) %s;\n", indent, cond, exprToJSWithCtx(s.Inline, &ctx)))
+				fmt.Fprintf(b, "%sif (%s) %s;\n", indent, cond, exprToJSWithCtx(s.Inline, &ctx))
 			} else if len(s.Body) > 0 {
-				b.WriteString(fmt.Sprintf("%sif (%s) {\n", indent, cond))
+				fmt.Fprintf(b, "%sif (%s) {\n", indent, cond)
 				// Use a block-scoped copy of ctx so declarations inside this when-block
 				// don't leak into sibling when-blocks (they're in separate JS if-scopes).
 				innerCtx := ctx
@@ -1090,7 +1186,7 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 					innerCtx.declared[k] = v
 				}
 				g.emitArrowStmts(b, s.Body, indent+"  ", innerCtx)
-				b.WriteString(fmt.Sprintf("%s}\n", indent))
+				fmt.Fprintf(b, "%s}\n", indent)
 			}
 
 		case *ast.OutputStmt:
@@ -1103,27 +1199,28 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 			outputCtx.preserveBlockKeys = true
 			val := exprToJSWithCtx(s.Value, &outputCtx)
 
-			if ctx.kind == "endpoint" {
+			switch ctx.kind {
+			case "endpoint":
 				// For 204 No Content, use c.body(null, 204)
 				if status == "204" {
-					b.WriteString(fmt.Sprintf("%sreturn c.body(null, 204 as const);\n", indent))
+					fmt.Fprintf(b, "%sreturn c.body(null, 204 as const);\n", indent)
 				} else {
-					b.WriteString(fmt.Sprintf("%sreturn c.json(%s, %s as const);\n", indent, val, status))
+					fmt.Fprintf(b, "%sreturn c.json(%s, %s as const);\n", indent, val, status)
 				}
-			} else if ctx.kind == "ws" {
+			case "ws":
 				// WS context — send message via WebSocket
-				b.WriteString(fmt.Sprintf("%sws.send(JSON.stringify(%s));\n", indent, val))
-			} else {
+				fmt.Fprintf(b, "%sws.send(JSON.stringify(%s));\n", indent, val)
+			default:
 				// function/pipe/middleware context — plain return
-				b.WriteString(fmt.Sprintf("%sreturn %s;\n", indent, val))
+				fmt.Fprintf(b, "%sreturn %s;\n", indent, val)
 			}
 
 		case *ast.TryRecover:
-			b.WriteString(fmt.Sprintf("%stry {\n", indent))
+			fmt.Fprintf(b, "%stry {\n", indent)
 			g.emitArrowStmts(b, s.Try, indent+"  ", ctx)
-			b.WriteString(fmt.Sprintf("%s} catch (error: any) {\n", indent))
+			fmt.Fprintf(b, "%s} catch (error: any) {\n", indent)
 			g.emitArrowStmts(b, s.Recover, indent+"  ", ctx)
-			b.WriteString(fmt.Sprintf("%s}\n", indent))
+			fmt.Fprintf(b, "%s}\n", indent)
 		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 // importCollector tracks what imports are needed for a generated file.
 type importCollector struct {
 	needsEnv        bool
+	needsAnalytics  bool
 	fnCalls         map[string]bool // user-declared fn names called
 	pipeCalls       map[string]bool // user-declared pipe names called
 	storageOps      map[string]bool // storage operations (upload, download)
@@ -20,6 +21,8 @@ type importCollector struct {
 	structEnumTypes map[string]bool // struct enum names that also need <Name>Config import
 	unknownCalls    map[string]bool // unrecognized calls (emit stubs)
 	externalCalls   map[string]bool // external service call function names (call<Service>)
+	saveHelpers     map[string]bool // generated save migration helpers
+	stateHelpers    map[string]bool // generated state transition helpers
 }
 
 func newImportCollector() *importCollector {
@@ -32,6 +35,8 @@ func newImportCollector() *importCollector {
 		structEnumTypes: make(map[string]bool),
 		unknownCalls:    make(map[string]bool),
 		externalCalls:   make(map[string]bool),
+		saveHelpers:     make(map[string]bool),
+		stateHelpers:    make(map[string]bool),
 	}
 }
 
@@ -39,6 +44,9 @@ func newImportCollector() *importCollector {
 func (ic *importCollector) merge(other *importCollector) {
 	if other.needsEnv {
 		ic.needsEnv = true
+	}
+	if other.needsAnalytics {
+		ic.needsAnalytics = true
 	}
 	for k := range other.fnCalls {
 		ic.fnCalls[k] = true
@@ -64,6 +72,12 @@ func (ic *importCollector) merge(other *importCollector) {
 	for k := range other.externalCalls {
 		ic.externalCalls[k] = true
 	}
+	for k := range other.saveHelpers {
+		ic.saveHelpers[k] = true
+	}
+	for k := range other.stateHelpers {
+		ic.stateHelpers[k] = true
+	}
 }
 
 // collectImports scans arrow statements for import needs.
@@ -83,6 +97,22 @@ func (g *Generator) collectImports(stmts []ast.ArrowStmt) *importCollector {
 				}
 			}
 		case *ast.FnCall:
+			if v.Name == "track" {
+				ic.needsAnalytics = true
+				return
+			}
+			if v.Name == "transition" && len(v.Args) >= 1 {
+				if ident, ok := v.Args[0].(*ast.Ident); ok {
+					ic.stateHelpers[ident.Name] = true
+				}
+				return
+			}
+			if v.Name == "upgrade_save" && len(v.Args) >= 1 {
+				if ident, ok := v.Args[0].(*ast.Ident); ok && g.declaredSaves[ident.Name] {
+					ic.saveHelpers[ident.Name] = true
+				}
+				return
+			}
 			if isDataOp(v.Name) || isBuiltinFn(v.Name) {
 				return
 			}
@@ -133,19 +163,38 @@ func (ic *importCollector) writeImports(b *strings.Builder, hasStorage bool) {
 	if ic.needsEnv {
 		b.WriteString("import { env } from '../lib/env.js';\n")
 	}
+	if ic.needsAnalytics {
+		b.WriteString("import { track } from '../lib/analytics.js';\n")
+	}
+	if len(ic.saveHelpers) > 0 {
+		names := sortedKeys2(ic.saveHelpers)
+		helpers := make([]string, len(names))
+		for i, name := range names {
+			helpers[i] = "upgrade" + toPascalCase(name) + "Save"
+		}
+		fmt.Fprintf(b, "import { %s } from '../lib/save-migrations.js';\n", strings.Join(helpers, ", "))
+	}
+	if len(ic.stateHelpers) > 0 {
+		names := sortedKeys2(ic.stateHelpers)
+		helpers := make([]string, len(names))
+		for i, name := range names {
+			helpers[i] = "transition" + toPascalCase(name)
+		}
+		fmt.Fprintf(b, "import { %s } from '../lib/state.js';\n", strings.Join(helpers, ", "))
+	}
 	for _, name := range sortedKeys2(ic.fnCalls) {
-		b.WriteString(fmt.Sprintf("import { %s } from '../functions/%s.js';\n",
-			toCamelCase(name), toKebabCase(name)))
+		fmt.Fprintf(b, "import { %s } from '../functions/%s.js';\n",
+			toCamelCase(name), toKebabCase(name))
 	}
 	for _, name := range sortedKeys2(ic.pipeCalls) {
-		b.WriteString(fmt.Sprintf("import { %s } from '../pipes/%s.js';\n",
-			toCamelCase(name), toKebabCase(name)))
+		fmt.Fprintf(b, "import { %s } from '../pipes/%s.js';\n",
+			toCamelCase(name), toKebabCase(name))
 	}
 	if len(ic.storageOps) > 0 {
 		if hasStorage {
 			ops := sortedKeys2(ic.storageOps)
-			b.WriteString(fmt.Sprintf("import { %s } from '../lib/storage.js';\n",
-				strings.Join(ops, ", ")))
+			fmt.Fprintf(b, "import { %s } from '../lib/storage.js';\n",
+				strings.Join(ops, ", "))
 		} else {
 			for k := range ic.storageOps {
 				ic.unknownCalls[k] = true
@@ -158,8 +207,8 @@ func (ic *importCollector) writeImports(b *strings.Builder, hasStorage bool) {
 		for i, n := range names {
 			tsNames[i] = toPascalCase(n)
 		}
-		b.WriteString(fmt.Sprintf("import type { %s } from '../models/schema.js';\n",
-			strings.Join(tsNames, ", ")))
+		fmt.Fprintf(b, "import type { %s } from '../models/schema.js';\n",
+			strings.Join(tsNames, ", "))
 	}
 	if len(ic.enumTypes) > 0 {
 		names := sortedKeys2(ic.enumTypes)
@@ -171,8 +220,8 @@ func (ic *importCollector) writeImports(b *strings.Builder, hasStorage bool) {
 				exports = append(exports, n+"Config")
 			}
 		}
-		b.WriteString(fmt.Sprintf("import { %s } from '../types.js';\n",
-			strings.Join(exports, ", ")))
+		fmt.Fprintf(b, "import { %s } from '../types.js';\n",
+			strings.Join(exports, ", "))
 	}
 	// Emit imports for external service call functions
 	if len(ic.externalCalls) > 0 {
@@ -181,14 +230,14 @@ func (ic *importCollector) writeImports(b *strings.Builder, hasStorage bool) {
 		for i, n := range names {
 			callFns[i] = "call" + toPascalCase(n)
 		}
-		b.WriteString(fmt.Sprintf("import { %s } from '../lib/external.js';\n",
-			strings.Join(callFns, ", ")))
+		fmt.Fprintf(b, "import { %s } from '../lib/external.js';\n",
+			strings.Join(callFns, ", "))
 	}
 	// Emit stubs for unrecognized function calls
 	for _, name := range sortedKeys2(ic.unknownCalls) {
 		jsName := toCamelCase(name)
-		b.WriteString(fmt.Sprintf("\n// TODO: implement %s\nasync function %s(...args: any[]): Promise<any> { return undefined; }\n",
-			name, jsName))
+		fmt.Fprintf(b, "\n// TODO: implement %s\nasync function %s(...args: any[]): Promise<any> { return undefined; }\n",
+			name, jsName)
 	}
 }
 
@@ -260,7 +309,7 @@ func hasDataOpsInStmt(s ast.ArrowStmt) bool {
 func exprHasDataOp(e ast.Expr) bool {
 	switch v := e.(type) {
 	case *ast.FnCall:
-		if isDataOp(v.Name) {
+		if isDataOp(v.Name) || isContentWorkflowFn(v.Name) {
 			return true
 		}
 		// Recurse into function arguments to find nested data ops

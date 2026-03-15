@@ -14,7 +14,6 @@
 // In your .bp file:
 //
 //	include "pkg:auth-middleware"  # Use an installed package
-//
 package registry
 
 import (
@@ -120,7 +119,7 @@ func isValidPackageName(name string) bool {
 	}
 	// Can contain lowercase letters, numbers, hyphens
 	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
 			return false
 		}
 	}
@@ -152,16 +151,16 @@ type PackageSummary struct {
 
 // LockFile represents a project's dependency lock file.
 type LockFile struct {
-	Version      string            `json:"version"`
-	Packages     []LockedPackage   `json:"packages"`
+	Version  string          `json:"version"`
+	Packages []LockedPackage `json:"packages"`
 }
 
 // LockedPackage represents a resolved package dependency.
 type LockedPackage struct {
-	Name         string `json:"name"`
-	Version      string `json:"version"`
-	Resolved     string `json:"resolved"`     // URL where package was fetched
-	Integrity    string `json:"integrity"`    // Hash for verification
+	Name         string            `json:"name"`
+	Version      string            `json:"version"`
+	Resolved     string            `json:"resolved"`  // URL where package was fetched
+	Integrity    string            `json:"integrity"` // Hash for verification
 	Dependencies map[string]string `json:"dependencies,omitempty"`
 }
 
