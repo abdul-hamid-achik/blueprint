@@ -14,9 +14,11 @@ import (
 
 // Generator produces a Node.js project from a Blueprint AST.
 type Generator struct {
-	sourceFile  string
-	file        *ast.File
-	middlewares map[string]*ast.Middleware // name -> middleware definition
+	sourceFile   string
+	file         *ast.File
+	middlewares  map[string]*ast.Middleware // name -> middleware definition
+	reactQuery   bool
+	frontendOnly bool
 	// Lookup maps for declared names (built once in generateAll).
 	declaredFns       map[string]bool
 	declaredPipes     map[string]bool
@@ -32,22 +34,34 @@ func New() *Generator {
 	return &Generator{}
 }
 
+// WithReactQuery enables optional React Query hook generation.
+func (g *Generator) WithReactQuery(enabled bool) *Generator {
+	g.reactQuery = enabled
+	return g
+}
+
+// WithFrontendOnly enables outputting only the standalone frontend package.
+func (g *Generator) WithFrontendOnly(enabled bool) *Generator {
+	g.frontendOnly = enabled
+	return g
+}
+
 // emitCtx carries context for arrow statement code generation.
 type emitCtx struct {
-	kind        string            // "endpoint", "function", "middleware", "ws"
-	method      string            // HTTP method for endpoints (e.g., "GET", "POST")
-	path        string            // URL path for endpoints (e.g., "/api/todos/:id")
-	ctxVars     map[string]bool   // identifiers injected via middleware (e.g., "auth" -> c.get('auth'))
-	boundVars   map[string]string // data-op binding: model name -> bound variable (e.g., "job" -> "job")
-	declared    map[string]bool   // variables already declared in current scope
-	varModels   map[string]string // reverse of boundVars: variable name -> model name (e.g., "old" -> "job")
-	singleVars  map[string]bool   // variables bound from fetch (single record, not a collection)
-	asyncFns    map[string]bool   // function/pipe names that should be awaited
-	structEnums map[string]bool   // enum names that have struct-body variants (bracket access → <Name>Config)
-	paginatedVars    map[string]bool   // variables bound from paginated queries (have .items/.total)
-	fkAliases        map[string]string // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
-	generator        *Generator        // back-reference for FK model lookups
-	preserveBlockKeys bool             // when true, BlockExpr keys are not camelCased (for JSON response output)
+	kind              string            // "endpoint", "function", "middleware", "ws"
+	method            string            // HTTP method for endpoints (e.g., "GET", "POST")
+	path              string            // URL path for endpoints (e.g., "/api/todos/:id")
+	ctxVars           map[string]bool   // identifiers injected via middleware (e.g., "auth" -> c.get('auth'))
+	boundVars         map[string]string // data-op binding: model name -> bound variable (e.g., "job" -> "job")
+	declared          map[string]bool   // variables already declared in current scope
+	varModels         map[string]string // reverse of boundVars: variable name -> model name (e.g., "old" -> "job")
+	singleVars        map[string]bool   // variables bound from fetch (single record, not a collection)
+	asyncFns          map[string]bool   // function/pipe names that should be awaited
+	structEnums       map[string]bool   // enum names that have struct-body variants (bracket access → <Name>Config)
+	paginatedVars     map[string]bool   // variables bound from paginated queries (have .items/.total)
+	fkAliases         map[string]string // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
+	generator         *Generator        // back-reference for FK model lookups
+	preserveBlockKeys bool              // when true, BlockExpr keys are not camelCased (for JSON response output)
 }
 
 // Generate implements codegen.Generator.
@@ -78,7 +92,7 @@ func (g *Generator) Generate(file *ast.File, outDir string) error {
 // buildAsyncFns returns the set of camelCase function names that should be awaited in generated code.
 func (g *Generator) buildAsyncFns() map[string]bool {
 	fns := map[string]bool{
-		"upload":        true,
+		"upload":         true,
 		"deleteS3Object": true,
 	}
 	for name := range g.declaredFns {
@@ -339,6 +353,19 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	hasStorage := blueprintEntry(bp, "storage") != ""
 	g.hasStorage = hasStorage
 
+	if g.frontendOnly {
+		apiFile := g.genFrontendTypes(models, types, aliases, enums, endpoints, streams, ws)
+		schemasFile := g.genFrontendSchemas(models, types, aliases, enums, endpoints, streams, ws)
+		clientFile := g.genFrontendClient(endpoints, streams, ws)
+		var reactQueryFile *codegen.OutputFile
+		if g.reactQuery && len(endpoints) > 0 {
+			file := g.genFrontendReactQuery(endpoints)
+			reactQueryFile = &file
+		}
+		files = append(files, g.genFrontendPackage("", bp, apiFile, schemasFile, clientFile, reactQueryFile)...)
+		return files, nil
+	}
+
 	// package.json
 	files = append(files, g.genPackageJSON(bp, hasDB, hasCache, hasStorage, len(workers)+len(schedules) > 0, len(endpoints) > 0, len(ws) > 0))
 
@@ -390,6 +417,23 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// src/validation/schemas.ts
 	if len(endpoints) > 0 {
 		files = append(files, g.genValidation(endpoints))
+	}
+
+	// src/types/api.ts, src/types/schemas.ts, src/types/client.ts
+	if len(models) > 0 || len(types) > 0 || len(aliases) > 0 || len(enums) > 0 || len(endpoints) > 0 || len(streams) > 0 || len(ws) > 0 {
+		apiFile := g.genFrontendTypes(models, types, aliases, enums, endpoints, streams, ws)
+		schemasFile := g.genFrontendSchemas(models, types, aliases, enums, endpoints, streams, ws)
+		clientFile := g.genFrontendClient(endpoints, streams, ws)
+		files = append(files, apiFile, schemasFile, clientFile)
+
+		var reactQueryFile *codegen.OutputFile
+		if g.reactQuery && len(endpoints) > 0 {
+			file := g.genFrontendReactQuery(endpoints)
+			reactQueryFile = &file
+			files = append(files, file)
+		}
+
+		files = append(files, g.genFrontendPackage("frontend", bp, apiFile, schemasFile, clientFile, reactQueryFile)...)
 	}
 
 	// src/routes/<resource>.ts — group endpoints by resource

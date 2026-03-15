@@ -10,9 +10,24 @@ generated/
 ├── tsconfig.json
 ├── Dockerfile
 ├── .env.example
+├── frontend/
+│   ├── package.json
+│   ├── README.md
+│   ├── tsconfig.json
+│   └── src/
+│       ├── index.ts
+│       ├── api.ts
+│       ├── schemas.ts
+│       ├── client.ts
+│       └── react-query.ts   # optional via --react-query
 └── src/
     ├── index.ts
     ├── types.ts
+    ├── types/
+    │   ├── api.ts
+    │   ├── schemas.ts
+    │   ├── client.ts
+    │   └── react-query.ts   # optional via --react-query
     ├── models/
     │   └── schema.ts
     ├── validation/
@@ -131,6 +146,102 @@ export const PlanConfig = {
   enterprise: { rate_limit: '1000/min', max_file: 500 * 1024 * 1024,  monthly_ops: 100000 },
 } as const;
 ```
+
+### `src/types/api.ts`
+
+Frontend-safe contract types generated from models, endpoint inputs and responses, SSE handlers, and WebSocket messages.
+
+```typescript
+export interface Todo {
+  id: string;
+  title: string;
+  done: boolean;
+  created: Date;
+}
+
+export interface GetTodosRequest {
+  page?: number;
+  per_page?: number;
+}
+
+export type GetTodosResponse = {
+  todos: Todo[];
+  total: number;
+  page: number;
+};
+```
+
+### `src/types/schemas.ts`
+
+Zod schemas that mirror `src/types/api.ts`. These are designed for frontend form validation and runtime response parsing.
+
+```typescript
+import { z } from 'zod';
+
+export const TodoSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string(),
+  done: z.boolean(),
+  created: z.coerce.date(),
+});
+
+export const GetTodosRequestSchema = z.object({
+  page: z.number().int().min(1).default(1),
+  per_page: z.number().int().min(1).max(100).default(20),
+});
+```
+
+### `src/types/client.ts`
+
+Typed REST, SSE, and WebSocket clients. Requests and responses are validated with Zod by default.
+
+```typescript
+import { createApiClient } from './types/client';
+
+const client = createApiClient({
+  baseUrl: 'http://localhost:3000',
+  validateResponses: true,
+});
+
+const todos = await client.rest.getTodos({ page: 1, per_page: 20 });
+```
+
+### `src/types/react-query.ts` (optional)
+
+If you build with `bp build my-service.bp --react-query`, Blueprint also generates TanStack React Query hooks on top of the typed REST client.
+
+```typescript
+import { useGetTodosQuery, usePostTodosMutation } from './types/react-query';
+
+const todosQuery = useGetTodosQuery(
+  { page: 1, per_page: 20 },
+  { baseUrl: 'http://localhost:3000' }
+);
+
+const createTodo = usePostTodosMutation({
+  baseUrl: 'http://localhost:3000',
+});
+```
+
+### `frontend/`
+
+A standalone frontend package that mirrors the generated contract files in `src/types/`. This package is designed for monorepos, shared workspaces, or copying into a separate web app.
+
+```bash
+cd generated/frontend
+npm install
+npm run build
+```
+
+The package exports:
+
+- `frontend/src/api.ts`
+- `frontend/src/schemas.ts`
+- `frontend/src/client.ts`
+- `frontend/src/react-query.ts` when `--react-query` is enabled
+- `frontend/src/index.ts` as a convenience barrel export
+
+It also includes publish-oriented metadata in `frontend/package.json` and a small `frontend/README.md` so the package can be built and published with minimal cleanup.
 
 ### `src/routes/<resource>.ts`
 
@@ -302,6 +413,54 @@ cp ../.env.example .env
 # Edit .env with your actual values
 
 npm install
+```
+
+### Frontend Contracts
+
+The generated `src/types/` directory is safe to copy or publish into a frontend app. A common setup is:
+
+```bash
+bp build api.bp --out generated --react-query
+cp -R generated/src/types ../web/src/lib/blueprint
+```
+
+That gives the frontend one source of truth for request types, response types, Zod schemas, and optional React Query hooks.
+
+If you prefer a standalone package boundary instead of copying files directly, consume `generated/frontend/` as a workspace package.
+
+### Frontend-Only Build
+
+If you do not need the backend output at all, build just the frontend package:
+
+```bash
+bp build my-service.bp --frontend-only --out web-contract
+# or:
+bp frontend my-service.bp --out web-contract
+```
+
+That output directory becomes the frontend package root directly:
+
+```text
+web-contract/
+├── package.json
+├── README.md
+├── tsconfig.json
+├── .gitignore
+└── src/
+    ├── index.ts
+    ├── api.ts
+    ├── schemas.ts
+    ├── client.ts
+    └── react-query.ts   # optional via --react-query
+```
+
+To verify the package is ready to publish without actually publishing it:
+
+```bash
+bp frontend publish my-service.bp --out web-contract --react-query
+
+# If dependencies are already installed in web-contract/
+bp frontend publish my-service.bp --out web-contract --react-query --skip-install
 ```
 
 ### Database (if using `database postgres`)

@@ -238,6 +238,391 @@ POST /api/items {
 	}
 }
 
+func TestGenerateFrontendTypes(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model todo {
+  id      uuid      primary
+  title   string    required
+  done    bool      default(false)
+  created timestamp default(now)
+}
+
+GET /api/todos {
+  <- page int default(1) min(1)
+  |> todos = query todo paginate(page, 10)
+  -> 200 { todos: todos.items, total: todos.total, page: page }
+}
+
+POST /api/todos {
+  <- title string required min(1)
+  |> todo = save todo { title: title }
+  -> 201 { id: todo.id, title: todo.title, done: todo.done }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	apiTypes, err := os.ReadFile(filepath.Join(outDir, "src/types/api.ts"))
+	if err != nil {
+		t.Fatal("src/types/api.ts should exist")
+	}
+	apiStr := string(apiTypes)
+	if !strings.Contains(apiStr, "export interface Todo") {
+		t.Error("api.ts should export model interface")
+	}
+	if !strings.Contains(apiStr, "export interface GetTodosRequest") {
+		t.Error("api.ts should export request type")
+	}
+	if !strings.Contains(apiStr, "export type GetTodosResponse") {
+		t.Error("api.ts should export response type")
+	}
+	if !strings.Contains(apiStr, "getTodos(input: GetTodosRequest)") {
+		t.Error("api.ts should describe typed rest client methods")
+	}
+
+	schemas, err := os.ReadFile(filepath.Join(outDir, "src/types/schemas.ts"))
+	if err != nil {
+		t.Fatal("src/types/schemas.ts should exist")
+	}
+	schemasStr := string(schemas)
+	if !strings.Contains(schemasStr, "export const TodoSchema") {
+		t.Error("schemas.ts should export model schema")
+	}
+	if !strings.Contains(schemasStr, "export const GetTodosRequestSchema") {
+		t.Error("schemas.ts should export request schema")
+	}
+	if !strings.Contains(schemasStr, "export const GetTodosResponseSchema") {
+		t.Error("schemas.ts should export response schema")
+	}
+
+	client, err := os.ReadFile(filepath.Join(outDir, "src/types/client.ts"))
+	if err != nil {
+		t.Fatal("src/types/client.ts should exist")
+	}
+	clientStr := string(client)
+	if !strings.Contains(clientStr, "export function createApiClient") {
+		t.Error("client.ts should export createApiClient")
+	}
+	if !strings.Contains(clientStr, "Schemas.GetTodosRequestSchema.parse(input)") {
+		t.Error("client.ts should validate requests with Zod")
+	}
+	if !strings.Contains(clientStr, "Schemas.GetTodosResponseSchema") {
+		t.Error("client.ts should validate responses with Zod")
+	}
+}
+
+func TestGenerateReactQueryHooks(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+GET /api/todos {
+  <- page int default(1)
+  -> 200 { page: page }
+}
+
+POST /api/todos {
+  <- title string required
+  -> 201 { ok: true }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New().WithReactQuery(true)
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	hooks, err := os.ReadFile(filepath.Join(outDir, "src/types/react-query.ts"))
+	if err != nil {
+		t.Fatal("src/types/react-query.ts should exist when react query is enabled")
+	}
+	hooksStr := string(hooks)
+	if !strings.Contains(hooksStr, "from '@tanstack/react-query'") {
+		t.Error("react-query.ts should import TanStack React Query")
+	}
+	if !strings.Contains(hooksStr, "export function useGetTodosQuery") {
+		t.Error("react-query.ts should export query hooks for GET endpoints")
+	}
+	if !strings.Contains(hooksStr, "export function usePostTodosMutation") {
+		t.Error("react-query.ts should export mutation hooks for non-GET endpoints")
+	}
+	if !strings.Contains(hooksStr, "export const getTodosQueryKey") {
+		t.Error("react-query.ts should export query key helpers")
+	}
+
+	pkg, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal("package.json should exist")
+	}
+	pkgStr := string(pkg)
+	if !strings.Contains(pkgStr, `"@tanstack/react-query"`) {
+		t.Error("package.json should include @tanstack/react-query when hooks are enabled")
+	}
+	if !strings.Contains(pkgStr, `"react"`) {
+		t.Error("package.json should include react when hooks are enabled")
+	}
+}
+
+func TestGenerateFrontendPackage(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+GET /api/health {
+  -> 200 { ok: true }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	frontendPkg, err := os.ReadFile(filepath.Join(outDir, "frontend/package.json"))
+	if err != nil {
+		t.Fatal("frontend/package.json should exist")
+	}
+	frontendPkgStr := string(frontendPkg)
+	if !strings.Contains(frontendPkgStr, `"name": "test-frontend"`) {
+		t.Error("frontend package should derive a package name from the blueprint name")
+	}
+	if !strings.Contains(frontendPkgStr, `"./client"`) {
+		t.Error("frontend package should expose client subpath exports")
+	}
+	if !strings.Contains(frontendPkgStr, `"publishConfig"`) {
+		t.Error("frontend package should include publish metadata")
+	}
+	if !strings.Contains(frontendPkgStr, `"license": "MIT"`) {
+		t.Error("frontend package should include a default license")
+	}
+
+	frontendReadme, err := os.ReadFile(filepath.Join(outDir, "frontend/README.md"))
+	if err != nil {
+		t.Fatal("frontend/README.md should exist")
+	}
+	frontendReadmeStr := string(frontendReadme)
+	if !strings.Contains(frontendReadmeStr, "Generated frontend SDK") {
+		t.Error("frontend package should include a publishable README")
+	}
+
+	frontendGitignore, err := os.ReadFile(filepath.Join(outDir, "frontend/.gitignore"))
+	if err != nil {
+		t.Fatal("frontend/.gitignore should exist")
+	}
+	frontendGitignoreStr := string(frontendGitignore)
+	if !strings.Contains(frontendGitignoreStr, "node_modules/") {
+		t.Error("frontend package should ignore node_modules")
+	}
+	if strings.Contains(frontendGitignoreStr, "frontend/node_modules/") {
+		t.Error("frontend package gitignore should be package-local")
+	}
+
+	frontendIndex, err := os.ReadFile(filepath.Join(outDir, "frontend/src/index.ts"))
+	if err != nil {
+		t.Fatal("frontend/src/index.ts should exist")
+	}
+	indexStr := string(frontendIndex)
+	if !strings.Contains(indexStr, "export * from './api.js'") {
+		t.Error("frontend index should re-export api.ts")
+	}
+	if !strings.Contains(indexStr, "export * from './client.js'") {
+		t.Error("frontend index should re-export client.ts")
+	}
+
+	frontendAPI, err := os.ReadFile(filepath.Join(outDir, "frontend/src/api.ts"))
+	if err != nil {
+		t.Fatal("frontend/src/api.ts should exist")
+	}
+	if !strings.Contains(string(frontendAPI), "export type GetHealthResponse") {
+		t.Error("frontend package should contain copied frontend contract files")
+	}
+
+	gitignore, err := os.ReadFile(filepath.Join(outDir, ".gitignore"))
+	if err != nil {
+		t.Fatal("generated .gitignore should exist")
+	}
+	gitignoreStr := string(gitignore)
+	if !strings.Contains(gitignoreStr, "frontend/node_modules/") {
+		t.Error("generated .gitignore should ignore frontend package dependencies")
+	}
+	if !strings.Contains(gitignoreStr, "frontend/dist/") {
+		t.Error("generated .gitignore should ignore frontend package build output")
+	}
+}
+
+func TestGenerateFrontendOnlyPackage(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+GET /api/health {
+  -> 200 { ok: true }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New().WithFrontendOnly(true)
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	for _, f := range []string{"package.json", "tsconfig.json", ".gitignore", "README.md", "src/index.ts", "src/api.ts", "src/schemas.ts", "src/client.ts"} {
+		path := filepath.Join(outDir, f)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Errorf("expected frontend-only file %s to exist", f)
+		}
+	}
+	for _, f := range []string{"Dockerfile", ".env.example", "frontend/package.json", "src/routes"} {
+		path := filepath.Join(outDir, f)
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("did not expect backend artifact %s in frontend-only output", f)
+		}
+	}
+
+	pkg, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pkg), `"name": "test-frontend"`) {
+		t.Error("frontend-only package should use frontend package metadata at the root")
+	}
+	if !strings.Contains(string(pkg), `"publishConfig"`) {
+		t.Error("frontend-only package should include publish metadata")
+	}
+
+	readme, err := os.ReadFile(filepath.Join(outDir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readme), "Generated frontend SDK") {
+		t.Error("frontend-only package should include a README")
+	}
+
+	gitignore, err := os.ReadFile(filepath.Join(outDir, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitignoreStr := string(gitignore)
+	if strings.Contains(gitignoreStr, "frontend/node_modules/") {
+		t.Error("frontend-only root gitignore should not reference nested frontend paths")
+	}
+	if !strings.Contains(gitignoreStr, "node_modules/") || !strings.Contains(gitignoreStr, "dist/") {
+		t.Error("frontend-only root gitignore should ignore package build artifacts")
+	}
+}
+
+func TestGenerateFrontendRealtimeClients(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+STREAM /api/updates/:id {
+  stream {
+    |> on event(update) {
+      -> { ok: true, id: id }
+    }
+    |> on timeout(5s) {
+      -> { type: "ping" }
+    }
+  }
+}
+
+WS /ws/chat/:id {
+  on_connect {
+    -> { type: "connected", id: id }
+  }
+  on_message {
+    -> { type: "message", id: id }
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	apiTypes, err := os.ReadFile(filepath.Join(outDir, "src/types/api.ts"))
+	if err != nil {
+		t.Fatal("src/types/api.ts should exist")
+	}
+	apiStr := string(apiTypes)
+	if !strings.Contains(apiStr, "export interface StreamUpdatesByIdHandlers") {
+		t.Error("api.ts should export typed stream handlers")
+	}
+	if !strings.Contains(apiStr, "subscribeUpdatesById") {
+		t.Error("api.ts should expose typed stream subscribe method")
+	}
+	if !strings.Contains(apiStr, "export type WsChatByIdMessage") {
+		t.Error("api.ts should export WebSocket message union type")
+	}
+	if !strings.Contains(apiStr, "connectChatById") {
+		t.Error("api.ts should expose typed WebSocket connect method")
+	}
+
+	schemas, err := os.ReadFile(filepath.Join(outDir, "src/types/schemas.ts"))
+	if err != nil {
+		t.Fatal("src/types/schemas.ts should exist")
+	}
+	schemasStr := string(schemas)
+	if !strings.Contains(schemasStr, "StreamUpdatesByIdUpdateEventSchema") {
+		t.Error("schemas.ts should export stream event schemas")
+	}
+	if !strings.Contains(schemasStr, "WsChatByIdMessageSchema") {
+		t.Error("schemas.ts should export ws message schema")
+	}
+
+	client, err := os.ReadFile(filepath.Join(outDir, "src/types/client.ts"))
+	if err != nil {
+		t.Fatal("src/types/client.ts should exist")
+	}
+	clientStr := string(client)
+	if !strings.Contains(clientStr, "source.addEventListener('update'") {
+		t.Error("client.ts should register typed stream listeners")
+	}
+	if !strings.Contains(clientStr, "socket.addEventListener('message'") {
+		t.Error("client.ts should register typed websocket listeners")
+	}
+}
+
 func TestGenerateWithMiddleware(t *testing.T) {
 	src := `blueprint "test" {
   version "1.0.0"
@@ -309,6 +694,14 @@ func TestGenerateAllFeatures(t *testing.T) {
 		"tsconfig.json",
 		".env.example",
 		"Dockerfile",
+		"frontend/.gitignore",
+		"frontend/package.json",
+		"frontend/README.md",
+		"frontend/tsconfig.json",
+		"frontend/src/index.ts",
+		"frontend/src/api.ts",
+		"frontend/src/schemas.ts",
+		"frontend/src/client.ts",
 		"src/index.ts",
 		"src/lib/env.ts",
 		"src/lib/errors.ts",
@@ -316,6 +709,9 @@ func TestGenerateAllFeatures(t *testing.T) {
 		"src/lib/cache.ts",
 		"src/lib/storage.ts",
 		"src/types.ts",
+		"src/types/api.ts",
+		"src/types/schemas.ts",
+		"src/types/client.ts",
 		"src/models/schema.ts",
 		"src/validation/schemas.ts",
 		"src/routes/watermark.ts",
@@ -362,8 +758,8 @@ func TestGenerateAllFeatures(t *testing.T) {
 		}
 		return nil
 	})
-	if count < 25 {
-		t.Errorf("expected at least 25 generated files, got %d", count)
+	if count < 36 {
+		t.Errorf("expected at least 36 generated files, got %d", count)
 	}
 	t.Logf("Generated %d files from all_features.bp", count)
 }

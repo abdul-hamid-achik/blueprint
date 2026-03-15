@@ -37,7 +37,7 @@ bp check my-service.bp
 Compile a `.bp` file to TypeScript.
 
 ```bash
-bp build <file.bp> [--out <dir>]
+bp build <file.bp> [--out <dir>] [--react-query] [--frontend-only]
 ```
 
 **Flags:**
@@ -45,6 +45,8 @@ bp build <file.bp> [--out <dir>]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <dir>` | `generated/` | Output directory |
+| `--react-query` | off | Generate `src/types/react-query.ts` and add TanStack React Query deps |
+| `--frontend-only` | off | Emit only the standalone frontend contract package |
 
 **Example:**
 
@@ -54,9 +56,72 @@ bp build my-service.bp
 
 bp build my-service.bp --out dist/
 # Built my-service.bp -> dist/
+
+bp build my-service.bp --react-query
+# Built my-service.bp -> generated/
+# Includes src/types/react-query.ts
+
+bp build my-service.bp --frontend-only --react-query --out web-contract
+# Emits only the standalone frontend package in web-contract/
 ```
 
 Runs `check` first — exits on errors before generating any output.
+
+`bp build` always generates frontend-safe contract files in `src/types/api.ts`, `src/types/schemas.ts`, and `src/types/client.ts`. The `--react-query` flag adds hook wrappers on top of that client.
+Use `--frontend-only` when you want just the export-ready frontend package instead of the full backend project.
+
+---
+
+## `bp frontend`
+
+Generate only the standalone frontend SDK package.
+
+```bash
+bp frontend <file.bp> [--out <dir>] [--react-query]
+```
+
+This is a convenience alias for `bp build --frontend-only`.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out <dir>` | `generated/` | Output directory |
+| `--react-query` | off | Include TanStack React Query hooks |
+
+**Example:**
+
+```bash
+bp frontend my-service.bp --out web-contract --react-query
+# Emits a publishable frontend SDK package in web-contract/
+```
+
+### `bp frontend publish`
+
+Generate the frontend SDK package, install its dependencies, build it, and run a dry-run package check.
+
+```bash
+bp frontend publish <file.bp> [--out <dir>] [--react-query] [--skip-install]
+```
+
+This command runs the equivalent of:
+
+1. `bp frontend ...`
+2. `npm install`
+3. `npm run build`
+4. `npm pack --dry-run`
+
+Use it when you want a quick publish-readiness check without actually pushing anything to npm.
+Use `--skip-install` when dependencies are already installed and you only want to rerun the build and dry-run package check.
+
+**Example:**
+
+```bash
+bp frontend publish my-service.bp --out web-contract --react-query
+
+bp frontend publish my-service.bp --out web-contract --react-query --skip-install
+# Skip npm install and just rerun build + npm pack --dry-run
+```
 
 ---
 
@@ -374,16 +439,30 @@ bp help
 Preview what changes `bp build` will make before overwriting output.
 
 ```bash
-bp diff <file.bp> [--out <dir>]
+bp diff <file.bp> [--out <dir>] [--react-query] [--frontend-only]
 ```
 
 Compares current generated output against what a fresh build would produce. Shows a unified diff of changes.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out <dir>` | `generated/` | Output directory |
+| `--react-query` | off | Compare output as if `bp build --react-query` were used |
+| `--frontend-only` | off | Compare output as if `bp build --frontend-only` were used |
 
 **Example:**
 
 ```bash
 bp diff my-service.bp
 # Shows diff between current generated/ and new build output
+
+bp diff my-service.bp --react-query
+# Also includes changes from generated React Query hooks and frontend package files
+
+bp diff my-service.bp --frontend-only
+# Compares only the standalone frontend package output
 ```
 
 ---

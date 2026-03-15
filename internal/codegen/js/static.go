@@ -42,6 +42,10 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 	if hasWS {
 		deps["@hono/node-ws"] = "^1.0.0"
 	}
+	if g.reactQuery {
+		deps["@tanstack/react-query"] = "^5.59.20"
+		deps["react"] = "^18.3.1"
+	}
 
 	devDeps := map[string]string{
 		"typescript":  "^5.7.0",
@@ -53,6 +57,9 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 	if hasDB {
 		devDeps["drizzle-kit"] = "^0.28.0"
 	}
+	if g.reactQuery {
+		devDeps["@types/react"] = "^18.3.12"
+	}
 
 	var b strings.Builder
 	b.WriteString("{\n")
@@ -61,8 +68,8 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 	b.WriteString(`  "private": true,` + "\n")
 	b.WriteString(`  "type": "module",` + "\n")
 	b.WriteString(`  "scripts": {` + "\n")
-	b.WriteString(fmt.Sprintf(`    "start": "tsx src/index.ts",`+"\n"))
-	b.WriteString(fmt.Sprintf(`    "dev": "tsx watch src/index.ts",`+"\n"))
+	b.WriteString(fmt.Sprintf(`    "start": "tsx src/index.ts",` + "\n"))
+	b.WriteString(fmt.Sprintf(`    "dev": "tsx watch src/index.ts",` + "\n"))
 	b.WriteString(`    "build": "tsc",` + "\n")
 	b.WriteString(`    "test": "vitest run",` + "\n")
 	b.WriteString(`    "test:watch": "vitest"` + "\n")
@@ -336,6 +343,8 @@ CMD ["node", "dist/index.js"]
 func (g *Generator) genGitignore() codegen.OutputFile {
 	content := `node_modules/
 dist/
+frontend/node_modules/
+frontend/dist/
 .env
 *.log
 `

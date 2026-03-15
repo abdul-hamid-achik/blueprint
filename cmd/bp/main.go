@@ -52,23 +52,77 @@ func main() {
 		os.Exit(cmdCheck(os.Args[2], jsonOutput))
 	case "build":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("build", "build <file.bp> [--out <dir>]",
+			printCommandHelp("build", "build <file.bp> [--out <dir>] [--react-query] [--frontend-only]",
 				"Compile a .bp file to JavaScript/TypeScript.",
-				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}, {"--react-query", "Generate React Query hooks and add frontend deps"}, {"--frontend-only", "Emit only the standalone frontend package"}})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>]")
+			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>] [--react-query] [--frontend-only]")
 			os.Exit(1)
 		}
 		outDir := "generated"
+		reactQuery := false
+		frontendOnly := false
 		for i := 3; i < len(os.Args); i++ {
 			if os.Args[i] == "--out" && i+1 < len(os.Args) {
 				outDir = os.Args[i+1]
 				i++
+			} else if os.Args[i] == "--react-query" {
+				reactQuery = true
+			} else if os.Args[i] == "--frontend-only" {
+				frontendOnly = true
 			}
 		}
-		os.Exit(cmdBuild(os.Args[2], outDir))
+		os.Exit(cmdBuild(os.Args[2], outDir, reactQuery, frontendOnly))
+	case "frontend":
+		if len(os.Args) >= 3 && os.Args[2] == "publish" {
+			if hasHelpFlag(os.Args[3:]) {
+				printCommandHelp("frontend publish", "frontend publish <file.bp> [--out <dir>] [--react-query] [--skip-install]",
+					"Generate the standalone frontend SDK package, install dependencies, build it, and run `npm pack --dry-run`.",
+					[][2]string{{"--out <dir>", "Output directory (default: generated/)"}, {"--react-query", "Generate React Query hooks and add frontend deps"}, {"--skip-install", "Skip `npm install` before build and pack dry-run"}})
+				os.Exit(0)
+			}
+			if len(os.Args) < 4 {
+				fmt.Fprintln(os.Stderr, "Usage: bp frontend publish <file.bp> [--out <dir>] [--react-query] [--skip-install]")
+				os.Exit(1)
+			}
+			outDir := "generated"
+			reactQuery := false
+			skipInstall := false
+			for i := 4; i < len(os.Args); i++ {
+				if os.Args[i] == "--out" && i+1 < len(os.Args) {
+					outDir = os.Args[i+1]
+					i++
+				} else if os.Args[i] == "--react-query" {
+					reactQuery = true
+				} else if os.Args[i] == "--skip-install" {
+					skipInstall = true
+				}
+			}
+			os.Exit(cmdFrontendPublish(os.Args[3], outDir, reactQuery, skipInstall))
+		}
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("frontend", "frontend <file.bp> [--out <dir>] [--react-query]",
+				"Generate only the standalone frontend SDK package.\nUse `bp frontend publish` to build and dry-run the npm package flow.",
+				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}, {"--react-query", "Generate React Query hooks and add frontend deps"}})
+			os.Exit(0)
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp frontend <file.bp> [--out <dir>] [--react-query]")
+			os.Exit(1)
+		}
+		outDir := "generated"
+		reactQuery := false
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "--out" && i+1 < len(os.Args) {
+				outDir = os.Args[i+1]
+				i++
+			} else if os.Args[i] == "--react-query" {
+				reactQuery = true
+			}
+		}
+		os.Exit(cmdBuild(os.Args[2], outDir, reactQuery, true))
 	case "fmt":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("fmt", "fmt <file.bp> [--write] [--check]",
@@ -251,23 +305,29 @@ func main() {
 		os.Exit(cmdEject(os.Args[2]))
 	case "diff":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("diff", "diff <file.bp> [--out <dir>]",
+			printCommandHelp("diff", "diff <file.bp> [--out <dir>] [--react-query] [--frontend-only]",
 				"Show what changes bp build would make, without overwriting.",
-				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}, {"--react-query", "Compare output as if build ran with React Query hooks enabled"}, {"--frontend-only", "Compare output as if build emitted only the standalone frontend package"}})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>]")
+			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>] [--react-query] [--frontend-only]")
 			os.Exit(1)
 		}
 		outDir := "generated"
+		reactQuery := false
+		frontendOnly := false
 		for i := 3; i < len(os.Args); i++ {
 			if os.Args[i] == "--out" && i+1 < len(os.Args) {
 				outDir = os.Args[i+1]
 				i++
+			} else if os.Args[i] == "--react-query" {
+				reactQuery = true
+			} else if os.Args[i] == "--frontend-only" {
+				frontendOnly = true
 			}
 		}
-		os.Exit(cmdDiff(os.Args[2], outDir))
+		os.Exit(cmdDiff(os.Args[2], outDir, reactQuery, frontendOnly))
 	case "deploy":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("deploy", "deploy <file.bp> [--out <dir>] [--tag <tag>]",
@@ -414,7 +474,11 @@ func cmdCheck(filename string, jsonOutput bool) int {
 	return 0
 }
 
-func cmdBuild(filename, outDir string) int {
+func cmdBuild(filename, outDir string, reactQuery, frontendOnly bool) int {
+	return cmdBuildWithOptions(filename, outDir, reactQuery, frontendOnly, false)
+}
+
+func cmdBuildWithOptions(filename, outDir string, reactQuery, frontendOnly, preserveNodeModules bool) int {
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
@@ -447,6 +511,22 @@ func cmdBuild(filename, outDir string) int {
 		return 1
 	}
 
+	var preservedNodeModules string
+	if preserveNodeModules {
+		nodeModulesPath := filepath.Join(outDir, "node_modules")
+		if info, err := os.Stat(nodeModulesPath); err == nil && info.IsDir() {
+			preservedNodeModules = filepath.Join(filepath.Dir(outDir), ".bp-node-modules-preserve")
+			_ = os.RemoveAll(preservedNodeModules)
+			if err := os.Rename(nodeModulesPath, preservedNodeModules); err != nil {
+				fmt.Fprintf(os.Stderr, "Error preserving node_modules: %s\n", err)
+				return 2
+			}
+			defer func() {
+				_ = os.RemoveAll(preservedNodeModules)
+			}()
+		}
+	}
+
 	// Clean output directory to remove stale files from previous builds
 	if info, err := os.Stat(outDir); err == nil && info.IsDir() {
 		if err := os.RemoveAll(outDir); err != nil {
@@ -455,13 +535,74 @@ func cmdBuild(filename, outDir string) int {
 		}
 	}
 
-	gen := js.New()
+	gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly)
 	if err := gen.Generate(file, outDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
 		return 4
 	}
 
+	if preservedNodeModules != "" {
+		restoredNodeModules := filepath.Join(outDir, "node_modules")
+		if err := os.Rename(preservedNodeModules, restoredNodeModules); err != nil {
+			fmt.Fprintf(os.Stderr, "Error restoring node_modules: %s\n", err)
+			return 2
+		}
+	}
+
 	fmt.Printf("Built %s -> %s/\n", filename, outDir)
+	return 0
+}
+
+func cmdFrontendPublish(filename, outDir string, reactQuery, skipInstall bool) int {
+	if code := cmdBuildWithOptions(filename, outDir, reactQuery, true, skipInstall); code != 0 {
+		return code
+	}
+
+	if skipInstall {
+		nodeModulesPath := filepath.Join(outDir, "node_modules")
+		if _, err := os.Stat(nodeModulesPath); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Error: --skip-install requires existing dependencies in %s. Run without --skip-install once first.\n", outDir)
+			return 2
+		}
+	}
+
+	steps := []struct {
+		label string
+		args  []string
+	}{}
+	if !skipInstall {
+		steps = append(steps, struct {
+			label string
+			args  []string
+		}{label: "Installing frontend package dependencies", args: []string{"install"}})
+	}
+	steps = append(steps,
+		struct {
+			label string
+			args  []string
+		}{label: "Building frontend package", args: []string{"run", "build"}},
+		struct {
+			label string
+			args  []string
+		}{label: "Running npm pack dry run", args: []string{"pack", "--dry-run"}},
+	)
+
+	for _, step := range steps {
+		fmt.Printf("%s in %s...\n", step.label, outDir)
+		cmd := exec.Command("npm", step.args...)
+		cmd.Dir = outDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "%s failed: %s\n", step.label, err)
+			return 2
+		}
+	}
+	if skipInstall {
+		fmt.Printf("Skipped npm install in %s.\n", outDir)
+	}
+
+	fmt.Printf("Frontend package in %s is ready for publish review.\n", outDir)
 	return 0
 }
 
@@ -689,7 +830,7 @@ func cmdDocs(filename, outFile string) int {
 func cmdDev(filename, outDir string) int {
 	// Initial build
 	fmt.Printf("Building %s...\n", filename)
-	if code := cmdBuild(filename, outDir); code != 0 {
+	if code := cmdBuild(filename, outDir, false, false); code != 0 {
 		return code
 	}
 
@@ -737,7 +878,7 @@ func cmdDev(filename, outDir string) int {
 					proc = nil
 				}
 
-				if code := cmdBuild(filename, outDir); code != 0 {
+				if code := cmdBuild(filename, outDir, false, false); code != 0 {
 					fmt.Fprintln(os.Stderr, "Build failed — waiting for next change...")
 				} else {
 					proc = startNodeProcess(outDir)
@@ -762,7 +903,7 @@ func startNodeProcess(outDir string) *exec.Cmd {
 }
 
 func cmdRun(filename, outDir string) int {
-	if code := cmdBuild(filename, outDir); code != 0 {
+	if code := cmdBuild(filename, outDir, false, false); code != 0 {
 		return code
 	}
 
@@ -792,7 +933,7 @@ func cmdRun(filename, outDir string) int {
 }
 
 func cmdTest(filename, outDir string) int {
-	if code := cmdBuild(filename, outDir); code != 0 {
+	if code := cmdBuild(filename, outDir, false, false); code != 0 {
 		return code
 	}
 
@@ -820,7 +961,7 @@ func cmdTest(filename, outDir string) int {
 }
 
 func cmdMigrate(filename, outDir, subCmd string) int {
-	if code := cmdBuild(filename, outDir); code != 0 {
+	if code := cmdBuild(filename, outDir, false, false); code != 0 {
 		return code
 	}
 
@@ -995,7 +1136,7 @@ func cmdEject(dir string) int {
 	return 0
 }
 
-func cmdDiff(filename, outDir string) int {
+func cmdDiff(filename, outDir string, reactQuery, frontendOnly bool) int {
 	// First, check if the .bp file is valid
 	src, err := os.ReadFile(filename)
 	if err != nil {
@@ -1035,7 +1176,7 @@ func cmdDiff(filename, outDir string) int {
 	defer os.RemoveAll(tmpDir)
 
 	// Generate to temp dir
-	gen := js.New()
+	gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly)
 	if err := gen.Generate(file, tmpDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
 		return 4
@@ -1182,7 +1323,7 @@ func cmdCompletion(shell string) int {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     
-    commands="check build diff run dev test migrate generate docs fmt lint init eject deploy completion version help"
+    commands="check build frontend diff run dev test migrate generate docs fmt lint init eject deploy completion version help"
     
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- ${cur}) )
@@ -1190,7 +1331,11 @@ func cmdCompletion(shell string) int {
     fi
     
     case "${prev}" in
-        check|build|diff|run|dev|test|migrate|generate|docs|fmt|lint|deploy)
+        check|build|frontend|diff|run|dev|test|migrate|generate|docs|fmt|lint|deploy)
+            _filedir "@(.bp)"
+            return 0
+            ;;
+        publish)
             _filedir "@(.bp)"
             return 0
             ;;
@@ -1203,9 +1348,14 @@ func cmdCompletion(shell string) int {
             return 0
             ;;
     esac
+
+    if [[ ${COMP_CWORD} -eq 2 && ${COMP_WORDS[1]} == "frontend" ]]; then
+        COMPREPLY=( $(compgen -W "publish" -- ${cur}) $(compgen -f -X '!*.bp' -- ${cur}) )
+        return 0
+    fi
     
     if [[ ${cur} == -* ]]; then
-        COMPREPLY=( $(compgen -W "--out --write --check --tag --help -h" -- ${cur}) )
+        COMPREPLY=( $(compgen -W "--out --react-query --frontend-only --skip-install --write --check --tag --help -h" -- ${cur}) )
         return 0
     fi
 }
@@ -1227,6 +1377,7 @@ _bp() {
             _values 'commands' \
                 'check[Validate syntax and semantics]' \
                 'build[Compile .bp to JavaScript/TypeScript]' \
+                'frontend[Generate standalone frontend SDK package]' \
                 'diff[Show changes without overwriting]' \
                 'run[Build and start the server]' \
                 'dev[Watch mode - rebuild and restart]' \
@@ -1245,7 +1396,7 @@ _bp() {
             ;;
         args)
             case "$line[1]" in
-                check|build|diff|run|dev|test|migrate|generate|docs|fmt|lint|deploy)
+                check|build|frontend|diff|run|dev|test|migrate|generate|docs|fmt|lint|deploy)
                     _files -g "*.bp"
                     ;;
                 completion)
@@ -1264,6 +1415,7 @@ compdef _bp bp`)
 
 complete -c bp -n "__fish_use_subcommand" -a "check" -d "Validate syntax and semantics"
 complete -c bp -n "__fish_use_subcommand" -a "build" -d "Compile .bp to JavaScript/TypeScript"
+complete -c bp -n "__fish_use_subcommand" -a "frontend" -d "Generate standalone frontend SDK package"
 complete -c bp -n "__fish_use_subcommand" -a "diff" -d "Show changes without overwriting"
 complete -c bp -n "__fish_use_subcommand" -a "run" -d "Build and start the server"
 complete -c bp -n "__fish_use_subcommand" -a "dev" -d "Watch mode - rebuild and restart"
@@ -1280,10 +1432,15 @@ complete -c bp -n "__fish_use_subcommand" -a "completion" -d "Generate shell com
 complete -c bp -n "__fish_use_subcommand" -a "version" -d "Print version"
 complete -c bp -n "__fish_use_subcommand" -a "help" -d "Show help"
 
-complete -c bp -n "__fish_seen_subcommand_from check build diff run dev test migrate generate docs fmt lint deploy" -a "(__fish_complete_suffix .bp)"
+complete -c bp -n "__fish_seen_subcommand_from check build frontend diff run dev test migrate generate docs fmt lint deploy" -a "(__fish_complete_suffix .bp)"
+complete -c bp -n "__fish_seen_subcommand_from frontend; and not __fish_seen_subcommand_from publish" -a "publish" -d "Build and dry-run frontend package publish flow"
+complete -c bp -n "__fish_seen_subcommand_from publish" -a "(__fish_complete_suffix .bp)"
 complete -c bp -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
 
 complete -c bp -l out -d "Output directory"
+complete -c bp -l react-query -d "Generate React Query hooks"
+complete -c bp -l frontend-only -d "Emit only the standalone frontend package"
+complete -c bp -l skip-install -d "Skip npm install before frontend publish dry-run"
 complete -c bp -l write -d "Write output back to file"
 complete -c bp -l check -d "Check if formatted (CI mode)"
 complete -c bp -l tag -d "Docker image tag"
@@ -1360,6 +1517,8 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  check      <file.bp>                       Validate syntax and semantics")
 	fmt.Println("  build      <file.bp> [--out dir]           Compile .bp to JavaScript/TypeScript")
+	fmt.Println("  frontend   <file.bp> [--out dir]           Generate the standalone frontend SDK package")
+	fmt.Println("  frontend   publish <file.bp>               Build and dry-run the frontend SDK publish flow")
 	fmt.Println("  diff       <file.bp> [--out dir]           Show changes without overwriting")
 	fmt.Println("  run        <file.bp> [--out dir]           Build and start the server")
 	fmt.Println("  dev        <file.bp> [--out dir]           Watch mode — rebuild and restart on changes")
@@ -1382,10 +1541,10 @@ func printUsage() {
 
 // suggestCommand returns the closest matching command for typos
 func suggestCommand(input string) string {
-	commands := []string{"check", "build", "diff", "run", "dev", "test", "migrate",
+	commands := []string{"check", "build", "frontend", "diff", "run", "dev", "test", "migrate",
 		"generate", "docs", "fmt", "lint", "init", "eject", "deploy",
 		"completion", "version", "help"}
-	
+
 	// Common typos mapping
 	typos := map[string]string{
 		"chekc":   "check",
@@ -1393,6 +1552,9 @@ func suggestCommand(input string) string {
 		"biuld":   "build",
 		"buid":    "build",
 		"buld":    "build",
+		"fronend": "frontend",
+		"fronted": "frontend",
+		"front":   "frontend",
 		"diff":    "diff",
 		"ru":      "run",
 		"rn":      "run",
@@ -1418,16 +1580,16 @@ func suggestCommand(input string) string {
 		"hlep":    "help",
 		"hel":     "help",
 	}
-	
+
 	// Direct typo match
 	if suggestion, ok := typos[input]; ok {
 		return suggestion
 	}
-	
+
 	// Find closest match by Levenshtein distance
 	bestMatch := ""
 	bestDist := 3 // Only suggest if within 2 edits
-	
+
 	for _, cmd := range commands {
 		dist := levenshteinDistance(input, cmd)
 		if dist < bestDist {
@@ -1435,7 +1597,7 @@ func suggestCommand(input string) string {
 			bestMatch = cmd
 		}
 	}
-	
+
 	return bestMatch
 }
 
@@ -1447,19 +1609,19 @@ func levenshteinDistance(a, b string) int {
 	if len(b) == 0 {
 		return len(a)
 	}
-	
+
 	// Use a simple iterative approach with O(min(m,n)) space
 	if len(a) < len(b) {
 		a, b = b, a
 	}
-	
+
 	previous := make([]int, len(b)+1)
 	current := make([]int, len(b)+1)
-	
+
 	for j := 0; j <= len(b); j++ {
 		previous[j] = j
 	}
-	
+
 	for i := 1; i <= len(a); i++ {
 		current[0] = i
 		for j := 1; j <= len(b); j++ {
@@ -1468,14 +1630,14 @@ func levenshteinDistance(a, b string) int {
 				cost = 1
 			}
 			current[j] = min3(
-				current[j-1]+1,    // insertion
-				previous[j]+1,     // deletion
+				current[j-1]+1,     // insertion
+				previous[j]+1,      // deletion
 				previous[j-1]+cost, // substitution
 			)
 		}
 		previous, current = current, previous
 	}
-	
+
 	return previous[len(b)]
 }
 
@@ -1510,20 +1672,20 @@ func printJSONCheckResult(filename string, valid bool, parseErrors []parser.Pars
 		"success":  valid,
 		"filename": filename,
 	}
-	
+
 	if !valid {
 		var errors []map[string]interface{}
-		
+
 		for _, e := range parseErrors {
 			errors = append(errors, map[string]interface{}{
-				"type":     "parse",
-				"message":  e.Message,
-				"line":     e.Loc.Line,
-				"column":   e.Loc.Col,
-				"file":     e.Loc.File,
+				"type":    "parse",
+				"message": e.Message,
+				"line":    e.Loc.Line,
+				"column":  e.Loc.Col,
+				"file":    e.Loc.File,
 			})
 		}
-		
+
 		for _, e := range checkErrors {
 			errors = append(errors, map[string]interface{}{
 				"type":    "semantic",
@@ -1533,11 +1695,11 @@ func printJSONCheckResult(filename string, valid bool, parseErrors []parser.Pars
 				"file":    e.Loc.File,
 			})
 		}
-		
+
 		output["errors"] = errors
 		output["error_count"] = len(errors)
 	}
-	
+
 	printJSON(output)
 }
 

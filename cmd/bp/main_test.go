@@ -45,8 +45,15 @@ func getProjectRoot() string {
 
 // runBP executes the bp binary with args and returns stdout, stderr, and exit code.
 func runBP(t *testing.T, args ...string) (stdout, stderr string, exitCode int) {
+	return runBPEnv(t, nil, args...)
+}
+
+func runBPEnv(t *testing.T, env []string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	cmd := exec.Command(bpBinary, args...)
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -198,6 +205,223 @@ func TestBuildValidFile(t *testing.T) {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			t.Errorf("expected generated file %s to exist", f)
 		}
+	}
+}
+
+func TestBuildWithReactQuery(t *testing.T) {
+	root := getProjectRoot()
+	outDir := t.TempDir()
+	validFile := filepath.Join(root, "examples", "todo-api.bp")
+	stdout, stderr, exitCode := runBP(t, "build", validFile, "--out", outDir, "--react-query")
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+
+	for _, f := range []string{
+		"src/types/react-query.ts",
+		"frontend/package.json",
+		"frontend/src/react-query.ts",
+	} {
+		path := filepath.Join(outDir, f)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Errorf("expected generated file %s to exist", f)
+		}
+	}
+
+	pkgBytes, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pkgBytes), `"@tanstack/react-query"`) {
+		t.Error("root package.json should include react-query dependency when flag is enabled")
+	}
+}
+
+func TestBuildFrontendOnly(t *testing.T) {
+	root := getProjectRoot()
+	outDir := t.TempDir()
+	validFile := filepath.Join(root, "examples", "todo-api.bp")
+	stdout, stderr, exitCode := runBP(t, "build", validFile, "--out", outDir, "--frontend-only")
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+
+	for _, f := range []string{"package.json", "tsconfig.json", ".gitignore", "src/index.ts", "src/api.ts", "src/client.ts", "src/schemas.ts"} {
+		path := filepath.Join(outDir, f)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Errorf("expected frontend-only file %s to exist", f)
+		}
+	}
+	for _, f := range []string{"Dockerfile", ".env.example", "frontend/package.json", "src/routes/todos.ts"} {
+		path := filepath.Join(outDir, f)
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("did not expect backend artifact %s in frontend-only output", f)
+		}
+	}
+
+	pkgBytes, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pkgBytes), `"name": "todo-api-frontend"`) {
+		t.Error("frontend-only output should use frontend package metadata at the root")
+	}
+}
+
+func TestFrontendCommand(t *testing.T) {
+	root := getProjectRoot()
+	outDir := t.TempDir()
+	validFile := filepath.Join(root, "examples", "todo-api.bp")
+	stdout, stderr, exitCode := runBP(t, "frontend", validFile, "--out", outDir, "--react-query")
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+
+	for _, f := range []string{"package.json", "README.md", ".gitignore", "src/react-query.ts"} {
+		path := filepath.Join(outDir, f)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Errorf("expected frontend command to generate %s", f)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "frontend", "package.json")); err == nil {
+		t.Error("frontend command should not nest output under frontend/")
+	}
+}
+
+func TestFrontendPublishCommand(t *testing.T) {
+	root := getProjectRoot()
+	outDir := t.TempDir()
+	validFile := filepath.Join(root, "examples", "todo-api.bp")
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "npm.log")
+	npmStub := filepath.Join(binDir, "npm")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_NPM_LOG\"\n" +
+		"if [ \"$1\" = \"install\" ]; then mkdir -p node_modules; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(npmStub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_NPM_LOG=" + logFile,
+	}
+	stdout, stderr, exitCode := runBPEnv(t, env, "frontend", "publish", validFile, "--out", outDir, "--react-query")
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStr := string(logBytes)
+	if !strings.Contains(logStr, "install") {
+		t.Error("frontend publish should run npm install")
+	}
+	if !strings.Contains(logStr, "run build") {
+		t.Error("frontend publish should run npm run build")
+	}
+	if !strings.Contains(logStr, "pack --dry-run") {
+		t.Error("frontend publish should run npm pack --dry-run")
+	}
+	if !strings.Contains(stdout, "ready for publish review") {
+		t.Error("frontend publish should report successful dry-run completion")
+	}
+}
+
+func TestFrontendPublishCommandSkipInstall(t *testing.T) {
+	root := getProjectRoot()
+	outDir := t.TempDir()
+	validFile := filepath.Join(root, "examples", "todo-api.bp")
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "npm.log")
+	npmStub := filepath.Join(binDir, "npm")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_NPM_LOG\"\n" +
+		"exit 0\n"
+	if err := os.WriteFile(npmStub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_NPM_LOG=" + logFile,
+	}
+	stdout, stderr, exitCode := runBPEnv(t, env, "frontend", "publish", validFile, "--out", outDir)
+	if exitCode != 0 {
+		t.Fatalf("initial publish expected exit code 0, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+	if err := os.MkdirAll(filepath.Join(outDir, "node_modules"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logFile, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, exitCode = runBPEnv(t, env, "frontend", "publish", validFile, "--out", outDir, "--skip-install")
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStr := string(logBytes)
+	if strings.Contains(logStr, "install") {
+		t.Error("frontend publish --skip-install should not run npm install")
+	}
+	if !strings.Contains(logStr, "run build") {
+		t.Error("frontend publish --skip-install should still run npm run build")
+	}
+	if !strings.Contains(logStr, "pack --dry-run") {
+		t.Error("frontend publish --skip-install should still run npm pack --dry-run")
+	}
+	if !strings.Contains(stdout, "Skipped npm install") {
+		t.Error("frontend publish --skip-install should report skipped install")
+	}
+}
+
+func TestDiffWithReactQuery(t *testing.T) {
+	root := getProjectRoot()
+	outDir := t.TempDir()
+	validFile := filepath.Join(root, "examples", "todo-api.bp")
+
+	stdout, stderr, exitCode := runBP(t, "build", validFile, "--out", outDir)
+	if exitCode != 0 {
+		t.Fatalf("initial build failed: exit %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+
+	stdout, stderr, exitCode = runBP(t, "diff", validFile, "--out", outDir, "--react-query")
+	if exitCode != 0 {
+		t.Fatalf("diff failed: exit %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "src/types/react-query.ts") {
+		t.Errorf("expected diff output to mention react-query.ts, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "frontend/package.json") {
+		t.Errorf("expected diff output to mention frontend package changes, got %q", stdout)
+	}
+}
+
+func TestDiffFrontendOnly(t *testing.T) {
+	root := getProjectRoot()
+	outDir := t.TempDir()
+	validFile := filepath.Join(root, "examples", "todo-api.bp")
+
+	stdout, stderr, exitCode := runBP(t, "build", validFile, "--out", outDir, "--frontend-only")
+	if exitCode != 0 {
+		t.Fatalf("frontend-only build failed: exit %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+
+	stdout, stderr, exitCode = runBP(t, "diff", validFile, "--out", outDir, "--frontend-only")
+	if exitCode != 0 {
+		t.Fatalf("frontend-only diff failed: exit %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "No changes") {
+		t.Errorf("expected no changes for matching frontend-only output, got %q", stdout)
 	}
 }
 

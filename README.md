@@ -77,6 +77,21 @@ bp check myservice.bp
 # Compile to TypeScript project
 bp build myservice.bp --out ./generated
 
+# Optional: include TanStack React Query hooks
+bp build myservice.bp --out ./generated --react-query
+
+# Optional: emit only the standalone frontend contract package
+bp build myservice.bp --out ./web-contract --frontend-only --react-query
+
+# Shortcut for frontend-only output
+bp frontend myservice.bp --out ./web-contract --react-query
+
+# Dry-run the frontend package publish flow
+bp frontend publish myservice.bp --out ./web-contract --react-query
+
+# Faster repeat publish checks when deps are already installed
+bp frontend publish myservice.bp --out ./web-contract --react-query --skip-install
+
 # Show version
 bp version
 ```
@@ -89,6 +104,12 @@ npm install
 npm run db:push   # apply schema to postgres
 npm start         # start the server (with /health endpoint)
 ```
+
+Blueprint also generates frontend-safe contract files in `src/types/api.ts`, `src/types/schemas.ts`, and `src/types/client.ts` so LLMs and frontend apps can share one API contract. Add `--react-query` to emit `src/types/react-query.ts` as well.
+
+For monorepos and separate frontend apps, Blueprint also emits a standalone package in `frontend/` that mirrors those files behind a clean package boundary.
+If you only want that package, use `--frontend-only` and Blueprint will write it at the output root instead of generating the backend project.
+There is also a dedicated `bp frontend` shortcut for that workflow.
 
 When you're ready to own the code, eject Blueprint markers:
 
@@ -237,9 +258,22 @@ generated/
 ├── tsconfig.json
 ├── Dockerfile
 ├── .env.example
+├── frontend/
+│   ├── package.json            # Standalone frontend contract package
+│   ├── tsconfig.json
+│   └── src/
+│       ├── index.ts            # Re-exports package entrypoints
+│       ├── api.ts
+│       ├── schemas.ts
+│       ├── client.ts
+│       └── react-query.ts      # Optional React Query hooks (--react-query)
 └── src/
     ├── index.ts                  # Hono server entrypoint
     ├── types.ts                  # TypeScript types, enums, PlanConfig
+    ├── types/api.ts              # Frontend-safe API contract types
+    ├── types/schemas.ts          # Zod schemas for requests/responses
+    ├── types/client.ts           # Typed REST/SSE/WS client
+    ├── types/react-query.ts      # Optional React Query hooks (--react-query)
     ├── models/schema.ts          # Drizzle table definitions
     ├── validation/schemas.ts     # Zod request/response schemas
     ├── lib/
