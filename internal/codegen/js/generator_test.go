@@ -15,22 +15,22 @@ import (
 
 func requireTypeScriptCompile(t *testing.T, dir string) {
 	t.Helper()
-	if _, err := exec.LookPath("npm"); err != nil {
-		t.Skip("npm is not available")
+	if _, err := exec.LookPath("bun"); err != nil {
+		t.Skip("bun is not available")
 	}
 	run := func(timeout time.Duration, args ...string) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "npm", args...)
+		cmd := exec.CommandContext(ctx, "bun", args...)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("npm %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+			t.Fatalf("bun %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 		}
 	}
-	run(3*time.Minute, "install", "--silent")
-	run(2*time.Minute, "exec", "--", "tsc", "--noEmit")
+	run(3*time.Minute, "install")
+	run(2*time.Minute, "run", "build")
 }
 
 func TestHelpers(t *testing.T) {
@@ -942,6 +942,7 @@ func TestGenerateAllFeatures(t *testing.T) {
 		"src/routes/jobs.ts",
 		"src/routes/usage.ts",
 		"src/functions/watermark.ts",
+		"src/impl/functions/internal/watermark.ts",
 		"src/functions/check-quota.ts",
 		"src/pipes/validate-image.ts",
 		"src/middleware/require-auth.ts",
@@ -950,6 +951,7 @@ func TestGenerateAllFeatures(t *testing.T) {
 		"src/schedules/reset-quotas.ts",
 		"test/watermark-success.test.ts",
 		"test/watermark-oversized.test.ts",
+		".blueprint/manifest.json",
 	}
 
 	for _, f := range expectedFiles {
@@ -974,6 +976,13 @@ func TestGenerateAllFeatures(t *testing.T) {
 		t.Error("index should wire cors middleware")
 	}
 
+	rateLimitTest, _ := os.ReadFile(filepath.Join(outDir, "test/watermark-rate-limited.test.ts"))
+	if !strings.Contains(string(rateLimitTest), "let lastRes: any;") ||
+		!strings.Contains(string(rateLimitTest), "lastRes = res;") ||
+		!strings.Contains(string(rateLimitTest), "expect(lastRes.status).toBe(429);") {
+		t.Errorf("last_status assertions should track the last repeated response, got:\n%s", string(rateLimitTest))
+	}
+
 	// Count total generated files
 	count := 0
 	if err := filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
@@ -991,6 +1000,71 @@ func TestGenerateAllFeatures(t *testing.T) {
 		t.Errorf("expected at least 36 generated files, got %d", count)
 	}
 	t.Logf("Generated %d files from all_features.bp", count)
+}
+
+func TestNativeImplScaffoldIsUserOwned(t *testing.T) {
+	src := `blueprint "impl-test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+fn transcode {
+  <- input string
+  -> output string
+
+  impl node {
+    module: "./internal/transcode"
+    func: "runTranscode"
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	wrapperPath := filepath.Join(outDir, "src", "functions", "transcode.ts")
+	wrapper, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wrapper), "from '../impl/functions/internal/transcode.js'") {
+		t.Fatalf("wrapper should import user implementation path, got:\n%s", string(wrapper))
+	}
+
+	stubPath := filepath.Join(outDir, "src", "impl", "functions", "internal", "transcode.ts")
+	custom := []byte("export async function runTranscode(input: string): Promise<string> {\n  return input;\n}\n")
+	if err := os.WriteFile(stubPath, custom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("regenerate error: %v", err)
+	}
+	stub, err := os.ReadFile(stubPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stub) != string(custom) {
+		t.Fatalf("user-owned implementation was overwritten:\n%s", string(stub))
+	}
+
+	manifest, err := os.ReadFile(filepath.Join(outDir, ".blueprint", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestStr := string(manifest)
+	if strings.Contains(manifestStr, "src/impl/functions/internal/transcode.ts") {
+		t.Fatal("user-owned implementation should not be tracked as generated")
+	}
+	if !strings.Contains(manifestStr, "src/functions/transcode.ts") {
+		t.Fatal("generated wrapper should be tracked in manifest")
+	}
 }
 
 func TestExprToJS(t *testing.T) {
@@ -1287,14 +1361,14 @@ func TestDockerfileCMD(t *testing.T) {
 	dockerfile, _ := os.ReadFile(filepath.Join(outDir, "Dockerfile"))
 	dfStr := string(dockerfile)
 
-	if !strings.Contains(dfStr, `CMD ["node", "dist/index.js"]`) {
-		t.Error("Dockerfile should use node dist/index.js with compiled TypeScript")
+	if !strings.Contains(dfStr, `CMD ["bun", "dist/index.js"]`) {
+		t.Error("Dockerfile should use bun dist/index.js with compiled TypeScript")
 	}
-	if !strings.Contains(dfStr, "FROM node:22-slim AS builder") {
+	if !strings.Contains(dfStr, "FROM oven/bun:1 AS builder") {
 		t.Error("Dockerfile should use multi-stage build")
 	}
-	if !strings.Contains(dfStr, "RUN npx tsc") {
-		t.Error("Dockerfile should compile TypeScript during build")
+	if !strings.Contains(dfStr, "RUN bun run build") {
+		t.Error("Dockerfile should compile TypeScript through the Bun build script")
 	}
 }
 
@@ -2659,7 +2733,7 @@ model job {
 POST /api/jobs {
   <- status string required
   |> j = save job { status: status }
-  -> 201 { id: j.id }
+  -> 201 { job_id: j.id }
 }
 
 test create_job_exists {
@@ -2673,7 +2747,8 @@ test create_job_exists {
 
   expect {
     status 201
-    model job where(id == body.id, status == "pending") exists
+    body.job_id is uuid
+    model job where(id == body.job_id, status == "pending") exists
   }
 }`
 	file, errs := parser.ParseFile("test.bp", []byte(src))
@@ -2714,6 +2789,12 @@ test create_job_exists {
 	// Should include eq conditions
 	if !strings.Contains(ts, "eq(schema.job.id") {
 		t.Errorf("should emit eq(schema.job.id, ...); got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "expect(body.job_id).toMatch(") {
+		t.Errorf("body assertions should preserve response key casing; got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "eq(schema.job.id, body.job_id)") {
+		t.Errorf("model assertions should preserve response body key casing; got:\n%s", ts)
 	}
 	if !strings.Contains(ts, "eq(schema.job.status, 'pending')") {
 		t.Errorf("should emit eq(schema.job.status, 'pending'); got:\n%s", ts)

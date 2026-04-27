@@ -113,8 +113,8 @@ bp build my-service.bp
 
 ```bash
 cd generated
-npm install
-npm start
+bun install
+bun run start
 # Listening on port 8080
 ```
 
@@ -184,21 +184,21 @@ DELETE /api/todos/:id {
 bp build todo-api.bp
 
 cd generated
-cp ../.env.example .env
+cp .env.example .env
 # Edit .env and set DATABASE_URL=postgresql://user:pass@localhost/mydb
 ```
 
 ### 3. Apply the database schema
 
 ```bash
-npm install
-npm run db:push    # create tables from Drizzle schema
+bun install
+bunx drizzle-kit push    # create tables from Drizzle schema
 ```
 
 ### 4. Start the server
 
 ```bash
-npm start
+bun run start
 # todo-api listening on port 3000
 ```
 

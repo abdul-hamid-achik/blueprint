@@ -5,7 +5,7 @@ Generated frontend SDK for `todo-api`.
 ## Install
 
 ```bash
-npm install todo-api-frontend
+bun add todo-api-frontend
 ```
 
 ## Usage

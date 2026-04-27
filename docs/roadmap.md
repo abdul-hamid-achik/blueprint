@@ -1,6 +1,6 @@
 # Roadmap
 
-Blueprint's core milestones (M1-M7) are complete: lexer, parser, semantic checker, JS codegen, DX tools, testing/migrations, LLM integration, and release automation. This page outlines what comes next, organized by priority and effort.
+Blueprint has a usable core: lexer, parser, semantic checker, JS/TS codegen, DX tools, testing/migrations, LLM integration, and release automation. This page separates stable surfaces from preview work and outlines what comes next.
 
 ---
 
@@ -9,14 +9,14 @@ Blueprint's core milestones (M1-M7) are complete: lexer, parser, semantic checke
 | Milestone | What | Status |
 |-----------|------|--------|
 | M1 | Lexer + Parser + AST | Done |
-| M2 | Semantic Checker | Done |
-| M3 | JS/TS Codegen (Hono + Drizzle + Zod) | Done |
-| M4 | Developer Experience (`init`, `fmt`, `lint`, `docs`, `dev`, `run`) | Done |
-| M5 | Testing + Migrations (`bp test`, `bp migrate`) | Done |
-| M6 | LLM Integration (`bp generate` via Anthropic API) | Done |
-| M7 | Polish + Launch (GoReleaser, GitHub Actions, runtime packages) | Done |
+| M2 | Semantic Checker | Stable core |
+| M3 | JS/TS Codegen (Hono + Drizzle + Zod) | Stable REST core, preview realtime/worker surfaces |
+| M4 | Developer Experience (`init`, `fmt`, `lint`, `docs`, `dev`, `run`) | Stable core |
+| M5 | Testing + Migrations (`bp test`, `bp migrate`) | Stable core |
+| M6 | LLM Integration (`bp generate` via Anthropic API) | Preview |
+| M7 | Polish + Launch (GoReleaser, GitHub Actions, runtime packages) | In progress |
 
-**365 test cases, 0 failures.** Full language support including REST, STREAM (SSE), WebSocket, workers, schedules, middleware, pipes, functions, external services, subscriptions, and test blocks.
+REST services, models, middleware, pipes, functions, schedules, external calls, and generated Vitest tests are the most mature path. STREAM, WebSocket, workers, subscriptions, deployment automation, and LSP are available but should be treated as preview until the gaps below are closed.
 
 ---
 
@@ -140,6 +140,18 @@ Medium-effort features that expand Blueprint's reach.
 - GitHub Action: `uses: blueprint-lang/setup-bp@v1`
 - Pre-commit hook integration
 
+### Vite Frontend App Target
+
+**Why:** The current frontend output is a TypeScript SDK package. That is good for monorepos and shared contracts, but teams often want a runnable Vite app scaffold that works with npm, pnpm, yarn, or Bun.
+
+**Decision:** Keep the SDK/package target separate from a future app target. A Vite app should consume the generated client instead of being mixed into the backend service output.
+
+**What to build:**
+- `bp frontend app <file.bp> --target vite-react --out web`
+- Generate `index.html`, `vite.config.ts`, `src/main.tsx`, `src/App.tsx`, and a typed API client wired to the generated contract.
+- Keep `package.json` scripts package-manager neutral (`dev`, `build`, `preview`) so users can run them with their package manager of choice.
+- Optionally support `--package-manager bun|npm|pnpm|yarn` for lockfile/install commands, without changing the generated source.
+
 ### Package Registry
 
 **Why:** Sharing reusable middleware, pipes, and types across projects.
@@ -253,7 +265,7 @@ Internal improvements for maintainability and performance.
 
 ### Test Coverage Improvements
 
-**Current state:** 365 test cases across 7 files, but critical gaps exist.
+**Current state:** the suite covers the main parser, checker, and codegen paths, but critical gaps remain.
 
 | Module | Coverage | Gap |
 |--------|----------|-----|

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "generated": {
+    ".env.example": "sha256:157efb94af438019e3fd5abc9c8f63cff1c27af7a210e9b96c68a13c2bb45d4d",
+    ".gitignore": "sha256:7d3c4cb2c72188e0297ada4116bc46f8929af50a18a3ebf3e045bbd9b09658e0",
+    "Dockerfile": "sha256:2b647404b1fbc247ebc3aaeb3492650c4869739364ad2141ffa6b8c1d60aa295",
+    "frontend/.gitignore": "sha256:e8bc935ce727f1809c792f4c5d26c5fc75ba2b7df7fc9390c56c8892f6a6007f",
+    "frontend/README.md": "sha256:377c687cefa66906e7b0b3b7a28d1398e52a2aceca50edec0a2dd16eb4f35104",
+    "frontend/package.json": "sha256:f4b2db6aa8d2e34cc1d9be2e070db78c5145691ab3984f260c95606b63529f00",
+    "frontend/src/api.ts": "sha256:4a49d6b5a18164c3c3079b6b55102b218c680d47a96032efc4105918cb0c3159",
+    "frontend/src/client.ts": "sha256:59d2ced9a46d58f5980d14453e834076d218178c0d13cc64dd9e152afdd32b2f",
+    "frontend/src/index.ts": "sha256:144eb06e5ed1155b47483d4b837382d55a15a8534592786ad381decee98b731b",
+    "frontend/src/schemas.ts": "sha256:9ff2f81a39ab0be2175a7934a3f1f686d299041576e504beeb9546422209adb3",
+    "frontend/tsconfig.json": "sha256:c01c3263c79bfe7999b6f3367c19a4a9b99d2d5ff4fcea18fbcdf50b2a634aa1",
+    "package.json": "sha256:0a237ee0abfdf8c4073aaa8fa49ab551d2f62490cd571d225ce39b311cbecf84",
+    "src/index.ts": "sha256:892f496365eefe2a167a1517bf184afa7b481c1bbac788bcd610f5c7f6967c7f",
+    "src/lib/env.ts": "sha256:a943770d1f7b9b10ff57bb7b00b76b441613272992ba5231c0c1b5eb9d257b9d",
+    "src/lib/errors.ts": "sha256:fe140c92d8b957886c363d7308c1d72d5d62fbdde23e103202bc4252e65a3256",
+    "src/routes/health.ts": "sha256:5a6379b48c9cfc0ce5f9b2adfaa5f9df6f7b4ddb8828379a8805ce24ebd0f6f8",
+    "src/routes/hello.ts": "sha256:4548093bb09c459f5d4adfc80a0c045c4653dd0c022298ae7edea2dd90d5c97f",
+    "src/types/api.ts": "sha256:4a49d6b5a18164c3c3079b6b55102b218c680d47a96032efc4105918cb0c3159",
+    "src/types/client.ts": "sha256:59d2ced9a46d58f5980d14453e834076d218178c0d13cc64dd9e152afdd32b2f",
+    "src/types/schemas.ts": "sha256:9ff2f81a39ab0be2175a7934a3f1f686d299041576e504beeb9546422209adb3",
+    "src/validation/schemas.ts": "sha256:2f9bc0ce4027609e527aa72aa4c913aba3c533ebe4f05af9c9d388ed4a08adfd",
+    "tsconfig.json": "sha256:f8a173654b15b5576557d6130237e123f95ba761e9c5bb039a8b91f3b71f15b1"
+  }
+}

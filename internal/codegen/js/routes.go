@@ -375,6 +375,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	for _, ep := range endpoints {
 		ic.merge(g.collectImports(ep.Stmts))
 	}
+	if needsWebhookAuth {
+		ic.needsEnv = true
+	}
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
 

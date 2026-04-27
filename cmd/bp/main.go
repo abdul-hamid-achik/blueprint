@@ -79,8 +79,8 @@ func main() {
 		if len(os.Args) >= 3 && os.Args[2] == "publish" {
 			if hasHelpFlag(os.Args[3:]) {
 				printCommandHelp("frontend publish", "frontend publish <file.bp> [--out <dir>] [--react-query] [--skip-install]",
-					"Generate the standalone frontend SDK package, install dependencies, build it, and run `npm pack --dry-run`.",
-					[][2]string{{"--out <dir>", "Output directory (default: generated/)"}, {"--react-query", "Generate React Query hooks and add frontend deps"}, {"--skip-install", "Skip `npm install` before build and pack dry-run"}})
+					"Generate the standalone frontend SDK package, install dependencies, build it, and run `bun pm pack --dry-run`.",
+					[][2]string{{"--out <dir>", "Output directory (default: generated/)"}, {"--react-query", "Generate React Query hooks and add frontend deps"}, {"--skip-install", "Skip `bun install` before build and pack dry-run"}})
 				os.Exit(0)
 			}
 			if len(os.Args) < 4 {
@@ -104,7 +104,7 @@ func main() {
 		}
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("frontend", "frontend <file.bp> [--out <dir>] [--react-query]",
-				"Generate only the standalone frontend SDK package.\nUse `bp frontend publish` to build and dry-run the npm package flow.",
+				"Generate only the standalone frontend SDK package.\nUse `bp frontend publish` to build and dry-run the package flow.",
 				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}, {"--react-query", "Generate React Query hooks and add frontend deps"}})
 			os.Exit(0)
 		}
@@ -256,7 +256,7 @@ func main() {
 	case "run":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("run", "run <file.bp> [--out <dir>]",
-				"Build and start the server. Runs npm install if needed.",
+				"Build and start the server. Runs bun install if needed.",
 				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
 			os.Exit(0)
 		}
@@ -511,42 +511,12 @@ func cmdBuildWithOptions(filename, outDir string, reactQuery, frontendOnly, pres
 		return 1
 	}
 
-	var preservedNodeModules string
-	if preserveNodeModules {
-		nodeModulesPath := filepath.Join(outDir, "node_modules")
-		if info, err := os.Stat(nodeModulesPath); err == nil && info.IsDir() {
-			preservedNodeModules = filepath.Join(filepath.Dir(outDir), ".bp-node-modules-preserve")
-			_ = os.RemoveAll(preservedNodeModules)
-			if err := os.Rename(nodeModulesPath, preservedNodeModules); err != nil {
-				fmt.Fprintf(os.Stderr, "Error preserving node_modules: %s\n", err)
-				return 2
-			}
-			defer func() {
-				_ = os.RemoveAll(preservedNodeModules)
-			}()
-		}
-	}
-
-	// Clean output directory to remove stale files from previous builds
-	if info, err := os.Stat(outDir); err == nil && info.IsDir() {
-		if err := os.RemoveAll(outDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Error cleaning output directory: %s\n", err)
-			return 2
-		}
-	}
+	_ = preserveNodeModules // Builds are manifest-based and no longer remove node_modules.
 
 	gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly)
 	if err := gen.Generate(file, outDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
 		return 4
-	}
-
-	if preservedNodeModules != "" {
-		restoredNodeModules := filepath.Join(outDir, "node_modules")
-		if err := os.Rename(preservedNodeModules, restoredNodeModules); err != nil {
-			fmt.Fprintf(os.Stderr, "Error restoring node_modules: %s\n", err)
-			return 2
-		}
 	}
 
 	fmt.Printf("Built %s -> %s/\n", filename, outDir)
@@ -584,12 +554,12 @@ func cmdFrontendPublish(filename, outDir string, reactQuery, skipInstall bool) i
 		struct {
 			label string
 			args  []string
-		}{label: "Running npm pack dry run", args: []string{"pack", "--dry-run"}},
+		}{label: "Running bun pack dry run", args: []string{"pm", "pack", "--dry-run"}},
 	)
 
 	for _, step := range steps {
 		fmt.Printf("%s in %s...\n", step.label, outDir)
-		cmd := exec.Command("npm", step.args...)
+		cmd := exec.Command("bun", step.args...)
 		cmd.Dir = outDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -599,7 +569,7 @@ func cmdFrontendPublish(filename, outDir string, reactQuery, skipInstall bool) i
 		}
 	}
 	if skipInstall {
-		fmt.Printf("Skipped npm install in %s.\n", outDir)
+		fmt.Printf("Skipped bun install in %s.\n", outDir)
 	}
 
 	fmt.Printf("Frontend package in %s is ready for publish review.\n", outDir)
@@ -888,9 +858,9 @@ func cmdDev(filename, outDir string) int {
 	}
 }
 
-// startNodeProcess starts `npm start` in the given output directory.
+// startNodeProcess starts `bun run start` in the given output directory.
 func startNodeProcess(outDir string) *exec.Cmd {
-	cmd := exec.Command("npm", "start")
+	cmd := exec.Command("bun", "run", "start")
 	cmd.Dir = outDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -907,21 +877,21 @@ func cmdRun(filename, outDir string) int {
 		return code
 	}
 
-	// npm install if node_modules is absent
+	// Install dependencies if node_modules is absent.
 	if _, err := os.Stat(filepath.Join(outDir, "node_modules")); os.IsNotExist(err) {
 		fmt.Printf("Installing dependencies in %s...\n", outDir)
-		install := exec.Command("npm", "install")
+		install := exec.Command("bun", "install")
 		install.Dir = outDir
 		install.Stdout = os.Stdout
 		install.Stderr = os.Stderr
 		if err := install.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "npm install failed: %s\n", err)
+			fmt.Fprintf(os.Stderr, "bun install failed: %s\n", err)
 			return 2
 		}
 	}
 
 	fmt.Printf("Starting server in %s...\n", outDir)
-	start := exec.Command("npm", "start")
+	start := exec.Command("bun", "run", "start")
 	start.Dir = outDir
 	start.Stdout = os.Stdout
 	start.Stderr = os.Stderr
@@ -939,18 +909,18 @@ func cmdTest(filename, outDir string) int {
 
 	if _, err := os.Stat(filepath.Join(outDir, "node_modules")); os.IsNotExist(err) {
 		fmt.Printf("Installing dependencies in %s...\n", outDir)
-		install := exec.Command("npm", "install")
+		install := exec.Command("bun", "install")
 		install.Dir = outDir
 		install.Stdout = os.Stdout
 		install.Stderr = os.Stderr
 		if err := install.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "npm install failed: %s\n", err)
+			fmt.Fprintf(os.Stderr, "bun install failed: %s\n", err)
 			return 2
 		}
 	}
 
 	fmt.Printf("Running tests in %s...\n", outDir)
-	cmd := exec.Command("npx", "vitest", "run")
+	cmd := exec.Command("bun", "run", "test")
 	cmd.Dir = outDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -967,12 +937,12 @@ func cmdMigrate(filename, outDir, subCmd string) int {
 
 	if _, err := os.Stat(filepath.Join(outDir, "node_modules")); os.IsNotExist(err) {
 		fmt.Printf("Installing dependencies in %s...\n", outDir)
-		install := exec.Command("npm", "install")
+		install := exec.Command("bun", "install")
 		install.Dir = outDir
 		install.Stdout = os.Stdout
 		install.Stderr = os.Stderr
 		if err := install.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "npm install failed: %s\n", err)
+			fmt.Fprintf(os.Stderr, "bun install failed: %s\n", err)
 			return 2
 		}
 	}
@@ -991,7 +961,7 @@ func cmdMigrate(filename, outDir, subCmd string) int {
 	}
 
 	fmt.Printf("Running drizzle-kit %s in %s...\n", subCmd, outDir)
-	cmd := exec.Command("npx", "drizzle-kit", subCmd)
+	cmd := exec.Command("bunx", "drizzle-kit", subCmd)
 	cmd.Dir = outDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1445,7 +1415,7 @@ complete -c bp -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
 complete -c bp -l out -d "Output directory"
 complete -c bp -l react-query -d "Generate React Query hooks"
 complete -c bp -l frontend-only -d "Emit only the standalone frontend package"
-complete -c bp -l skip-install -d "Skip npm install before frontend publish dry-run"
+complete -c bp -l skip-install -d "Skip bun install before frontend publish dry-run"
 complete -c bp -l write -d "Write output back to file"
 complete -c bp -l check -d "Check if formatted (CI mode)"
 complete -c bp -l tag -d "Docker image tag"
@@ -1842,7 +1812,7 @@ func cmdDoctor() int {
 	}{
 		{Name: "Go", Command: "go version", Required: false},
 		{Name: "Node.js", Command: "node --version", Required: true},
-		{Name: "npm", Command: "npm --version", Required: true},
+		{Name: "Bun", Command: "bun --version", Required: true},
 		{Name: "Docker", Command: "docker --version", Required: false},
 		{Name: "PostgreSQL", Command: "psql --version", Required: false},
 		{Name: "Redis", Command: "redis-cli --version", Required: false},
@@ -1931,7 +1901,7 @@ func cmdDoctor() int {
 		return 0
 	} else {
 		fmt.Println("❌ Some required dependencies are missing.")
-		fmt.Println("   Install Node.js and npm to run generated projects.")
+		fmt.Println("   Install Node.js and Bun to run generated projects.")
 		return 1
 	}
 }

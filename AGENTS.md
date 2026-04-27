@@ -108,7 +108,7 @@ go build -o bin/bp ./cmd/bp
 ./bin/bp build testdata/valid/all_features.bp --out generated
 
 # Verify generated TypeScript has 0 errors
-cd generated && npm install && npx tsc --noEmit
+cd generated && bun install && bun run build
 ```
 
 All 169 top-level tests (296 including subtests) must pass. The generated TypeScript must have 0 `tsc` errors.
@@ -162,7 +162,11 @@ and(...Object.entries(filters).map(([k, v]) => eq((schema.model as any)[k], v)))
 
 Functions with `impl node { module: "./internal/X" }` generate:
 1. `src/functions/<name>.ts` — wrapper that imports and re-exports
-2. `src/functions/internal/X.ts` — stub file for the developer to implement
+2. `src/impl/functions/internal/X.ts` — user-owned stub file for the developer to implement
+
+Implementation stubs must be marked `UserOwned: true`. `bp build` writes
+generated files through `.blueprint/manifest.json`, but user-owned files are
+scaffolded only when missing and must not be overwritten on later builds.
 
 ---
 
@@ -185,10 +189,10 @@ These are acknowledged gaps between spec and current implementation:
 - `bp check` — ✅ implemented (`--json` flag for CI output)
 - `bp build` — ✅ implemented
 - `bp diff` — ✅ implemented (preview changes before building)
-- `bp run` — ✅ implemented (build + npm install + npm start)
+- `bp run` — ✅ implemented (build + bun install + bun run start)
 - `bp dev` — ✅ implemented (polling watcher + subprocess restart)
-- `bp test` — ✅ implemented (build + npm install if needed + npx vitest run)
-- `bp migrate` — ✅ implemented (build + npx drizzle-kit generate|push|studio|check)
+- `bp test` — ✅ implemented (build + bun install if needed + bun run test)
+- `bp migrate` — ✅ implemented (build + bunx drizzle-kit generate|push|studio|check)
 - `bp deploy` — ✅ implemented (Docker build + optional Fly.io deploy)
 - `bp generate` — ✅ implemented (`internal/generate/generate.go`, needs `ANTHROPIC_API_KEY`)
 - `bp init` — ✅ implemented (`cmd/bp/main.go`)

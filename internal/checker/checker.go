@@ -225,8 +225,21 @@ func (c *Checker) checkContent(n *ast.Content) {
 
 func (c *Checker) checkFn(n *ast.Fn) {
 	c.checkSnakeCase(n.Name, "fn", n.Loc)
+	for _, inp := range n.Inputs {
+		c.checkTypeRef(inp.Type)
+		c.checkConstraints(inp.Constraints)
+	}
+	for _, out := range n.Outputs {
+		c.checkExpr(out.Value)
+	}
+	if n.Impl != nil {
+		for _, kv := range n.Impl.Entries {
+			c.checkExpr(kv.Value)
+		}
+	}
 	if n.Logic != nil {
 		c.checkTryRecoverNesting(n.Logic.Stmts, n.Loc)
+		c.checkArrowStmtExprs(n.Logic.Stmts)
 	}
 }
 
@@ -236,12 +249,15 @@ func (c *Checker) checkPipe(n *ast.Pipe) {
 	c.checkSnakeCase(n.Name, "pipe", n.Loc)
 	c.checkArrowOrdering(n.Stmts, n.Loc, "pipe")
 	c.checkTryRecoverNesting(n.Stmts, n.Loc)
+	c.checkArrowStmtExprs(n.Stmts)
 }
 
 // --- Middleware ---
 
 func (c *Checker) checkMiddleware(n *ast.Middleware) {
 	c.checkSnakeCase(n.Name, "middleware", n.Loc)
+	c.checkArrowStmtExprs(n.Before)
+	c.checkArrowStmtExprs(n.After)
 }
 
 // --- Endpoint ---
@@ -254,7 +270,12 @@ func (c *Checker) checkEndpoint(n *ast.Endpoint) {
 		if m.Kind == "use" && m.Use != nil {
 			c.checkMiddlewareRef(m.Use.Name, m.Loc)
 		}
+		if m.Value != nil {
+			c.checkExpr(m.Value)
+		}
+		c.checkEndpointAuth(m)
 	}
+	c.checkArrowStmtExprs(n.Stmts)
 }
 
 // --- StreamEndpoint ---
@@ -267,6 +288,15 @@ func (c *Checker) checkStreamEndpoint(n *ast.StreamEndpoint) {
 		if m.Kind == "use" && m.Use != nil {
 			c.checkMiddlewareRef(m.Use.Name, m.Loc)
 		}
+		if m.Value != nil {
+			c.checkExpr(m.Value)
+		}
+		c.checkEndpointAuth(m)
+	}
+	c.checkArrowStmtExprs(n.Stmts)
+	for _, h := range n.Handlers {
+		c.checkExpr(h.Condition)
+		c.checkArrowStmtExprs(h.Body)
 	}
 }
 
@@ -278,7 +308,14 @@ func (c *Checker) checkWsEndpoint(n *ast.WsEndpoint) {
 		if m.Kind == "use" && m.Use != nil {
 			c.checkMiddlewareRef(m.Use.Name, m.Loc)
 		}
+		if m.Value != nil {
+			c.checkExpr(m.Value)
+		}
+		c.checkEndpointAuth(m)
 	}
+	c.checkArrowStmtExprs(n.OnConnect)
+	c.checkArrowStmtExprs(n.OnMessage)
+	c.checkArrowStmtExprs(n.OnDisconnect)
 }
 
 // --- Duplicate Endpoint ---
@@ -301,6 +338,14 @@ func (c *Checker) checkWorker(n *ast.Worker) {
 	c.checkSnakeCase(n.Name, "worker", n.Loc)
 	c.checkArrowOrdering(n.Stmts, n.Loc, "worker")
 	c.checkTryRecoverNesting(n.Stmts, n.Loc)
+	c.checkArrowStmtExprs(n.Stmts)
+	c.checkArrowStmtExprs(n.OnFail)
+	for _, m := range n.Meta {
+		c.checkExpr(m.Value)
+		for _, kv := range m.Extra {
+			c.checkExpr(kv.Value)
+		}
+	}
 }
 
 // --- Schedule ---
@@ -308,12 +353,17 @@ func (c *Checker) checkWorker(n *ast.Worker) {
 func (c *Checker) checkSchedule(n *ast.Schedule) {
 	c.checkSnakeCase(n.Name, "schedule", n.Loc)
 	c.checkArrowOrdering(n.Stmts, n.Loc, "schedule")
+	c.checkArrowStmtExprs(n.Stmts)
 }
 
 // --- Subscribe ---
 
 func (c *Checker) checkSubscribe(n *ast.Subscribe) {
 	c.checkArrowOrdering(n.Stmts, n.Loc, "subscribe")
+	if n.From != "" && !c.hasExternal(n.From) {
+		c.addError(n.Loc, fmt.Sprintf("subscribe references unknown external %q", n.From), "Declare it with: external \"service-name\" { ... }")
+	}
+	c.checkArrowStmtExprs(n.Stmts)
 }
 
 // --- Enum ---
@@ -505,6 +555,13 @@ func (c *Checker) checkSaveSchema(n *ast.SaveSchema) {
 
 func (c *Checker) checkTest(n *ast.Test) {
 	c.checkSnakeCase(n.Name, "test", n.Loc)
+	c.checkArrowStmtExprs(n.Setup)
+	c.checkArrowStmtExprs(n.Cleanup)
+	if n.Request != nil {
+		for _, kv := range n.Request.Entries {
+			c.checkExpr(kv.Value)
+		}
+	}
 }
 
 // --- TestGroup ---
@@ -537,6 +594,300 @@ func (c *Checker) checkTestGroup(n *ast.TestGroup) {
 			)
 		}
 	}
+}
+
+// ═══════════════════════════════════════════════
+// Expression Reference Checks
+// ═══════════════════════════════════════════════
+
+func (c *Checker) checkConstraints(constraints []*ast.Constraint_) {
+	for _, con := range constraints {
+		c.checkExpr(con.Value)
+	}
+}
+
+func (c *Checker) checkArrowStmtExprs(stmts []ast.ArrowStmt) {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *ast.InputStmt:
+			c.checkTypeRef(s.Type)
+			c.checkConstraints(s.Constraints)
+		case *ast.StepStmt:
+			c.checkExpr(s.Expr)
+		case *ast.GuardStmt:
+			c.checkExpr(s.Condition)
+		case *ast.WhenStmt:
+			c.checkExpr(s.Condition)
+			c.checkExpr(s.Inline)
+			c.checkArrowStmtExprs(s.Body)
+		case *ast.OutputStmt:
+			c.checkExpr(s.Value)
+		case *ast.TryRecover:
+			c.checkArrowStmtExprs(s.Try)
+			c.checkArrowStmtExprs(s.Recover)
+		}
+	}
+}
+
+func (c *Checker) checkExpr(expr ast.Expr) {
+	if expr == nil {
+		return
+	}
+	switch e := expr.(type) {
+	case *ast.BinaryExpr:
+		c.checkExpr(e.Left)
+		c.checkExpr(e.Right)
+	case *ast.UnaryExpr:
+		c.checkExpr(e.Operand)
+	case *ast.FnCall:
+		c.checkFnCall(e)
+		for _, arg := range e.Args {
+			c.checkExpr(arg)
+		}
+	case *ast.FieldAccess:
+		c.checkExpr(e.Base)
+	case *ast.IndexAccess:
+		c.checkExpr(e.Base)
+		c.checkExpr(e.Index)
+	case *ast.ParenExpr:
+		c.checkExpr(e.Expr)
+	case *ast.ListExpr:
+		for _, el := range e.Elements {
+			c.checkExpr(el)
+		}
+	case *ast.BlockExpr:
+		for _, kv := range e.Entries {
+			c.checkExpr(kv.Value)
+		}
+	}
+}
+
+func (c *Checker) checkFnCall(call *ast.FnCall) {
+	if call == nil {
+		return
+	}
+	if isCheckerBuiltinFn(call.Name) {
+		if call.Name == "call" {
+			c.checkExternalCall(call)
+		}
+		if isStorageOperation(call.Name) && !c.hasBlueprintEntry("storage") {
+			c.addError(call.Loc,
+				fmt.Sprintf("storage operation %q requires blueprint storage", call.Name),
+				"Add `storage s3` to the blueprint block or remove the storage operation",
+			)
+		}
+		if call.Name == "transition" && len(call.Args) > 0 {
+			if id, ok := call.Args[0].(*ast.Ident); ok {
+				if sym := c.global.Lookup(id.Name); sym == nil || sym.Kind != SymType {
+					c.addError(call.Loc, fmt.Sprintf("transition references unknown state %q", id.Name), "Declare it with: state <name> { ... }")
+				}
+			}
+		}
+		if call.Name == "upgrade_save" && len(call.Args) > 0 {
+			if id, ok := call.Args[0].(*ast.Ident); ok {
+				if sym := c.global.Lookup(id.Name); sym == nil || sym.Kind != SymSave {
+					c.addError(call.Loc, fmt.Sprintf("upgrade_save references unknown save %q", id.Name), "Declare it with: save <name> { ... }")
+				}
+			}
+		}
+		return
+	}
+	if sym := c.global.Lookup(call.Name); sym != nil {
+		switch sym.Kind {
+		case SymFn, SymPipe, SymModel:
+			return
+		default:
+			c.addError(call.Loc,
+				fmt.Sprintf("%q is a %s, not a function or pipe", call.Name, sym.Kind),
+				"Use a declared fn or pipe name here",
+			)
+			return
+		}
+	}
+
+	hint := "Declare it with: fn " + call.Name + " { ... }"
+	candidates := append(c.global.NamesOfKind(SymFn), c.global.NamesOfKind(SymPipe)...)
+	for name := range checkerBuiltinFns {
+		candidates = append(candidates, name)
+	}
+	if suggestion := suggestName(call.Name, candidates); suggestion != "" {
+		hint += fmt.Sprintf("; did you mean %q?", suggestion)
+	}
+	c.addError(call.Loc, fmt.Sprintf("unknown function %q", call.Name), hint)
+}
+
+func (c *Checker) checkExternalCall(call *ast.FnCall) {
+	if len(call.Args) == 0 {
+		c.addError(call.Loc, "call requires an external service name", "Use: call service_name GET /path")
+		return
+	}
+	service, ok := call.Args[0].(*ast.Ident)
+	if !ok {
+		c.addError(call.Loc, "call service must be an identifier", "Use: call service_name GET /path")
+		return
+	}
+	if !c.hasExternal(service.Name) {
+		c.addError(call.Loc,
+			fmt.Sprintf("call references unknown external %q", service.Name),
+			"Declare it with: external \"service-name\" { ... }",
+		)
+	}
+}
+
+func (c *Checker) checkEndpointAuth(meta *ast.EndpointMeta) {
+	if meta == nil || meta.Kind != "auth" || meta.Value == nil {
+		return
+	}
+	fn, ok := meta.Value.(*ast.FnCall)
+	if !ok {
+		if id, isIdent := meta.Value.(*ast.Ident); isIdent && id.Name == "webhook_sig" {
+			c.addError(meta.Loc,
+				"auth webhook_sig requires using(secret.NAME)",
+				"Use: auth webhook_sig using(secret.WEBHOOK_SECRET)",
+			)
+		}
+		return
+	}
+	if fn.Name != "webhook_sig" {
+		return
+	}
+	secretName, ok := webhookSignatureSecretName(fn)
+	if !ok {
+		c.addError(meta.Loc,
+			"auth webhook_sig requires using(secret.NAME)",
+			"Use: auth webhook_sig using(secret.WEBHOOK_SECRET)",
+		)
+		return
+	}
+	sym := c.global.Lookup(secretName)
+	if sym == nil || sym.Kind != SymSecret {
+		c.addError(meta.Loc,
+			fmt.Sprintf("auth webhook_sig references unknown secret %q", secretName),
+			"Declare it with: secret "+secretName+" required",
+		)
+	}
+}
+
+func webhookSignatureSecretName(fn *ast.FnCall) (string, bool) {
+	if fn == nil || fn.Name != "webhook_sig" || len(fn.Args) == 0 {
+		return "", false
+	}
+	using, ok := fn.Args[0].(*ast.FnCall)
+	if !ok || using.Name != "using" || len(using.Args) == 0 {
+		return "", false
+	}
+	field, ok := using.Args[0].(*ast.FieldAccess)
+	if !ok {
+		return "", false
+	}
+	base, ok := field.Base.(*ast.Ident)
+	if !ok || base.Name != "secret" || field.Field == "" {
+		return "", false
+	}
+	return field.Field, true
+}
+
+var checkerBuiltinFns = map[string]bool{
+	"api_key":          true,
+	"archive":          true,
+	"basic":            true,
+	"bearer":           true,
+	"broadcast":        true,
+	"call":             true,
+	"clock":            true,
+	"count":            true,
+	"delete":           true,
+	"delete_s3_object": true,
+	"download":         true,
+	"emit":             true,
+	"event":            true,
+	"export_bundle":    true,
+	"fetch":            true,
+	"fixture":          true,
+	"import_bundle":    true,
+	"inject":           true,
+	"join":             true,
+	"jwt":              true,
+	"leave":            true,
+	"level":            true,
+	"limit":            true,
+	"log":              true,
+	"map":              true,
+	"offset":           true,
+	"on":               true,
+	"order":            true,
+	"paginate":         true,
+	"pipe":             true,
+	"publish":          true,
+	"query":            true,
+	"queue":            true,
+	"rollback":         true,
+	"save":             true,
+	"seed":             true,
+	"sleep":            true,
+	"sum":              true,
+	"timeout":          true,
+	"track":            true,
+	"transition":       true,
+	"upgrade_save":     true,
+	"update":           true,
+	"upload":           true,
+	"using":            true,
+	"webhook_sig":      true,
+	"where":            true,
+}
+
+func isCheckerBuiltinFn(name string) bool {
+	return checkerBuiltinFns[name]
+}
+
+func isStorageOperation(name string) bool {
+	switch name {
+	case "upload", "download", "delete_s3_object":
+		return true
+	}
+	return false
+}
+
+func (c *Checker) hasBlueprintEntry(key string) bool {
+	if c.file == nil || c.file.Blueprint == nil {
+		return false
+	}
+	for _, entry := range c.file.Blueprint.Entries {
+		if entry.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Checker) hasExternal(name string) bool {
+	want := normalizeExternalName(name)
+	for _, block := range c.file.Blocks {
+		if ext, ok := block.(*ast.External); ok && normalizeExternalName(ext.Name) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeExternalName(name string) string {
+	name = strings.Trim(name, `"`)
+	name = strings.ToLower(name)
+	var b strings.Builder
+	prevUnderscore := false
+	for _, r := range name {
+		if r == '-' || r == ' ' || r == '.' {
+			if !prevUnderscore {
+				b.WriteByte('_')
+				prevUnderscore = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevUnderscore = r == '_'
+	}
+	return b.String()
 }
 
 // ═══════════════════════════════════════════════

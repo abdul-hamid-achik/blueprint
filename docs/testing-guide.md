@@ -216,7 +216,7 @@ expect {
 
 ```bp
 expect {
-  duration < 2s       # response must complete within 2 seconds
+  duration < 2s       # parsed today; codegen emits a TODO marker
 }
 ```
 
@@ -379,9 +379,7 @@ If you've already built:
 
 ```bash
 cd generated
-npm test
-# or
-npx vitest run
+bun run test
 ```
 
 ### Watch Mode
@@ -390,7 +388,7 @@ From the generated directory:
 
 ```bash
 cd generated
-npx vitest --watch
+bunx vitest --watch
 ```
 
 ---
@@ -428,7 +426,7 @@ All referenced tests must be defined in the same file. The checker validates tha
 | `body.active is bool` | `expect(typeof body.active).toBe('boolean')` | Boolean type check |
 | `body.url exists` | `expect(body.url).toBeDefined()` | Existence check |
 | `header.X == "val"` | `expect(res.headers.get('X')).toBe('val')` | Header check |
-| `duration < 2s` | `expect(elapsed).toBeLessThan(2000)` | Timing check |
+| `duration < 2s` | TODO marker | Timing checks are not generated yet |
 | `model X where(...) exists` | Drizzle select + `toBeGreaterThan(0)` | Database record exists |
 | `last_status 429` | `expect(lastRes.status).toBe(429)` | Last status (with `repeat`) |
 
@@ -442,7 +440,7 @@ Make sure you've installed dependencies in the generated directory:
 
 ```bash
 cd generated
-npm install
+bun install
 ```
 
 ### Database tests fail with connection errors
@@ -451,7 +449,7 @@ Ensure `DATABASE_URL` is set in a `.env` file inside the generated directory:
 
 ```bash
 cd generated
-cp ../.env.example .env
+cp .env.example .env
 # Edit .env with your database credentials
 ```
 

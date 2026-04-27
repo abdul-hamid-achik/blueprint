@@ -6,7 +6,7 @@ titleTemplate: A declarative language for web services
 hero:
   name: Blueprint
   text: A declarative language for web services
-  tagline: Describe what your service does. Blueprint compiles it to production-ready TypeScript.
+  tagline: Describe what your service does. Blueprint compiles it to typed TypeScript services.
   image:
     src: /logo.svg
     alt: Blueprint
@@ -45,7 +45,7 @@ POST /api/todos {
 }
 ```
 
-Get this (production-ready TypeScript with Hono + Drizzle + Zod):
+Get this (TypeScript with Hono + Drizzle + Zod):
 
 ```typescript
 todosRoutes.post('/api/todos',
@@ -113,7 +113,7 @@ POST /api/users {
 
 ```bash
 bp build my-api.bp
-cd generated && npm install && npm start
+cd generated && bun install && bun run start
 ```
 
 ## Philosophy

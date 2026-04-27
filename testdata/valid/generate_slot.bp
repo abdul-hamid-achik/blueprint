@@ -4,6 +4,15 @@ blueprint "test-generate" {
   runtime  node
 }
 
+fn transform {
+  <- data string
+  -> result string
+
+  impl node {
+    module: "./internal/transform"
+  }
+}
+
 POST /api/process {
   <- data string required
 

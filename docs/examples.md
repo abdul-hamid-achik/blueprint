@@ -1,6 +1,6 @@
 # Examples
 
-Worked examples from minimal to production-ready.
+Worked examples from minimal to more complete service shapes.
 
 ## Hello World
 
@@ -28,7 +28,7 @@ GET /api/hello/:name {
 
 ```bash
 bp build hello-world.bp
-cd generated && npm install && npm start
+cd generated && bun install && bun run start
 curl http://localhost:3000/api/hello/world
 # {"message":"Hello, world!"}
 ```

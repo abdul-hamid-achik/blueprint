@@ -122,8 +122,8 @@ func (g *Generator) collectImports(stmts []ast.ArrowStmt) *importCollector {
 			if g.declaredModels[v.Name] {
 				return
 			}
-			if v.Name == "upload" || v.Name == "download" {
-				ic.storageOps[v.Name] = true
+			if v.Name == "upload" || v.Name == "download" || v.Name == "delete_s3_object" {
+				ic.storageOps[toCamelCase(v.Name)] = true
 				return
 			}
 			// call <service> METHOD /path — track the service for external import

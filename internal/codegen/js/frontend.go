@@ -875,9 +875,9 @@ func (g *Generator) genFrontendPackageREADME(baseDir string, bp *ast.Blueprint, 
 	b.WriteString("`.\n\n")
 	b.WriteString("## Install\n\n")
 	b.WriteString("```bash\n")
-	b.WriteString("npm install " + packageName + "\n")
+	b.WriteString("bun add " + packageName + "\n")
 	if hasReactQuery {
-		b.WriteString("npm install @tanstack/react-query react\n")
+		b.WriteString("bun add @tanstack/react-query react\n")
 	}
 	b.WriteString("```\n\n")
 	b.WriteString("## Usage\n\n")

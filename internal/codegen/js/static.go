@@ -558,6 +558,20 @@ export async function download(bucket: string, key: string): Promise<ReadableStr
   return res.Body as any;
 }
 
+export async function deleteS3Object(urlOrBucket: string, key?: string): Promise<void> {
+  let bucket = urlOrBucket;
+  let objectKey = key;
+  if (!objectKey && urlOrBucket.startsWith('s3://')) {
+    const parsed = new URL(urlOrBucket);
+    bucket = parsed.hostname;
+    objectKey = parsed.pathname.replace(/^\//, '');
+  }
+  if (!objectKey) {
+    throw new Error('deleteS3Object requires a key or s3:// URL');
+  }
+  await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }));
+}
+
 export async function deleteObject(bucket: string, key: string): Promise<void> {
   await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }
@@ -597,20 +611,20 @@ func (g *Generator) genDockerfile() codegen.OutputFile {
 	if port == 0 {
 		port = 3000
 	}
-	content := fmt.Sprintf(`FROM node:22-slim AS builder
+	content := fmt.Sprintf(`FROM oven/bun:1 AS builder
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm ci
+COPY package.json bun.lock* ./
+RUN bun install
 
 COPY . .
-RUN npx tsc
+RUN bun run build
 
-FROM node:22-slim
+FROM oven/bun:1
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
+COPY package.json bun.lock* ./
+RUN bun install --production
 
 COPY --from=builder /app/dist ./dist
 
@@ -618,7 +632,7 @@ RUN addgroup --system app && adduser --system --ingroup app app
 USER app
 
 EXPOSE %d
-CMD ["node", "dist/index.js"]
+CMD ["bun", "dist/index.js"]
 `, port)
 	return codegen.OutputFile{Path: "Dockerfile", Content: []byte(content)}
 }

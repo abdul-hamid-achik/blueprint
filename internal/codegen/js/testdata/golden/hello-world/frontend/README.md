@@ -5,7 +5,7 @@ Generated frontend SDK for `hello-world`.
 ## Install
 
 ```bash
-npm install hello-world-frontend
+bun add hello-world-frontend
 ```
 
 ## Usage

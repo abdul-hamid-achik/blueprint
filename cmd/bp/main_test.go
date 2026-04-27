@@ -293,19 +293,19 @@ func TestFrontendPublishCommand(t *testing.T) {
 	outDir := t.TempDir()
 	validFile := filepath.Join(root, "examples", "todo-api.bp")
 	binDir := t.TempDir()
-	logFile := filepath.Join(binDir, "npm.log")
-	npmStub := filepath.Join(binDir, "npm")
+	logFile := filepath.Join(binDir, "bun.log")
+	bunStub := filepath.Join(binDir, "bun")
 	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$*\" >> \"$BP_NPM_LOG\"\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_BUN_LOG\"\n" +
 		"if [ \"$1\" = \"install\" ]; then mkdir -p node_modules; fi\n" +
 		"exit 0\n"
-	if err := os.WriteFile(npmStub, []byte(script), 0755); err != nil {
+	if err := os.WriteFile(bunStub, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
 
 	env := []string{
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"BP_NPM_LOG=" + logFile,
+		"BP_BUN_LOG=" + logFile,
 	}
 	stdout, stderr, exitCode := runBPEnv(t, env, "frontend", "publish", validFile, "--out", outDir, "--react-query")
 	if exitCode != 0 {
@@ -318,13 +318,13 @@ func TestFrontendPublishCommand(t *testing.T) {
 	}
 	logStr := string(logBytes)
 	if !strings.Contains(logStr, "install") {
-		t.Error("frontend publish should run npm install")
+		t.Error("frontend publish should run bun install")
 	}
 	if !strings.Contains(logStr, "run build") {
-		t.Error("frontend publish should run npm run build")
+		t.Error("frontend publish should run bun run build")
 	}
-	if !strings.Contains(logStr, "pack --dry-run") {
-		t.Error("frontend publish should run npm pack --dry-run")
+	if !strings.Contains(logStr, "pm pack --dry-run") {
+		t.Error("frontend publish should run bun pm pack --dry-run")
 	}
 	if !strings.Contains(stdout, "ready for publish review") {
 		t.Error("frontend publish should report successful dry-run completion")
@@ -336,18 +336,18 @@ func TestFrontendPublishCommandSkipInstall(t *testing.T) {
 	outDir := t.TempDir()
 	validFile := filepath.Join(root, "examples", "todo-api.bp")
 	binDir := t.TempDir()
-	logFile := filepath.Join(binDir, "npm.log")
-	npmStub := filepath.Join(binDir, "npm")
+	logFile := filepath.Join(binDir, "bun.log")
+	bunStub := filepath.Join(binDir, "bun")
 	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$*\" >> \"$BP_NPM_LOG\"\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_BUN_LOG\"\n" +
 		"exit 0\n"
-	if err := os.WriteFile(npmStub, []byte(script), 0755); err != nil {
+	if err := os.WriteFile(bunStub, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
 
 	env := []string{
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"BP_NPM_LOG=" + logFile,
+		"BP_BUN_LOG=" + logFile,
 	}
 	stdout, stderr, exitCode := runBPEnv(t, env, "frontend", "publish", validFile, "--out", outDir)
 	if exitCode != 0 {
@@ -371,15 +371,15 @@ func TestFrontendPublishCommandSkipInstall(t *testing.T) {
 	}
 	logStr := string(logBytes)
 	if strings.Contains(logStr, "install") {
-		t.Error("frontend publish --skip-install should not run npm install")
+		t.Error("frontend publish --skip-install should not run bun install")
 	}
 	if !strings.Contains(logStr, "run build") {
-		t.Error("frontend publish --skip-install should still run npm run build")
+		t.Error("frontend publish --skip-install should still run bun run build")
 	}
-	if !strings.Contains(logStr, "pack --dry-run") {
-		t.Error("frontend publish --skip-install should still run npm pack --dry-run")
+	if !strings.Contains(logStr, "pm pack --dry-run") {
+		t.Error("frontend publish --skip-install should still run bun pm pack --dry-run")
 	}
-	if !strings.Contains(stdout, "Skipped npm install") {
+	if !strings.Contains(stdout, "Skipped bun install") {
 		t.Error("frontend publish --skip-install should report skipped install")
 	}
 }

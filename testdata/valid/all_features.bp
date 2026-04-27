@@ -237,7 +237,7 @@ GET /api/usage {
 
 @ "Stripe webhook for payment events"
 POST /webhooks/stripe {
-  auth webhook_sig
+  auth webhook_sig using(secret.API_SIGNING_KEY)
   tags ["billing", "webhooks"]
 
   <- event json required

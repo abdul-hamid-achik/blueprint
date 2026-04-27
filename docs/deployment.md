@@ -16,13 +16,13 @@ cp .env.example .env
 # Edit .env with production values
 
 # Install dependencies
-npm install
+bun install
 
 # Push database schema (or run migrations)
-npm run db:push
+bunx drizzle-kit push
 
 # Start the server
-npm start
+bun run start
 ```
 
 ---
@@ -92,17 +92,17 @@ docker compose up -d
 The generated `Dockerfile` uses a multi-stage build pattern:
 
 ```dockerfile
-FROM node:20-alpine AS builder
+FROM oven/bun:1 AS builder
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
+COPY package.json bun.lock* ./
+RUN bun install
 COPY . .
 
-FROM node:20-alpine
+FROM oven/bun:1
 WORKDIR /app
 COPY --from=builder /app .
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["bun", "run", "start"]
 ```
 
 ---
@@ -129,7 +129,7 @@ bp migrate my-service.bp generate
 
 # Apply pending migrations
 cd generated
-npm run db:migrate
+bunx drizzle-kit migrate
 ```
 
 Migration files land in `generated/drizzle/` and should be committed to version control.
@@ -240,15 +240,14 @@ Add a `vercel.json` to the generated directory:
 Then deploy:
 
 ```bash
-npm i -g vercel
-vercel
+bunx vercel
 ```
 
 Set environment variables in the Vercel dashboard under **Settings > Environment Variables**, or via CLI:
 
 ```bash
-vercel env add DATABASE_URL
-vercel env add STRIPE_KEY
+bunx vercel env add DATABASE_URL
+bunx vercel env add STRIPE_KEY
 ```
 
 ### Netlify
@@ -258,14 +257,14 @@ For Netlify, use the `@hono/netlify` adapter. After building:
 ```bash
 bp build my-service.bp
 cd generated
-npm install @hono/netlify
+bun add @hono/netlify
 ```
 
 Add a `netlify.toml`:
 
 ```toml
 [build]
-  command = "npm install"
+  command = "bun install"
   publish = "."
 
 [functions]
@@ -284,8 +283,7 @@ export default handle(app)
 Deploy:
 
 ```bash
-npm i -g netlify-cli
-netlify deploy --prod
+bunx netlify deploy --prod
 ```
 
 Set environment variables in the Netlify dashboard under **Site settings > Environment variables**.
@@ -294,8 +292,8 @@ Set environment variables in the Netlify dashboard under **Site settings > Envir
 
 1. Push your `generated/` directory to a Git repository
 2. Create a new **Web Service** on Render
-3. Set the build command to `npm install`
-4. Set the start command to `npm start`
+3. Set the build command to `bun install`
+4. Set the start command to `bun run start`
 5. Add environment variables in the Render dashboard
 
 ### Generic VPS (Ubuntu)
@@ -304,11 +302,11 @@ Set environment variables in the Netlify dashboard under **Site settings > Envir
 # On the server
 bp build my-service.bp
 cd generated
-npm install
+bun install
 
 # Use PM2 for process management
-npm install -g pm2
-pm2 start npm --name my-service -- start
+bun add -g pm2
+pm2 start bun --name my-service -- run start
 pm2 save
 pm2 startup
 ```
@@ -320,7 +318,7 @@ pm2 startup
 Before going live, verify:
 
 - [ ] All `required` secrets are set in the environment
-- [ ] Database migrations have been applied (`bp migrate push` or `npm run db:migrate`)
+- [ ] Database migrations have been applied (`bp migrate push` or `bunx drizzle-kit migrate`)
 - [ ] The `Dockerfile` builds successfully
 - [ ] Health check endpoint is reachable (add a `GET /health` endpoint)
 - [ ] Rate limiting is configured on public endpoints

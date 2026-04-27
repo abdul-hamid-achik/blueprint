@@ -11,6 +11,15 @@ model job {
   status string default("pending")
 }
 
+fn do_work {
+  <- job job
+  -> result string
+
+  impl node {
+    module: "./internal/do-work"
+  }
+}
+
 worker process_job {
   trigger queue("jobs")
   retry   3

@@ -1,17 +1,17 @@
-FROM node:22-slim AS builder
+FROM oven/bun:1 AS builder
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm ci
+COPY package.json bun.lock* ./
+RUN bun install
 
 COPY . .
-RUN npx tsc
+RUN bun run build
 
-FROM node:22-slim
+FROM oven/bun:1
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
+COPY package.json bun.lock* ./
+RUN bun install --production
 
 COPY --from=builder /app/dist ./dist
 
@@ -19,4 +19,4 @@ RUN addgroup --system app && adduser --system --ingroup app app
 USER app
 
 EXPOSE 3000
-CMD ["node", "dist/index.js"]
+CMD ["bun", "dist/index.js"]

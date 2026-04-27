@@ -98,13 +98,13 @@ bp frontend publish myservice.bp --out ./web-contract --react-query --skip-insta
 bp version
 ```
 
-After `bp build`, the output is a standard Node.js project with health checks and graceful shutdown built in:
+After `bp build`, the output is a standard TypeScript service with health checks and graceful shutdown built in:
 
 ```bash
 cd generated
-npm install
-npm run db:push   # apply schema to postgres
-npm start         # start the server (with /health endpoint)
+bun install
+bunx drizzle-kit push  # apply schema to postgres
+bun run start          # start the server (with /health endpoint)
 ```
 
 Blueprint also generates frontend-safe contract files in `src/types/api.ts`, `src/types/schemas.ts`, and `src/types/client.ts` so LLMs and frontend apps can share one API contract. Add `--react-query` to emit `src/types/react-query.ts` as well.
@@ -224,6 +224,11 @@ pipe validate_image {
 }
 ```
 
+Local `impl node { module: "./internal/..." }` modules are scaffolded under
+`src/impl/functions/internal/...` and are user-owned. `bp build` tracks generated
+files in `.blueprint/manifest.json`, rewrites generated wrappers, and leaves
+existing implementation files untouched.
+
 ### Schedules
 
 ```bp
@@ -319,7 +324,8 @@ generated/
     │   ├── cache.ts              # Redis client
     │   └── errors.ts             # BpError class
     ├── routes/<resource>.ts      # Hono endpoint handlers
-    ├── functions/<name>.ts       # fn wrappers + stubs
+    ├── functions/<name>.ts       # generated fn wrappers
+    ├── impl/functions/...        # user-owned native implementations
     ├── pipes/<name>.ts           # pipe functions
     ├── middleware/<name>.ts      # Hono middleware
     ├── schedules/<name>.ts       # Cron job handlers
@@ -339,7 +345,7 @@ generated/
 | `bp dev <file> [--out <dir>]` | ✅ | Watch mode — rebuild and restart on changes |
 | `bp test <file> [--out <dir>]` | ✅ | Build and run vitest |
 | `bp migrate <file> [generate\|push]` | ✅ | Build and run drizzle-kit |
-| `bp deploy <file> [--out <dir>] [--tag <image>]` | ✅ | Deploy to Docker or Fly.io |
+| `bp deploy <file> [--out <dir>] [--tag <image>]` | Preview | Build a Docker image; Fly.io deployment requires local Fly configuration |
 | `bp generate <file> [--write]` | ✅ | Resolve `@>` slots via LLM (needs `ANTHROPIC_API_KEY`) |
 | `bp init [name]` | ✅ | Scaffold a new Blueprint project |
 | `bp fmt <file> [--write]` | ✅ | Format .bp files |
@@ -348,7 +354,7 @@ generated/
 | `bp stats <file> [--json]` | ✅ | Show code statistics |
 | `bp doctor` | ✅ | Check environment dependencies |
 | `bp completion <bash\|zsh\|fish>` | ✅ | Generate shell completion script |
-| `bp lsp` | ✅ | Start Language Server Protocol server |
+| `bp lsp` | Basic | Start the language server |
 | `bp eject <dir>` | ✅ | Remove Blueprint markers — make generated code fully yours |
 | `bp version` | ✅ | Show version |
 
@@ -357,12 +363,12 @@ generated/
 | Milestone | Status | Notes |
 |-----------|--------|-------|
 | M1: Lexer + Parser + AST | ✅ Complete | 50+ lexer tests, 61+ parser tests, all SPEC fixtures |
-| M2: Semantic Checker | ✅ Complete | 57+ tests — name resolution, type checks, structural validation |
-| M3: JavaScript Codegen | ✅ Complete | Routes, models, middleware, pipes, fns, schedules, workers, tests |
-| M4: Developer Experience | ✅ Complete | init, run, dev, fmt, lint, docs |
-| M5: Testing + Migrations | ✅ Complete | bp test (vitest), bp migrate (drizzle-kit) |
-| M6: LLM Integration | ✅ Complete | bp generate — resolves `@>` slots via Anthropic API |
-| M7: Polish + Launch | ✅ Complete | GoReleaser, release CI, `@blueprint/runtime` npm package |
+| M2: Semantic Checker | ✅ Complete | Name resolution, type references, function calls, middleware, and supported auth forms |
+| M3: JavaScript Codegen | Core stable | REST, models, middleware, pipes, fns, schedules, and tests are usable; STREAM/WS/workers remain preview surfaces |
+| M4: Developer Experience | Core stable | init, run, dev, fmt, lint, docs |
+| M5: Testing + Migrations | Core stable | bp test (Vitest), bp migrate (drizzle-kit) |
+| M6: LLM Integration | Preview | bp generate requires `ANTHROPIC_API_KEY`; review generated code before shipping |
+| M7: Polish + Launch | In progress | GoReleaser, release CI, `@blueprint/runtime` npm package |
 
 See [SPEC.md](./SPEC.md) for the full language specification and design rationale.
 
@@ -371,7 +377,7 @@ See [SPEC.md](./SPEC.md) for the full language specification and design rational
 ## Development
 
 ```bash
-# Run all tests (254+ tests, 0 failures)
+# Run all tests
 go test ./...
 
 # Run with race detector
@@ -389,7 +395,7 @@ go build -o bin/bp ./cmd/bp
 
 # Build the reference example and verify TypeScript compiles
 ./bin/bp build testdata/valid/all_features.bp --out generated
-cd generated && npm install && npx tsc --noEmit
+cd generated && bun install && bun run build
 ```
 
 Using [Task](https://taskfile.dev):

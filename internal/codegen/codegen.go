@@ -11,6 +11,7 @@ type Generator interface {
 
 // OutputFile represents a single generated file.
 type OutputFile struct {
-	Path    string // relative path within the output directory
-	Content []byte
+	Path      string // relative path within the output directory
+	Content   []byte
+	UserOwned bool // scaffold if missing, then leave untouched on later builds
 }

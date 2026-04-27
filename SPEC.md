@@ -307,6 +307,17 @@ Codegen → TypeScript/Node.js project
 | Python/FastAPI | 🚧 Planned | FastAPI + SQLAlchemy + Pydantic |
 | Go/Chi | 🚧 Planned | Chi + sqlc + validator |
 
+### Generated vs User-Owned Files
+
+Code generators must distinguish managed output from user implementation code:
+
+- Generated files are tracked in `.blueprint/manifest.json` and may be rewritten
+  on each build.
+- User-owned files are scaffolded only when missing and must not be overwritten.
+- For JavaScript/TypeScript, `impl node { module: "./internal/X" }` maps to a
+  generated wrapper under `src/functions/` and a user-owned implementation
+  scaffold under `src/impl/functions/internal/X.ts`.
+
 ---
 
 *This specification is maintained by the Blueprint project. For implementation details, see the AGENTS.md file in the source repository.*

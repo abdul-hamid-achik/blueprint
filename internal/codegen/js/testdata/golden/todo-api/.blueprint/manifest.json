@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "generated": {
+    ".env.example": "sha256:0bc48a03611d65acbfd3e595ba8bcf5f56680a7e34214a752190e1730d08353f",
+    ".gitignore": "sha256:7d3c4cb2c72188e0297ada4116bc46f8929af50a18a3ebf3e045bbd9b09658e0",
+    "Dockerfile": "sha256:2b647404b1fbc247ebc3aaeb3492650c4869739364ad2141ffa6b8c1d60aa295",
+    "drizzle.config.ts": "sha256:69c95398b7e89ad08c3798edc9c04df572464f870fc78d6cb4908702d51a8184",
+    "frontend/.gitignore": "sha256:e8bc935ce727f1809c792f4c5d26c5fc75ba2b7df7fc9390c56c8892f6a6007f",
+    "frontend/README.md": "sha256:67e73fa4e78adae43f96257a9bd3a769f350f6f61d39fb913923f5e6bb48014e",
+    "frontend/package.json": "sha256:aabb6f2b7bb5c07d17f2b51dd567b37b457e7c0f1facc7e22df4f796f0bd4128",
+    "frontend/src/api.ts": "sha256:afd57792d41b51b186bf74a0cd3511a6630a31dbb57c955174e9788632f0f1e0",
+    "frontend/src/client.ts": "sha256:5d150404424b3350f93a27e57824ce77df240e72f6394199c563d01fb609d328",
+    "frontend/src/index.ts": "sha256:390e5a7cebf284379ec2a6979496bd0f22d2ac318293af4992bcafbe21f90741",
+    "frontend/src/schemas.ts": "sha256:e3e46943efd91865f23587097bcf2978bdf9a705966fa493304f3b12d09e9bca",
+    "frontend/tsconfig.json": "sha256:c01c3263c79bfe7999b6f3367c19a4a9b99d2d5ff4fcea18fbcdf50b2a634aa1",
+    "package.json": "sha256:a246799aba0c24179835e9e8bceb02f48d096ab0b9683d71589534c34b2c1b79",
+    "src/index.ts": "sha256:8db4b5c09f586255c06e2b85909cb54cd52775e5ae8393743347953eec064bf1",
+    "src/lib/db.ts": "sha256:183a41e74a148925ed387842a57f2ab698f1faeb695779d6f64ec7cf0021024c",
+    "src/lib/env.ts": "sha256:f99f7ec2ab2255e3443457f615288dcefc05f003818a3727f1ca01e3b3b16b8d",
+    "src/lib/errors.ts": "sha256:8fca6ecfe90abdc08929d8482d83e870361ab9fa8df3dce9cb0dfd71d2530439",
+    "src/models/schema.ts": "sha256:679dc41efa9c63ce5fc0888950bfe80e09b3fa58f2a9358996c11700f987a357",
+    "src/routes/todos.ts": "sha256:ab5a820010b65b6169ca1655b4c613cf28de991b6f024fe735fb88c2c6245670",
+    "src/types/api.ts": "sha256:afd57792d41b51b186bf74a0cd3511a6630a31dbb57c955174e9788632f0f1e0",
+    "src/types/client.ts": "sha256:5d150404424b3350f93a27e57824ce77df240e72f6394199c563d01fb609d328",
+    "src/types/schemas.ts": "sha256:e3e46943efd91865f23587097bcf2978bdf9a705966fa493304f3b12d09e9bca",
+    "src/validation/schemas.ts": "sha256:6e059c53f4a59a93684ad82be105937eda67f012d841d0d4b6af1f82ae3ae661",
+    "tsconfig.json": "sha256:f8a173654b15b5576557d6130237e123f95ba761e9c5bb039a8b91f3b71f15b1"
+  }
+}

@@ -416,7 +416,7 @@ results, err := g.Generate(file)
 1. Walks the AST looking for `@>` (GenerateSlot) nodes inside `fn` blocks
 2. Builds a prompt from the function signature (inputs, output type) + the `@>` text
 3. Calls the Anthropic Messages API with Claude
-4. Parses the response and writes the implementation to `src/functions/<name>-impl.ts`
+4. Parses the response and writes the implementation scaffold under `src/impl/functions/...`
 
 ### Configuration
 
@@ -456,10 +456,10 @@ The CLI entry point. Parses `os.Args` and dispatches to the appropriate pipeline
 |---------|----------|
 | `bp check` | lex → parse → check |
 | `bp build` | lex → parse → check → codegen → write files |
-| `bp run` | build + `npm install && npm start` |
+| `bp run` | build + `bun install && bun run start` |
 | `bp dev` | build + watch loop |
-| `bp test` | build + `npx vitest run` |
-| `bp migrate` | build + `drizzle-kit <subcommand>` |
+| `bp test` | build + `bun run test` |
+| `bp migrate` | build + `bunx drizzle-kit <subcommand>` |
 | `bp generate` | parse + find `@>` slots + call Anthropic API |
 | `bp docs` | lex → parse → check → OpenAPI generation |
 | `bp fmt` | lex → parse → pretty-print AST |

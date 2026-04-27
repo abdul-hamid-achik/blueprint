@@ -107,9 +107,9 @@ bp frontend publish <file.bp> [--out <dir>] [--react-query] [--skip-install]
 This command runs the equivalent of:
 
 1. `bp frontend ...`
-2. `npm install`
-3. `npm run build`
-4. `npm pack --dry-run`
+2. `bun install`
+3. `bun run build`
+4. `bun pm pack --dry-run`
 
 Use it when you want a quick publish-readiness check without actually pushing anything to npm.
 Use `--skip-install` when dependencies are already installed and you only want to rerun the build and dry-run package check.
@@ -120,7 +120,7 @@ Use `--skip-install` when dependencies are already installed and you only want t
 bp frontend publish my-service.bp --out web-contract --react-query
 
 bp frontend publish my-service.bp --out web-contract --react-query --skip-install
-# Skip npm install and just rerun build + npm pack --dry-run
+# Skip bun install and just rerun build + bun pm pack --dry-run
 ```
 
 ---
@@ -133,7 +133,7 @@ Build and start the server.
 bp run <file.bp> [--out <dir>]
 ```
 
-Equivalent to `bp build` followed by `npm install && npm start` in the output directory.
+Equivalent to `bp build` followed by `bun install && bun run start` in the output directory.
 
 **Example:**
 
@@ -178,7 +178,7 @@ Build and run the Vitest test suite.
 bp test <file.bp> [--out <dir>]
 ```
 
-Compiles the service (including test files), then runs `npx vitest run` in the output directory.
+Compiles the service (including test files), then runs `bun run test` in the output directory.
 
 **Example:**
 
@@ -286,7 +286,7 @@ bp docs my-service.bp --out openapi.json
 bp docs my-service.bp > openapi.json
 
 # Validate with a third-party tool
-bp docs my-service.bp | npx @redocly/cli lint /dev/stdin
+bp docs my-service.bp | bunx @redocly/cli lint /dev/stdin
 ```
 
 **Coverage:**
@@ -531,7 +531,7 @@ bp doctor
 
 Verifies that required tools are installed and accessible:
 - Go (for building from source)
-- Node.js and npm
+- Node.js and Bun
 - Docker (optional)
 - PostgreSQL client (optional)
 - Redis client (optional)
@@ -542,7 +542,7 @@ Verifies that required tools are installed and accessible:
 bp doctor
 # ✓ Go 1.22.0
 # ✓ Node.js 20.5.0
-# ✓ npm 10.2.3
+# ✓ Bun 1.2.0
 # ✓ Docker 24.0.7
 # ⚠ PostgreSQL client not found (optional)
 ```

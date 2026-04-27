@@ -287,8 +287,8 @@ A standalone frontend package that mirrors the generated contract files in `src/
 
 ```bash
 cd generated/frontend
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 The package exports:
@@ -356,18 +356,36 @@ export const requireAuth = createMiddleware(async (c, next) => {
 
 ### `src/functions/<name>.ts`
 
-Function wrapper files. Contain the generated wrapper plus a stub for the implementation.
+Function wrapper files. Contain generated wrappers. Local native implementation
+modules are scaffolded separately under `src/impl/functions/` and are
+user-owned.
 
 ```typescript
 // Generated wrapper
+import { apply as applyImpl } from '../impl/functions/internal/watermark.js';
+
 export async function watermark(
   file: File,
   text: string,
   position: string,
   opacity: number,
 ): Promise<File> {
-  const { apply } = await import('./internal/watermark.js');
-  return apply(file, text, position, opacity);
+  return applyImpl(file, text, position, opacity);
+}
+```
+
+For `impl node { module: "./internal/watermark" func: "apply" }`, Blueprint
+also creates `src/impl/functions/internal/watermark.ts` if it does not exist:
+
+```typescript
+// Blueprint implementation scaffold. This file is user-owned; bp build will not overwrite it.
+export async function apply(
+  file: File,
+  text: string,
+  position: string,
+  opacity: number,
+): Promise<any> {
+  throw new Error('Not implemented: apply');
 }
 ```
 
@@ -468,10 +486,10 @@ describe('createTodo', () => {
 
 ```bash
 cd generated
-cp ../.env.example .env
+cp .env.example .env
 # Edit .env with your actual values
 
-npm install
+bun install
 ```
 
 ### Frontend Contracts
@@ -526,38 +544,37 @@ bp frontend publish my-service.bp --out web-contract --react-query --skip-instal
 
 ```bash
 # Push schema to database (development)
-npm run db:push
+bunx drizzle-kit push
 
 # Generate migration file (production)
-npm run db:generate
-npm run db:migrate
+bunx drizzle-kit generate
+bunx drizzle-kit migrate
 ```
 
 ### Start the Server
 
 ```bash
-npm start
+bun run start
 # my-service listening on port 3000
 ```
 
 ### Run Tests
 
 ```bash
-npm test
-# or: npx vitest run
+bun run test
 ```
 
-### Available npm Scripts
+### Available Commands
 
 | Script | Description |
 |--------|-------------|
-| `npm start` | Start the server |
-| `npm run dev` | Watch mode with tsx |
-| `npm test` | Run Vitest tests |
-| `npm run db:push` | Push Drizzle schema to database |
-| `npm run db:generate` | Generate SQL migration |
-| `npm run db:migrate` | Apply pending migrations |
-| `npm run db:studio` | Open Drizzle Studio |
+| `bun run start` | Start the server |
+| `bun run dev` | Watch mode with tsx |
+| `bun run test` | Run Vitest tests |
+| `bunx drizzle-kit push` | Push Drizzle schema to database |
+| `bunx drizzle-kit generate` | Generate SQL migration |
+| `bunx drizzle-kit migrate` | Apply pending migrations |
+| `bunx drizzle-kit studio` | Open Drizzle Studio |
 
 ---
 
@@ -592,9 +609,9 @@ The generated code is yours. Every file starts with:
 // Do not edit directly — modify the .bp source and run `bp build`
 ```
 
-You can edit generated files directly — they're standard TypeScript with no hidden magic. If you re-run `bp build`, the output directory is regenerated. To preserve manual edits, either:
+You can edit generated files directly — they're standard TypeScript with no hidden magic. If you re-run `bp build`, files tracked in `.blueprint/manifest.json` are rewritten from the `.bp` source. To preserve manual edits, either:
 
 1. Eject: stop using `bp build` and maintain the TypeScript directly
-2. Use `impl node { module: "..." }` to point `fn` blocks to your own TypeScript modules, which are not overwritten
+2. Use `impl node { module: "./internal/..." }` to point `fn` blocks to user-owned TypeScript modules under `src/impl/functions/internal/...`
 
-The `src/functions/<name>-impl.ts` stub files are generated once and not overwritten on subsequent builds, so custom implementations there are safe.
+Blueprint creates implementation scaffolds once and does not track them in `.blueprint/manifest.json`, so later builds leave your custom implementation code untouched.

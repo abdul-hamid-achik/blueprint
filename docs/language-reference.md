@@ -1099,7 +1099,7 @@ expect {
   header.Content-Type == "application/json"
 
   # Timing
-  duration < 2s
+  duration < 2s  # parsed; generated test currently emits a TODO marker
 
   # Database side effects
   model job where(status == "done") exists

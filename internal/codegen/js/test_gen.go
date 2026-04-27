@@ -45,10 +45,14 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 
 	// Check assertion kinds so we know whether to parse the response body.
 	hasBodyAssertions := false
-	needsDbImport := false
+	hasLastStatusAssertions := false
+	needsDbImport := stmtsHaveDataOps(t.Setup) || stmtsHaveDataOps(t.Cleanup)
 	for _, a := range t.Expect {
 		if a.Kind == "body" {
 			hasBodyAssertions = true
+		}
+		if a.Kind == "last_status" {
+			hasLastStatusAssertions = true
 		}
 		if a.Kind == "model" {
 			needsDbImport = true
@@ -106,6 +110,9 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 	fmt.Fprintf(&b, "  it('%s', async () => {\n", t.Name)
 	indent := "    "
 	if repeat > 1 {
+		if hasLastStatusAssertions {
+			b.WriteString("    let lastRes: any;\n")
+		}
 		fmt.Fprintf(&b, "    for (let _i = 0; _i < %d; _i++) {\n", repeat)
 		indent = "      "
 	}
@@ -133,6 +140,9 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 			}
 		}
 		fmt.Fprintf(&b, "%s});\n", indent)
+		if repeat > 1 && hasLastStatusAssertions {
+			fmt.Fprintf(&b, "%slastRes = res;\n", indent)
+		}
 	}
 
 	// Parse response body once if any body assertions exist.
@@ -142,11 +152,19 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 
 	// Assertions.
 	for _, a := range t.Expect {
+		if repeat > 1 && a.Kind == "last_status" {
+			continue
+		}
 		emitTestAssertion(&b, a, indent)
 	}
 
 	if repeat > 1 {
 		b.WriteString("    }\n")
+		for _, a := range t.Expect {
+			if a.Kind == "last_status" {
+				emitLastStatusAssertion(&b, a, "    ", "lastRes")
+			}
+		}
 	}
 	b.WriteString("  });\n")
 	b.WriteString("});\n")
@@ -297,7 +315,7 @@ func emitTestAssertion(b *strings.Builder, a *ast.Assertion, indent string) {
 	case "status":
 		// "status 200" — second field is the numeric code.
 		if len(fields) >= 2 {
-			fmt.Fprintf(b, "%sexpect(res.status).toBe(%s);\n", indent, fields[1])
+			emitStatusExpectation(b, indent, "res.status", fields[1])
 		}
 	case "body":
 		// Patterns: body . field is type  /  body . field == value  /  body . field exists
@@ -306,14 +324,7 @@ func emitTestAssertion(b *strings.Builder, a *ast.Assertion, indent string) {
 			fmt.Fprintf(b, "%s// TODO: assert %s\n", indent, a.Raw)
 			return
 		}
-		// Convert snake_case field to camelCase JS path.
-		parts := strings.SplitN(path, ".", 2)
-		var jsPath string
-		if len(parts) == 2 {
-			jsPath = parts[0] + "." + toCamelCase(parts[1])
-		} else {
-			jsPath = path
-		}
+		jsPath := assertionPathToJS(path)
 		switch op {
 		case "is":
 			emitTypeExpect(b, jsPath, rhs, indent)
@@ -347,9 +358,66 @@ func emitTestAssertion(b *strings.Builder, a *ast.Assertion, indent string) {
 	case "duration":
 		// duration < 500ms  — timing assertion (approximate)
 		fmt.Fprintf(b, "%s// TODO: assert %s\n", indent, a.Raw)
+	case "last_status":
+		emitLastStatusAssertion(b, a, indent, "res")
 	default:
 		fmt.Fprintf(b, "%s// TODO: assert %s\n", indent, a.Raw)
 	}
+}
+
+func emitLastStatusAssertion(b *strings.Builder, a *ast.Assertion, indent, responseVar string) {
+	fields := tokenizeAssertion(a.Raw)
+	if len(fields) >= 2 {
+		emitStatusExpectation(b, indent, responseVar+".status", fields[1])
+		return
+	}
+	fmt.Fprintf(b, "%s// TODO: assert %s\n", indent, a.Raw)
+}
+
+func emitStatusExpectation(b *strings.Builder, indent, statusExpr, want string) {
+	if len(want) == 3 && want[1:] == "xx" && want[0] >= '1' && want[0] <= '5' {
+		lower := int(want[0]-'0') * 100
+		fmt.Fprintf(b, "%sexpect(%s).toBeGreaterThanOrEqual(%d);\n", indent, statusExpr, lower)
+		fmt.Fprintf(b, "%sexpect(%s).toBeLessThan(%d);\n", indent, statusExpr, lower+100)
+		return
+	}
+	fmt.Fprintf(b, "%sexpect(%s).toBe(%s);\n", indent, statusExpr, want)
+}
+
+func assertionPathToJS(path string) string {
+	parts := strings.Split(path, ".")
+	if len(parts) == 0 {
+		return path
+	}
+	for i := range parts {
+		if i == 0 {
+			continue
+		}
+		if !isValidJSIdentifier(parts[i]) {
+			parts[i] = fmt.Sprintf("[%q]", parts[i])
+		} else {
+			parts[i] = "." + parts[i]
+		}
+	}
+	return parts[0] + strings.Join(parts[1:], "")
+}
+
+func isValidJSIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if r != '_' && r != '$' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+				return false
+			}
+			continue
+		}
+		if r != '_' && r != '$' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // emitModelAssertion emits a db query assertion for model existence checks.
@@ -465,7 +533,7 @@ func emitModelAssertion(b *strings.Builder, fields []string, indent string) {
 }
 
 // parseModelCondition converts a condition token slice into a Drizzle eq() call.
-// e.g. ["id", "==", "body", ".", "job_id"] → `eq(schema.job.id, body.jobId)`
+// e.g. ["id", "==", "body", ".", "job_id"] → `eq(schema.job.id, body.job_id)`
 // modelName should be the singular model name matching the schema.ts export.
 // Returns an error comment if the condition cannot be parsed, so tests fail visibly
 // instead of silently dropping assertions.
@@ -519,9 +587,13 @@ func parseModelCondition(tokens []string, modelName string) string {
 			rhs = v
 		}
 	} else {
-		// Multi-part: e.g. body job_id → body.jobId
-		last := toCamelCase(rhsParts[len(rhsParts)-1])
-		rhs = rhsParts[0] + "." + last
+		// Multi-part: response body paths preserve Blueprint response keys.
+		if rhsParts[0] == "body" {
+			rhs = assertionPathToJS(strings.Join(rhsParts, "."))
+		} else {
+			last := toCamelCase(rhsParts[len(rhsParts)-1])
+			rhs = rhsParts[0] + "." + last
+		}
 	}
 
 	op := tokens[opIdx]

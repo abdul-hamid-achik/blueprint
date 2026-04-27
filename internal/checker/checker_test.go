@@ -683,6 +683,7 @@ func TestInvalidFixturesFailChecker(t *testing.T) {
 		"lowercase_type.bp":       true,
 		"uppercase_model.bp":      true,
 		"unknown_type.bp":         true,
+		"unknown_function.bp":     true,
 		"output_before_step.bp":   true,
 		"wrong_arrow_order.bp":    true,
 		"nested_try.bp":           true,
@@ -992,6 +993,62 @@ model post {
 			return
 		}
 	}
+}
+
+func TestUnknownFunctionCallWithSuggestion(t *testing.T) {
+	errs := check(t, header+`
+fn process_data {
+  <- input string
+  -> output string
+  impl node { module: "./internal/process-data" }
+}
+
+POST /api/test {
+  <- input string required
+  |> result = proces_data(input)
+  -> 200 result
+}
+`)
+	expectErrorContaining(t, errs, `unknown function "proces_data"`)
+	for _, e := range errs {
+		if strings.Contains(e.Message, `unknown function "proces_data"`) {
+			if !strings.Contains(e.Hint, `did you mean "process_data"`) {
+				t.Errorf("expected hint to suggest 'process_data', got hint: %s", e.Hint)
+			}
+			return
+		}
+	}
+}
+
+func TestWebhookAuthRequiresSecretUsing(t *testing.T) {
+	errs := check(t, header+`
+POST /webhooks/stripe {
+  auth webhook_sig
+  -> 200 "ok"
+}
+`)
+	expectErrorContaining(t, errs, "auth webhook_sig requires using(secret.NAME)")
+}
+
+func TestWebhookAuthRequiresDeclaredSecret(t *testing.T) {
+	errs := check(t, header+`
+POST /webhooks/stripe {
+  auth webhook_sig using(secret.STRIPE_KEY)
+  -> 200 "ok"
+}
+`)
+	expectErrorContaining(t, errs, `auth webhook_sig references unknown secret "STRIPE_KEY"`)
+}
+
+func TestStorageOperationRequiresStorage(t *testing.T) {
+	errs := check(t, header+`
+POST /api/upload {
+  <- file image/* required
+  |> stored = upload(file, "bucket")
+  -> 200 stored
+}
+`)
+	expectErrorContaining(t, errs, `storage operation "upload" requires blueprint storage`)
 }
 
 func TestNamesOfKind(t *testing.T) {
