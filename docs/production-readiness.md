@@ -3,7 +3,7 @@
 What "1.0" means for Blueprint, and the measurable gates we use to get there.
 This file is the source of truth for release decisions; the prose roadmap lives in
 [roadmap.md](./roadmap.md) and the tickable work tracker is
-[BACKLOG.md](../BACKLOG.md).
+[BACKLOG.md](https://github.com/abdul-hamid-achik/blueprint/blob/main/BACKLOG.md).
 
 This is a live document. Every time we ship a change that satisfies (or breaks)
 one of the gates below, update the relevant row in the **status table** and add
