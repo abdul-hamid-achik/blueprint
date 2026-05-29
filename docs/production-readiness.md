@@ -55,7 +55,7 @@ Errors point at the source location, suggest a fix, and link to the docs.
 | Errors carry structured codes (L###/P###/C###/...) | top 80% of common errors covered | `internal/diag` + `docs/error-codes.md`; L001, P001, C001–C015 covered today |
 | `bp fmt` is idempotent (`fmt(fmt(x)) == fmt(x)`) | 100% of `testdata/valid/*` | CI step `bp fmt --check` (extend to all examples) |
 | `bp lint` produces 0 warnings on every shipped example | 100% | CI step "Lint examples" |
-| LSP provides at least: diagnostics, go-to-def, hover for `@` intents | implemented and tested in VS Code | `internal/lsp` tests + manual VS Code probe |
+| LSP provides at least: diagnostics, go-to-def, hover for `@` intents | shipped: `publishDiagnostics` wires parser + checker, `textDocument/definition` jumps to model/fn/pipe/middleware/field decls, hover knows models/fns/pipes/middleware/fields/data-ops/@intent | `internal/lsp` tests (12 cases incl. JSON-RPC roundtrip) + manual VS Code probe |
 | `bp doctor` checks every external dependency the toolchain assumes | bun, node, postgres, drizzle-kit | Manual probe per release |
 
 ### Pillar 4 — Testing & migrations
@@ -100,7 +100,7 @@ table and the CHANGELOG together.
 | 3 | Errors have `Hint:` on every kind | ✅ green (54/54 checker sites) | 2026-05-29 |
 | 3 | Structured error codes | ✅ green (L001, P001, C001–C015 documented + emitted; `bp explain` shipped) | 2026-05-29 |
 | 3 | `bp fmt --check` on all examples | 🟡 hello-world wired in CI; data-op shorthand bug fixed (`internal/ast/printer.go`), remaining 4 examples blocked only on column-alignment + blank-line preservation — see BACKLOG | 2026-05-29 |
-| 3 | LSP feature depth | 🔴 basic only | 2026-05-29 |
+| 3 | LSP feature depth | ✅ diagnostics (parser + checker), `textDocument/definition`, context-aware hover for models/fns/pipes/middleware/fields/@intents wired in `internal/lsp`; 12 unit/roundtrip tests | 2026-05-29 |
 | 4 | Self-contained `bp test` | ✅ shipped | 2026-05-29 |
 | 4 | `bp migrate generate` on every example | 🟡 only hello/todo wired | 2026-05-29 |
 | 5 | `bp deploy --target docker` smoke | 🟡 preview | 2026-05-29 |

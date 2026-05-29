@@ -16,6 +16,7 @@ type Server struct {
 	reader  *bufio.Reader
 	writer  io.Writer
 	docs    map[string]*Document
+	indexes map[string]*docIndex // parsed AST cache keyed by uri
 	running bool
 }
 
@@ -30,9 +31,10 @@ type Document struct {
 // NewServer creates a new LSP server.
 func NewServer(r io.Reader, w io.Writer) *Server {
 	return &Server{
-		reader: bufio.NewReader(r),
-		writer: w,
-		docs:   make(map[string]*Document),
+		reader:  bufio.NewReader(r),
+		writer:  w,
+		docs:    make(map[string]*Document),
+		indexes: make(map[string]*docIndex),
 	}
 }
 
@@ -129,6 +131,8 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) error {
 		return s.handleDidClose(msg)
 	case "textDocument/hover":
 		return s.handleHover(msg)
+	case "textDocument/definition":
+		return s.handleDefinition(msg)
 	default:
 		// Method not found
 		if msg.ID != nil {
@@ -165,8 +169,9 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) error {
 
 	result := map[string]interface{}{
 		"capabilities": map[string]interface{}{
-			"textDocumentSync": 1, // Full document sync
-			"hoverProvider":    true,
+			"textDocumentSync":   1, // Full document sync
+			"hoverProvider":      true,
+			"definitionProvider": true,
 		},
 		"serverInfo": map[string]string{
 			"name":    "blueprint-lsp",
@@ -233,6 +238,7 @@ func (s *Server) handleDidClose(msg *jsonRPCMessage) error {
 	}
 
 	delete(s.docs, params.TextDocument.URI)
+	delete(s.indexes, params.TextDocument.URI)
 
 	// Clear diagnostics
 	return s.sendNotification("textDocument/publishDiagnostics", map[string]interface{}{
@@ -251,7 +257,11 @@ func (s *Server) handleHover(msg *jsonRPCMessage) error {
 	}
 
 	content := s.getHoverContent(params.TextDocument.URI, params.Position.Line, params.Position.Character)
-
+	if content == "" {
+		// Per LSP spec, returning null tells the client "no hover info" so it
+		// doesn't render an empty popup.
+		return s.sendResult(msg.ID, nil)
+	}
 	result := map[string]interface{}{
 		"contents": map[string]string{
 			"kind":  "markdown",
@@ -260,6 +270,24 @@ func (s *Server) handleHover(msg *jsonRPCMessage) error {
 	}
 
 	return s.sendResult(msg.ID, result)
+}
+
+// handleDefinition handles textDocument/definition request.
+func (s *Server) handleDefinition(msg *jsonRPCMessage) error {
+	var params struct {
+		TextDocumentPositionParams
+	}
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return s.sendError(msg.ID, -32602, "Invalid params", err.Error())
+	}
+	uri := params.TextDocument.URI
+	idx := s.getIndex(uri)
+	loc := computeDefinition(uri, idx, params.Position.Line, params.Position.Character)
+	if loc == nil {
+		// LSP allows null for "no definition found".
+		return s.sendResult(msg.ID, nil)
+	}
+	return s.sendResult(msg.ID, loc)
 }
 
 // TextDocumentPositionParams contains position information.
@@ -273,71 +301,49 @@ type TextDocumentPositionParams struct {
 	} `json:"position"`
 }
 
-// getHoverContent returns hover information for a position.
+// getHoverContent returns hover markdown for (line, char). Empty string means
+// no info available; the caller is responsible for translating that into a null
+// LSP response.
 func (s *Server) getHoverContent(uri string, line, char int) string {
+	idx := s.getIndex(uri)
+	if idx == nil {
+		return ""
+	}
+	return computeHover(idx, line, char)
+}
+
+// getIndex returns the cached parse for uri, building it on demand.
+func (s *Server) getIndex(uri string) *docIndex {
 	doc, ok := s.docs[uri]
 	if !ok {
-		return ""
+		return nil
 	}
-
-	lines := strings.Split(doc.Text, "\n")
-	if line >= len(lines) {
-		return ""
+	if idx, ok := s.indexes[uri]; ok && idx.text == doc.Text {
+		return idx
 	}
-
-	textLine := lines[line]
-	if char >= len(textLine) {
-		return ""
-	}
-
-	// Simple keyword detection
-	word := extractWordAt(textLine, char)
-	return getKeywordDocumentation(word)
+	idx := buildIndex(uri, doc.Text)
+	s.indexes[uri] = idx
+	return idx
 }
 
-// extractWordAt extracts the word at the given position.
-func extractWordAt(line string, pos int) string {
-	start := pos
-	for start > 0 && isWordChar(line[start-1]) {
-		start--
-	}
-	end := pos
-	for end < len(line) && isWordChar(line[end]) {
-		end++
-	}
-	return line[start:end]
-}
-
-func isWordChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
-}
-
-// getKeywordDocumentation returns documentation for Blueprint keywords.
-func getKeywordDocumentation(word string) string {
-	docs := map[string]string{
-		"blueprint":  "**blueprint** - Declares the service name and configuration\n\n```bp\nblueprint \"my-api\" {\n  version \"1.0.0\"\n  port 3000\n}\n```",
-		"model":      "**model** - Defines a database table\n\n```bp\nmodel user {\n  id   uuid  primary\n  name string required\n}\n```",
-		"fn":         "**fn** - Declares a function\n\n```bp\nfn process {\n  <- input string\n  -> output string\n}\n```",
-		"pipe":       "**pipe** - Declares a reusable pipeline\n\n```bp\npipe validate {\n  <- input string\n  |> guard input != \"\" -> 400 \"Required\"\n  -> input\n}\n```",
-		"middleware": "**middleware** - Declares reusable middleware\n\n```bp\nmiddleware auth {\n  before { |> inject user }\n}\n```",
-		"guard":      "**guard** - Early return if condition fails\n\n```bp\n|> guard user.active -> 403 \"Forbidden\"\n```",
-		"when":       "**when** - Conditional execution\n\n```bp\n|> when plan == \"pro\": limit = 1000\n```",
-		"try":        "**try** - Error handling block\n\n```bp\n|> try {\n  |> risky_operation()\n} recover {\n  |> log error\n}\n```",
-	}
-
-	if doc, ok := docs[word]; ok {
-		return doc
-	}
-	return ""
-}
-
-// publishDiagnostics sends diagnostics for a document.
+// publishDiagnostics parses + checks the doc and pushes a
+// textDocument/publishDiagnostics notification with one entry per parse/check
+// error. An empty diagnostics list clears stale problems in the editor.
 func (s *Server) publishDiagnostics(uri string) error {
-	// TODO: Actually parse and validate the document
-	// For now, send empty diagnostics
+	doc, ok := s.docs[uri]
+	if !ok {
+		return s.sendNotification("textDocument/publishDiagnostics", map[string]interface{}{
+			"uri":         uri,
+			"diagnostics": []interface{}{},
+		})
+	}
+	diags := computeDiagnostics(uri, doc.Text)
+	// Refresh the AST cache here so hover/definition see the same parse the
+	// editor already got diagnostics for.
+	s.indexes[uri] = buildIndex(uri, doc.Text)
 	return s.sendNotification("textDocument/publishDiagnostics", map[string]interface{}{
 		"uri":         uri,
-		"diagnostics": []interface{}{},
+		"diagnostics": diags,
 	})
 }
 
