@@ -795,17 +795,23 @@ func TestBuildPythonHelloWorld(t *testing.T) {
 	}
 }
 
-func TestBuildPythonRejectsModelSpec(t *testing.T) {
-	// Phase 1 — anything with models, DB, middleware, etc. must surface a
-	// clean error pointing at the roadmap, not silently produce broken code.
-	// ecommerce-api uses `fn` declarations, `order(...)` in a query, and
-	// `try`/`recover` in checkout — all of which are still Phase 3c+ work
-	// and must surface as a clean roadmap error.
-	root := getProjectRoot()
-	outDir := t.TempDir()
-	_, stderr, code := runBP(t, "build",
-		filepath.Join(root, "examples", "ecommerce-api.bp"),
-		"--out", outDir, "--target", "python")
+func TestBuildPythonRejectsUnsupportedSpec(t *testing.T) {
+	// All 5 shipped examples now compile on --target python, so the test
+	// uses an inline synthetic spec with constructs still rejected (Phase 5b):
+	// `pipe` declarations, `worker`, `storage`. The roadmap error message must
+	// surface cleanly so users get pointed at BACKLOG.md, not half-broken code.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "unsupported.bp")
+	body := `blueprint "x" { version "1.0" port 3000 runtime node storage s3 }
+pipe validate { <- v string  -> v }
+worker process { trigger "job"  |> log "doing work" }
+GET /api/x { -> 200 "ok" }
+`
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "out")
+	_, stderr, code := runBP(t, "build", src, "--out", outDir, "--target", "python")
 	if code == 0 {
 		t.Fatalf("expected non-zero exit on unsupported spec")
 	}

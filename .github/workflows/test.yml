@@ -109,15 +109,21 @@ jobs:
           test -f /tmp/py-hello/pyproject.toml || (echo "missing pyproject.toml" && exit 1)
           test -f /tmp/py-hello/src/app.py || (echo "missing app.py" && exit 1)
           test -f /tmp/py-hello/src/routes/hello.py || (echo "missing hello route" && exit 1)
-          python3 -c "import ast, os, sys
-err = 0
-for root, _, files in os.walk('/tmp/py-hello/src'):
-  for f in files:
-    if not f.endswith('.py'): continue
-    path = os.path.join(root, f)
-    try: ast.parse(open(path).read(), filename=path)
-    except SyntaxError as e: print(path, e); err = 1
-sys.exit(err)"
+          python3 - <<'PY'
+          import ast, os, sys
+          err = 0
+          for root, _, files in os.walk('/tmp/py-hello/src'):
+              for f in files:
+                  if not f.endswith('.py'):
+                      continue
+                  path = os.path.join(root, f)
+                  try:
+                      ast.parse(open(path).read(), filename=path)
+                  except SyntaxError as e:
+                      print(path, e)
+                      err = 1
+          sys.exit(err)
+          PY
           echo "--target python output OK"
 
       - name: Build with --gen-tests (verify harness emits cleanly)
@@ -147,15 +153,21 @@ sys.exit(err)"
           test -f /tmp/py-hello-gt/tests/conftest.py || (echo "missing conftest.py" && exit 1)
           test -f /tmp/py-hello-gt/tests/test_hello.py || (echo "missing tests/test_hello.py" && exit 1)
           grep -q "testcontainers" /tmp/py-hello-gt/pyproject.toml || (echo "testcontainers dep missing" && exit 1)
-          python3 -c "import ast, os, sys
-err = 0
-for root, _, files in os.walk('/tmp/py-hello-gt/tests'):
-  for f in files:
-    if not f.endswith('.py'): continue
-    path = os.path.join(root, f)
-    try: ast.parse(open(path).read(), filename=path)
-    except SyntaxError as e: print(path, e); err = 1
-sys.exit(err)"
+          python3 - <<'PY'
+          import ast, os, sys
+          err = 0
+          for root, _, files in os.walk('/tmp/py-hello-gt/tests'):
+              for f in files:
+                  if not f.endswith('.py'):
+                      continue
+                  path = os.path.join(root, f)
+                  try:
+                      ast.parse(open(path).read(), filename=path)
+                  except SyntaxError as e:
+                      print(path, e)
+                      err = 1
+          sys.exit(err)
+          PY
           echo "--target python --gen-tests output OK"
 
       - name: Lint examples
