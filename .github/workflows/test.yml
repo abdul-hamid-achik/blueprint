@@ -83,7 +83,10 @@ jobs:
           for dir in /tmp/hello /tmp/todo /tmp/auth /tmp/ecommerce /tmp/chat /tmp/full; do
             echo "=== Validating TypeScript in $dir ==="
             cd "$dir"
-            npm install --save-dev typescript @types/node @types/pg
+            # `--no-save` keeps package.json bp-generated; otherwise the
+            # next step's `bp diff --exit-code` flags package.json as
+            # modified (npm would have appended these to devDependencies).
+            npm install --no-save typescript @types/node @types/pg
             npx tsc --noEmit --skipLibCheck
           done
 
