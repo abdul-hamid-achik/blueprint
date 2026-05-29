@@ -69,6 +69,57 @@ func runBPEnv(t *testing.T, env []string, args ...string) (stdout, stderr string
 	return outBuf.String(), errBuf.String(), exitCode
 }
 
+func TestExtractDoctorVersion(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "redis-cli", in: "redis-cli 8.8.0", want: "8.8.0"},
+		{name: "docker trailing comma", in: "Docker version 29.5.2, build 79eb04c", want: "29.5.2"},
+		{name: "node v prefix", in: "v22.22.0", want: "22.22.0"},
+		{name: "go version line", in: "go version go1.26.3 darwin/arm64", want: "1.26.3"},
+		{name: "tsc Version prefix", in: "Version 5.9.3", want: "5.9.3"},
+		{name: "drizzle-kit two-component", in: "drizzle-kit: v0.31.10\nNo config path provided", want: "0.31.10"},
+		{name: "psql full line", in: "psql (PostgreSQL) 16.4", want: "16.4"},
+		{name: "alembic", in: "alembic 1.18.4", want: "1.18.4"},
+		{name: "pytest", in: "pytest 8.3.3", want: "8.3.3"},
+		{name: "no version falls back", in: "no version info", want: "no version info"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractDoctorVersion(tc.in)
+			if got != tc.want {
+				t.Errorf("extractDoctorVersion(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDoctorCommand(t *testing.T) {
+	// Smoke test: doctor should run and print the expected banner. We don't
+	// pin exact dependency versions because they vary per machine, but we do
+	// guarantee none of the historic version-parsing bugs sneak back in.
+	stdout, _, _ := runBP(t, "doctor")
+	if !strings.Contains(stdout, "Blueprint Environment Check") {
+		t.Errorf("expected doctor banner, got %q", stdout)
+	}
+	for _, name := range []string{"Go", "Node.js", "Bun", "tsc", "drizzle-kit", "Python", "uv", "alembic", "pytest", "Docker", "Redis", "Git"} {
+		if !strings.Contains(stdout, name) {
+			t.Errorf("expected doctor output to mention %q, got %q", name, stdout)
+		}
+	}
+	// Guard against the old "redis-cli" / "29.5.2," version-parsing bugs.
+	if strings.Contains(stdout, "(redis-cli)") {
+		t.Errorf("redis version regressed to literal 'redis-cli': %s", stdout)
+	}
+	for _, bad := range []string{".,)", ",)"} {
+		if strings.Contains(stdout, bad) {
+			t.Errorf("version output contains trailing punctuation %q: %s", bad, stdout)
+		}
+	}
+}
+
 func TestVersion(t *testing.T) {
 	stdout, _, exitCode := runBP(t, "version")
 	if exitCode != 0 {

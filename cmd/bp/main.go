@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -2253,48 +2254,114 @@ func cmdExplain(code string) int {
 	return 0
 }
 
-// cmdDoctor checks the environment for Blueprint dependencies
+// doctorVersionRegex extracts a semver-ish version string from arbitrary
+// command output. Many tools embed extra prefix/suffix tokens (e.g.
+// `redis-cli 8.8.0`, `Docker version 29.5.2, build 79eb04c`) which made the
+// previous "Nth whitespace-separated token" heuristic produce garbage like
+// "redis-cli" or "29.5.2,". A regex pinned to the first M.m.p triple sidesteps
+// the per-tool special casing and is robust to trailing punctuation.
+var doctorVersionRegex = regexp.MustCompile(`(\d+\.\d+(?:\.\d+)?)`)
+
+// extractDoctorVersion pulls the first dotted version number from output, or
+// falls back to the trimmed line when no match is found so we still surface
+// *something* useful (e.g. for tools that just print a date).
+func extractDoctorVersion(output string) string {
+	trimmed := strings.TrimSpace(output)
+	if m := doctorVersionRegex.FindString(trimmed); m != "" {
+		return m
+	}
+	return trimmed
+}
+
+// runDoctorProbe executes a shell command and returns the trimmed stdout (or
+// combined output on failure) plus the success flag. Using sh -c keeps parity
+// with the older behaviour so probes like `bunx drizzle-kit --version` work.
+func runDoctorProbe(command string) (string, bool) {
+	cmd := exec.Command("sh", "-c", command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(output)), false
+	}
+	return strings.TrimSpace(string(output)), true
+}
+
+// cmdDoctor checks the environment for Blueprint dependencies.
+//
+// We probe a wide set of tools that the generated TypeScript and Python
+// projects actually shell out to (drizzle-kit, tsc, uv, alembic, pytest, ...).
+// Each check carries its own list of fallback probes so we can prefer e.g.
+// `bunx drizzle-kit --version` but fall back to `npx drizzle-kit --version`
+// when bun is missing — whichever first succeeds wins.
 func cmdDoctor() int {
-	checks := []struct {
-		Name     string `json:"name"`
-		Command  string `json:"-"`
-		Required bool   `json:"required"`
-		Found    bool   `json:"found"`
-		Version  string `json:"version,omitempty"`
-		Message  string `json:"message,omitempty"`
-	}{
-		{Name: "Go", Command: "go version", Required: false},
-		{Name: "Node.js", Command: "node --version", Required: true},
-		{Name: "Bun", Command: "bun --version", Required: true},
-		{Name: "Docker", Command: "docker --version", Required: false},
-		{Name: "PostgreSQL", Command: "psql --version", Required: false},
-		{Name: "Redis", Command: "redis-cli --version", Required: false},
-		{Name: "Git", Command: "git --version", Required: false},
+	type probe struct {
+		Name     string   `json:"name"`
+		Commands []string `json:"-"`
+		Required bool     `json:"required"`
+		Found    bool     `json:"found"`
+		Version  string   `json:"version,omitempty"`
+		Message  string   `json:"message,omitempty"`
+		// HintIfMissing is appended to the output when the probe fails;
+		// useful for "install via uv add" style nudges.
+		HintIfMissing string `json:"-"`
 	}
 
-	allPassed := true
+	checks := []probe{
+		{Name: "Go", Commands: []string{"go version"}, Required: false},
+		{Name: "Node.js", Commands: []string{"node --version"}, Required: false},
+		{Name: "npm", Commands: []string{"npm --version"}, Required: false},
+		{Name: "Bun", Commands: []string{"bun --version"}, Required: false},
+		{Name: "tsc", Commands: []string{"tsc --version", "npx --no-install tsc --version", "bunx tsc --version", "npx tsc --version"}, Required: false},
+		{Name: "drizzle-kit", Commands: []string{"bunx drizzle-kit --version", "npx --no-install drizzle-kit --version", "npx drizzle-kit --version"}, Required: false},
+		{Name: "Python", Commands: []string{"python3 --version"}, Required: false},
+		{Name: "uv", Commands: []string{"uv --version"}, Required: false},
+		{Name: "alembic", Commands: []string{"alembic --version"}, Required: false, HintIfMissing: "(install via uv add)"},
+		{Name: "pytest", Commands: []string{"pytest --version"}, Required: false, HintIfMissing: "(install via uv add)"},
+		{Name: "Docker", Commands: []string{"docker --version"}, Required: false},
+		{Name: "PostgreSQL", Commands: []string{"psql --version"}, Required: false},
+		{Name: "Redis", Commands: []string{"redis-cli --version"}, Required: false},
+		{Name: "Git", Commands: []string{"git --version"}, Required: false},
+	}
+
 	for i := range checks {
-		cmd := exec.Command("sh", "-c", checks[i].Command)
-		output, err := cmd.Output()
-		if err == nil {
-			checks[i].Found = true
-			version := strings.TrimSpace(string(output))
-			// Extract version number
-			parts := strings.Fields(version)
-			if len(parts) >= 3 {
-				checks[i].Version = parts[2]
-			} else if len(parts) >= 1 {
-				checks[i].Version = parts[0]
+		for _, cmd := range checks[i].Commands {
+			out, ok := runDoctorProbe(cmd)
+			if ok {
+				checks[i].Found = true
+				checks[i].Version = extractDoctorVersion(out)
+				break
 			}
-		} else {
-			checks[i].Found = false
+		}
+		if !checks[i].Found {
 			if checks[i].Required {
-				allPassed = false
 				checks[i].Message = "Required for running generated projects"
+			} else if checks[i].HintIfMissing != "" {
+				checks[i].Message = checks[i].HintIfMissing
 			} else {
 				checks[i].Message = "Optional"
 			}
 		}
+	}
+
+	// Toolchain gating: we need at least ONE TypeScript toolchain (bun OR
+	// node+npm) for the default target. python3 is only strictly required for
+	// --target python, which we can't detect from `bp doctor` alone, so we
+	// surface a soft warning rather than failing the check.
+	tsToolchainOK := false
+	nodeFound, npmFound := false, false
+	for _, c := range checks {
+		switch c.Name {
+		case "Bun":
+			if c.Found {
+				tsToolchainOK = true
+			}
+		case "Node.js":
+			nodeFound = c.Found
+		case "npm":
+			npmFound = c.Found
+		}
+	}
+	if nodeFound && npmFound {
+		tsToolchainOK = true
 	}
 
 	// Check environment variables
@@ -2349,12 +2416,17 @@ func cmdDoctor() int {
 	}
 
 	fmt.Println()
-	if allPassed {
-		fmt.Println("✅ All required dependencies found!")
-		return 0
+	if tsToolchainOK {
+		fmt.Println("✅ TypeScript toolchain found (need Bun OR Node.js+npm).")
 	} else {
-		fmt.Println("❌ Some required dependencies are missing.")
-		fmt.Println("   Install Node.js and Bun to run generated projects.")
-		return 1
+		fmt.Println("❌ No TypeScript toolchain detected.")
+		fmt.Println("   Install Bun (https://bun.sh) or Node.js+npm to run generated projects.")
 	}
+
+	fmt.Println("ℹ️  Python target (--target python) requires python3 + uv; alembic/pytest are installed via uv add inside generated projects.")
+
+	if tsToolchainOK {
+		return 0
+	}
+	return 1
 }
