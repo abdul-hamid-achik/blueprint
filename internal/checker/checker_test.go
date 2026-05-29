@@ -688,6 +688,8 @@ func TestInvalidFixturesFailChecker(t *testing.T) {
 		"wrong_arrow_order.bp":    true,
 		"nested_try.bp":           true,
 		"deep_nesting.bp":         true,
+		"unknown_ref_target.bp":   true,
+		"unknown_external.bp":     true,
 	}
 
 	files, err := filepath.Glob("../../testdata/invalid/*.bp")

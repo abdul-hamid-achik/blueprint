@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Structured codes L001 + P001 + C013–C015**. Extended the structured-codes namespace from "12 sites with a code" to honest first-class coverage of the cases every real spec hits: `L001` (lexer) for `'|'` not followed by `'>'`; `P001` (parser) for a file that opens with a non-blueprint top-level construct (the parser used to emit this without a code while the docs already claimed `C001`); `C013` (checker) for `unknown type`; `C014` for `ref(<model>)` pointing at a name that isn't a model; `C015` for `call <service> ...` where the service isn't declared via `external`. The lexer's `LexError` gained `Code` and `Hint` fields; the parser propagates both into `ParseError` so `error[L001]: …\nHint: …` renders end-to-end. New invariant: when a lex error and a follow-on parser error point at the exact same byte offset, the parser version is dropped — users used to see both `L001: '|' is not valid alone` and a downstream `Expected '{', got 'Illegal'` for the same character. `docs/error-codes.md` (and the mirrored `internal/diag/error-codes.md` that `bp explain` reads) gain a worked example for each new code; `bp explain L001` / `P001` / `C013` / `C014` / `C015` all return non-empty docs. Two new `testdata/invalid` fixtures (`unknown_ref_target.bp`, `unknown_external.bp`) are wired into both the parser's "expect no parser errors" pass-through list and the checker's "expect at least one error" harness. Pillar 3 row "Structured error codes" flips 🟡 → ✅.
+
 ## [0.9.0] - 2026-05-29
 
 ### Added

@@ -11,6 +11,18 @@ import (
 const maxExprDepth = 256
 const maxErrors = 50
 
+// Parser error codes — keep in sync with docs/error-codes.md and
+// internal/diag/error-codes.md (the drift test enforces match).
+const (
+	// CodeMissingBlueprint mirrors checker.CodeMissingBlueprint for the case
+	// where the parser sees a non-blueprint top-level construct before any
+	// blueprint block. The same code is reused so `bp explain C001`-equivalent
+	// guidance shows up regardless of which pass first flagged the problem.
+	// (The parser-specific code is P001; the checker keeps C001 for the
+	// "blueprint block exists somewhere but is invalid" cases.)
+	CodeMissingBlueprint = "P001"
+)
+
 // Parser parses a token stream into an AST.
 type Parser struct {
 	tokens []lexer.Token
@@ -18,6 +30,10 @@ type Parser struct {
 	errors []ParseError
 	file   string
 	depth  int
+	// lexOffsets holds the byte offsets of all lex errors so that follow-on
+	// parser errors at the same offset (e.g. a "expected '}', got 'Illegal'"
+	// triggered by a lexer-rejected character) can be suppressed.
+	lexOffsets map[int]bool
 }
 
 // ParseFile tokenizes and parses a .bp source file, returning the AST and any errors.
@@ -25,13 +41,21 @@ func ParseFile(filename string, src []byte) (*ast.File, []ParseError) {
 	tokens, lexErrors := lexer.Tokenize(filename, src)
 
 	p := &Parser{
-		tokens: tokens,
-		file:   filename,
+		tokens:     tokens,
+		file:       filename,
+		lexOffsets: make(map[int]bool, len(lexErrors)),
 	}
 
-	// Convert lex errors to parse errors
+	// Convert lex errors to parse errors, preserving any structured Code/Hint
+	// the lexer attached (see internal/lexer.addErrorCode).
 	for _, le := range lexErrors {
-		p.errors = append(p.errors, ParseError{Loc: le.Loc, Message: le.Message})
+		p.errors = append(p.errors, ParseError{
+			Loc:     le.Loc,
+			Message: le.Message,
+			Hint:    le.Hint,
+			Code:    le.Code,
+		})
+		p.lexOffsets[le.Loc.Offset] = true
 	}
 
 	file := p.parseFile()
@@ -44,12 +68,19 @@ func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
 	tokens, lexErrors := lexer.Tokenize(filename, src)
 
 	p := &Parser{
-		tokens: tokens,
-		file:   filename,
+		tokens:     tokens,
+		file:       filename,
+		lexOffsets: make(map[int]bool, len(lexErrors)),
 	}
 
 	for _, le := range lexErrors {
-		p.errors = append(p.errors, ParseError{Loc: le.Loc, Message: le.Message})
+		p.errors = append(p.errors, ParseError{
+			Loc:     le.Loc,
+			Message: le.Message,
+			Hint:    le.Hint,
+			Code:    le.Code,
+		})
+		p.lexOffsets[le.Loc.Offset] = true
 	}
 
 	f := &ast.File{Loc: p.peek().Loc}
@@ -61,7 +92,7 @@ func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
 			defer func() {
 				if r := recover(); r != nil {
 					if err, ok := r.(ParseError); ok {
-						p.errors = append(p.errors, err)
+						p.appendRecovered(err)
 					} else {
 						panic(r)
 					}
@@ -93,7 +124,7 @@ func (p *Parser) parseFile() *ast.File {
 			defer func() {
 				if r := recover(); r != nil {
 					if err, ok := r.(ParseError); ok {
-						p.errors = append(p.errors, err)
+						p.appendRecovered(err)
 					} else {
 						panic(r) // re-panic programming errors
 					}
@@ -103,7 +134,7 @@ func (p *Parser) parseFile() *ast.File {
 			f.Blueprint = p.parseBlueprintBlock(intent)
 		}()
 	} else {
-		p.addError(p.peek().Loc,
+		p.addErrorCode(p.peek().Loc, CodeMissingBlueprint,
 			"Expected 'blueprint' declaration as first block",
 			"Every .bp file must start with: blueprint \"name\" { ... }")
 	}
@@ -123,7 +154,7 @@ func (p *Parser) parseTopLevelBlock() (block ast.TopLevel) {
 	defer func() {
 		if r := recover(); r != nil {
 			if err, ok := r.(ParseError); ok {
-				p.errors = append(p.errors, err)
+				p.appendRecovered(err)
 			} else {
 				panic(r) // re-panic programming errors
 			}
@@ -246,10 +277,41 @@ func (p *Parser) atEnd() bool {
 }
 
 func (p *Parser) addError(loc lexer.Loc, msg, hint string) {
+	// Suppress follow-on parser noise at the exact byte offset where the
+	// lexer already reported a problem. Otherwise the user sees both
+	// `L001: '|' is not valid alone` and a downstream `Expected '}', got
+	// 'Illegal'` pointing at the same character.
+	if p.lexOffsets != nil && p.lexOffsets[loc.Offset] {
+		return
+	}
 	p.errors = append(p.errors, ParseError{Loc: loc, Message: msg, Hint: hint})
 	if len(p.errors) >= maxErrors {
 		panic(ParseError{Loc: loc, Message: "too many errors, stopping"})
 	}
+}
+
+// addErrorCode is addError with a structured error code (e.g. "P001") so
+// `bp explain <code>` can surface the long-form explanation. Sites covered
+// today: missing blueprint block (P001).
+func (p *Parser) addErrorCode(loc lexer.Loc, code, msg, hint string) {
+	if p.lexOffsets != nil && p.lexOffsets[loc.Offset] {
+		return
+	}
+	p.errors = append(p.errors, ParseError{Loc: loc, Message: msg, Hint: hint, Code: code})
+	if len(p.errors) >= maxErrors {
+		panic(ParseError{Loc: loc, Message: "too many errors, stopping"})
+	}
+}
+
+// appendRecovered is the single funnel for ParseErrors produced via panic +
+// recover (e.g. by `expect`). It applies the same lex-offset suppression as
+// addError so that a downstream "Expected '{', got 'Illegal'" raised at the
+// exact byte the lexer already flagged doesn't double up.
+func (p *Parser) appendRecovered(err ParseError) {
+	if p.lexOffsets != nil && p.lexOffsets[err.Loc.Offset] {
+		return
+	}
+	p.errors = append(p.errors, err)
 }
 
 func (p *Parser) recoverToNextBlock() {

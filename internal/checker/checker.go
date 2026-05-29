@@ -92,6 +92,15 @@ const (
 	CodeArrowStmtOrder = "C011"
 	// CodeNestedTryRecover = try/recover blocks cannot be nested.
 	CodeNestedTryRecover = "C012"
+	// CodeUnknownType = a NamedType references a type that isn't a primitive
+	// and isn't defined via `type`, `alias`, or `enum`.
+	CodeUnknownType = "C013"
+	// CodeUnknownRefTarget = `ref <model>` points at an identifier that isn't
+	// a known model (or isn't a model symbol at all).
+	CodeUnknownRefTarget = "C014"
+	// CodeUnknownExternal = `call <service> ...` references a service that
+	// wasn't declared via an `external "..." { ... }` block.
+	CodeUnknownExternal = "C015"
 )
 
 // --- Pass 1: Collect top-level declarations ---
@@ -767,7 +776,7 @@ func (c *Checker) checkExternalCall(call *ast.FnCall) {
 		return
 	}
 	if !c.hasExternal(service.Name) {
-		c.addError(call.Loc,
+		c.addErrorCode(call.Loc, CodeUnknownExternal,
 			fmt.Sprintf("call references unknown external %q", service.Name),
 			"Declare it with: external \"service-name\" { ... }",
 		)
@@ -1029,7 +1038,7 @@ func (c *Checker) checkTypeRef(te ast.TypeExpr) {
 				if suggestion := suggestName(t.Name, candidates); suggestion != "" {
 					hint += fmt.Sprintf("; did you mean %q?", suggestion)
 				}
-				c.addError(t.Loc,
+				c.addErrorCode(t.Loc, CodeUnknownType,
 					fmt.Sprintf("unknown type %q", t.Name),
 					hint,
 				)
@@ -1050,7 +1059,7 @@ func (c *Checker) checkRefTarget(expr ast.Expr, loc lexer.Loc) {
 			if suggestion := suggestName(id.Name, c.global.NamesOfKind(SymModel)); suggestion != "" {
 				hint += fmt.Sprintf("; did you mean %q?", suggestion)
 			}
-			c.addError(loc,
+			c.addErrorCode(loc, CodeUnknownRefTarget,
 				fmt.Sprintf("ref references unknown model %q", id.Name),
 				hint,
 			)

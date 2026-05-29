@@ -52,7 +52,7 @@ Errors point at the source location, suggest a fix, and link to the docs.
 | Gate | Threshold | Verified by |
 |------|-----------|-------------|
 | `bp check` errors include file:line:col + a `Hint:` | 100% of error kinds | All 54 checker `addError` sites populate `Hint` (verified `grep`) |
-| Errors carry structured codes (P###/C###/...) | top 80% of common errors covered | `internal/diag` + `docs/error-codes.md`; C001–C005 covered today |
+| Errors carry structured codes (L###/P###/C###/...) | top 80% of common errors covered | `internal/diag` + `docs/error-codes.md`; L001, P001, C001–C015 covered today |
 | `bp fmt` is idempotent (`fmt(fmt(x)) == fmt(x)`) | 100% of `testdata/valid/*` | CI step `bp fmt --check` (extend to all examples) |
 | `bp lint` produces 0 warnings on every shipped example | 100% | CI step "Lint examples" |
 | LSP provides at least: diagnostics, go-to-def, hover for `@` intents | implemented and tested in VS Code | `internal/lsp` tests + manual VS Code probe |
@@ -98,7 +98,7 @@ table and the CHANGELOG together.
 | 2 | `bp build` idempotent | ✅ green (CI gate) | 2026-05-29 |
 | 2 | No `: any` in handler boundaries | 🟡 audit pending | 2026-05-29 |
 | 3 | Errors have `Hint:` on every kind | ✅ green (54/54 checker sites) | 2026-05-29 |
-| 3 | Structured error codes | 🟡 12 of ~15 common sites covered (C001–C012); `bp explain` shipped | 2026-05-29 |
+| 3 | Structured error codes | ✅ green (L001, P001, C001–C015 documented + emitted; `bp explain` shipped) | 2026-05-29 |
 | 3 | `bp fmt --check` on all examples | 🟡 hello-world wired in CI; data-op shorthand bug fixed (`internal/ast/printer.go`), remaining 4 examples blocked only on column-alignment + blank-line preservation — see BACKLOG | 2026-05-29 |
 | 3 | LSP feature depth | 🔴 basic only | 2026-05-29 |
 | 4 | Self-contained `bp test` | ✅ shipped | 2026-05-29 |

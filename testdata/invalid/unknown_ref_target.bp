@@ -1,0 +1,12 @@
+blueprint "test" {
+  version "0.1.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+model post {
+  id     uuid    primary
+  title  string  required
+  author uuid    ref(non_existent_model)
+}

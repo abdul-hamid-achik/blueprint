@@ -1595,6 +1595,8 @@ func TestInvalidFixtures(t *testing.T) {
 		"wrong_arrow_order.bp":    true,
 		"nested_try.bp":           true,
 		"deep_nesting.bp":         true,
+		"unknown_ref_target.bp":   true,
+		"unknown_external.bp":     true,
 	}
 	// Files that require future-milestone features to detect errors.
 	futureFeature := map[string]bool{

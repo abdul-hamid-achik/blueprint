@@ -4,7 +4,8 @@
 // converts to *Diagnostic when it needs a human-readable rendering. This
 // centralises the source-line + caret + Hint formatting, ANSI color decisions
 // (TTY-aware, NO_COLOR honoured), and the structured-error-code namespace
-// (P### parser, C### checker, R### resolver, L### linter, G### codegen).
+// (L### lexer, P### parser, C### checker, R### resolver, G### codegen). The
+// linter's style warnings will move to their own namespace in a follow-up.
 package diag
 
 import (

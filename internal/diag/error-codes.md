@@ -24,14 +24,64 @@ Codes are namespaced by the pass that emits them:
 
 | Prefix | Pass | Notes |
 |--------|------|-------|
-| `P###` | Parser | Syntax errors. Not yet codified — coming next. |
-| `C###` | Checker | Semantic errors. First batch below. |
+| `L###` | Lexer | Token-level errors. `L001` documented below. |
+| `P###` | Parser | Syntax errors. `P001` documented below; broader coverage in progress. |
+| `C###` | Checker | Semantic errors. `C001`–`C015` documented below. |
 | `R###` | Resolver | Reserved. Resolver does not currently emit user-facing errors. |
-| `L###` | Linter | Reserved. Style warnings will be codified next. |
 | `G###` | Codegen | Reserved. |
+
+(Note: the linter's style warnings will move to their own namespace in a
+follow-up; for now `L###` belongs to the lexer.)
 
 Not every error has a code today; codes are added as we document them. The
 formatter omits the brackets entirely when `Code` is empty.
+
+---
+
+## Lexer codes (L###)
+
+### L001 — lone `|` not part of `|>`
+
+The lexer rejects a `|` that isn't followed by `>`. The only place a pipe
+character appears in `.bp` source is the pipeline arrow `|>`, so a bare `|` is
+almost always a typo.
+
+```bp
+model user |    # L001: did you mean '{' here?
+  id uuid primary
+}
+```
+
+The accompanying hint suggests `|>`. If you meant to start a block, use `{`.
+
+---
+
+## Parser codes (P###)
+
+### P001 — missing blueprint block
+
+The parser saw a top-level construct (model, endpoint, fn, etc.) before any
+`blueprint` declaration. Every `.bp` source file must open with a `blueprint`
+block that names the service and configures its runtime; the parser uses that
+block as the file's anchor.
+
+```bp
+secret API_KEY required   # P001 if no `blueprint` block precedes this
+```
+
+Move (or add) the `blueprint` declaration to the top of the file:
+
+```bp
+blueprint "todo-api" {
+  version "1.0.0"
+  runtime node
+}
+
+secret API_KEY required
+```
+
+The checker emits `C001` for the related case where the parser saw no
+top-level constructs at all (empty file).
 
 ---
 
@@ -175,6 +225,61 @@ Flatten the error handling or push the inner failure into its own `pipe`.
 |> try {
   |> try { ... } recover { ... }   # C012
 } recover { ... }
+```
+
+### C013 — unknown type
+
+A field or signature references a type that isn't a Blueprint primitive and
+isn't declared as a `type`, `alias`, or `enum`.
+
+```bp
+model product {
+  id    uuid       primary
+  price NonExistent required   # C013
+}
+```
+
+Either declare the type:
+
+```bp
+type money { amount int; currency string }
+```
+
+or replace the reference with a primitive (`int`, `string`, `decimal`, …) or
+an existing alias. If the message includes a `did you mean "..."?` suggestion,
+that's the closest already-declared name.
+
+### C014 — ref references unknown model
+
+`ref <name>` must point at a `model` declared in the same compilation. Common
+shapes:
+
+```bp
+model post {
+  id      uuid primary
+  author  ref autor   # C014: did you mean "author"?
+}
+```
+
+Declare the model first or fix the spelling. The hint includes a "did you
+mean?" suggestion for close matches over the known model names.
+
+### C015 — call references unknown external
+
+`call <service> METHOD /path` requires `<service>` to be declared via an
+`external "..." { ... }` block. The checker emits C015 when no such block
+exists.
+
+```bp
+|> resp = call payments POST /charge   # C015 unless `external "payments"` exists
+```
+
+Declare the service:
+
+```bp
+external "payments" {
+  base_url "https://api.example.com"
+}
 ```
 
 ---

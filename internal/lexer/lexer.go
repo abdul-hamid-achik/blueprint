@@ -67,6 +67,21 @@ func (l *lexer) addError(loc Loc, msg string) {
 	l.errors = append(l.errors, LexError{Loc: loc, Message: msg})
 }
 
+// addErrorCode is addError plus a structured error code (e.g. "L001") and an
+// optional Hint. Use this for sites documented in docs/error-codes.md so users
+// can `bp explain <code>` to view the long-form explanation.
+func (l *lexer) addErrorCode(loc Loc, code, msg, hint string) {
+	l.errors = append(l.errors, LexError{Loc: loc, Message: msg, Hint: hint, Code: code})
+}
+
+// Lexer error codes — keep in sync with docs/error-codes.md and
+// internal/diag/error-codes.md (the drift test enforces match).
+const (
+	// CodeLonePipe = `|` not followed by `>` (the only legal use is the
+	// pipeline arrow `|>`).
+	CodeLonePipe = "L001"
+)
+
 func (l *lexer) lastTokenKind() TokenKind {
 	if len(l.tokens) == 0 {
 		return TokenEOF
@@ -252,7 +267,10 @@ func (l *lexer) scanPipe() {
 		return
 	}
 	l.emit(TokenIllegal, "|", loc)
-	l.addError(loc, "'|' is not valid alone. Did you mean '|>'?")
+	l.addErrorCode(loc, CodeLonePipe,
+		"'|' is not valid alone",
+		"Did you mean '|>' (the pipeline arrow)?",
+	)
 }
 
 func (l *lexer) scanAt() {

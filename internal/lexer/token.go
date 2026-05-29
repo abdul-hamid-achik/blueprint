@@ -484,11 +484,22 @@ func (l Loc) String() string {
 }
 
 // LexError represents an error found during lexing.
+//
+// Code is an optional structured error code (e.g. "L001") used by
+// `bp explain <code>` to surface long-form documentation. Hint, when
+// non-empty, is rendered after the error message by the shared diagnostic
+// formatter (see internal/diag).
 type LexError struct {
 	Loc     Loc
 	Message string
+	Hint    string
+	Code    string
 }
 
 func (e LexError) Error() string {
-	return fmt.Sprintf("%s: %s", e.Loc, e.Message)
+	s := fmt.Sprintf("%s: %s", e.Loc, e.Message)
+	if e.Hint != "" {
+		s += "\n  Hint: " + e.Hint
+	}
+	return s
 }

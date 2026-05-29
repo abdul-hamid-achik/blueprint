@@ -1,0 +1,11 @@
+blueprint "test" {
+  version "0.1.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+GET /api/me {
+  |> user = call payments GET /v1/me
+  -> 200 user
+}
