@@ -416,13 +416,20 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	routeVar := toCamelCase(resource) + "Routes"
 	if len(allCtxVars) > 0 {
 		// Type the Hono app with Variables so c.get()/c.set() are type-safe.
+		// For middleware-injected vars whose source model is known we wrap
+		// the Drizzle row type with a mapped NonNullable so columns without
+		// `required` (just `default(...)`) don't show as `T | null` and
+		// break downstream handler code that's already gated by a middleware
+		// `guard` — Blueprint's contract is "if it got injected, it's usable".
+		// Tracked-but-nullable-aware schemas can be added later; for now this
+		// matches the de-facto runtime behavior the previous `: any` shipped.
 		varKeys := sortedKeys2(allCtxVars)
 		var fields []string
 		for _, k := range varKeys {
 			typeStr := "any"
 			if model, ok := ctxVarModel[k]; ok {
-				// `typeof schema.<model>.$inferSelect` is Drizzle's row type.
-				typeStr = "typeof schema." + toCamelCase(model) + ".$inferSelect"
+				rowT := "typeof schema." + toCamelCase(model) + ".$inferSelect"
+				typeStr = fmt.Sprintf("{ [K in keyof %s]: NonNullable<%s[K]> }", rowT, rowT)
 			}
 			fields = append(fields, k+": "+typeStr)
 		}
