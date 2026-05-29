@@ -455,8 +455,17 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// src/functions/<name>.ts
-	// Collect all impl module stubs that need merging (same module, multiple functions)
-	implModuleFuncs := make(map[string][]string) // stub path -> func names
+	// Collect all impl module stubs that need merging (same module, multiple
+	// functions). We track the resolved exported name alongside the source
+	// *ast.Fn so the merge step can emit typed signatures from fn.Inputs /
+	// fn.Outputs — matching the per-fn path's typing (see genFunction) so
+	// users opening the scaffold file see the real signatures, not
+	// `...args: any[]`.
+	type implStub struct {
+		Name string   // exported function name (after `func:` override)
+		Fn   *ast.Fn  // source AST node, for input/output types
+	}
+	implModuleFuncs := make(map[string][]implStub) // stub path -> stubs
 	for _, fn := range fns {
 		if fn.Impl != nil {
 			mod := ""
@@ -474,7 +483,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 			}
 			_, stubPath, localModule := nativeImplModulePaths(mod)
 			if localModule {
-				implModuleFuncs[stubPath] = append(implModuleFuncs[stubPath], funcName)
+				implModuleFuncs[stubPath] = append(implModuleFuncs[stubPath], implStub{Name: funcName, Fn: fn})
 			}
 		}
 	}
@@ -482,15 +491,16 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		files = append(files, g.genFunction(fn)...)
 	}
 	// Merge stubs: when multiple functions share a module, combine their exports
-	for stubPath, funcNames := range implModuleFuncs {
-		if len(funcNames) <= 1 {
+	for stubPath, stubs := range implModuleFuncs {
+		if len(stubs) <= 1 {
 			continue
 		}
 		var sb strings.Builder
 		sb.WriteString("// Blueprint implementation scaffold. This file is user-owned; bp build will not overwrite it.\n")
-		for _, fn := range funcNames {
-			fmt.Fprintf(&sb, "export async function %s(...args: any[]): Promise<any> {\n", fn)
-			fmt.Fprintf(&sb, "  throw new Error('Not implemented: %s');\n", fn)
+		for _, stub := range stubs {
+			paramsStr, retType := g.fnSignatureTS(stub.Fn)
+			fmt.Fprintf(&sb, "export async function %s(%s): Promise<%s> {\n", stub.Name, paramsStr, retType)
+			fmt.Fprintf(&sb, "  throw new Error('Not implemented: %s');\n", stub.Name)
 			sb.WriteString("}\n\n")
 		}
 		merged := codegen.OutputFile{Path: stubPath, Content: []byte(sb.String()), UserOwned: true}

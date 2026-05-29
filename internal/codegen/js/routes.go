@@ -384,8 +384,12 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
 
-	// Collect context variables injected by middleware for Hono type parameter
+	// Collect context variables injected by middleware for Hono type parameter.
+	// We track both the var set and a camelCasedVar -> Blueprint model name map
+	// so the emitted `Hono<{ Variables: { ... } }>` types each slot to the
+	// underlying Drizzle row type instead of falling back to `any`.
 	allCtxVars := make(map[string]bool)
+	ctxVarModel := make(map[string]string)
 	for _, ep := range endpoints {
 		for _, meta := range ep.Meta {
 			if meta.Kind == "use" && meta.Use != nil {
@@ -396,6 +400,14 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 					for k := range extractInjectedVars(mw.After) {
 						allCtxVars[toCamelCase(k)] = true
 					}
+					// extractInjectedModelMap returns model -> injected var name;
+					// invert to var -> model so we can look up by Hono slot.
+					for model, varName := range extractInjectedModelMap(mw.Before) {
+						ctxVarModel[toCamelCase(varName)] = model
+					}
+					for model, varName := range extractInjectedModelMap(mw.After) {
+						ctxVarModel[toCamelCase(varName)] = model
+					}
 				}
 			}
 		}
@@ -403,11 +415,16 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 
 	routeVar := toCamelCase(resource) + "Routes"
 	if len(allCtxVars) > 0 {
-		// Type the Hono app with Variables so c.get()/c.set() are type-safe
+		// Type the Hono app with Variables so c.get()/c.set() are type-safe.
 		varKeys := sortedKeys2(allCtxVars)
 		var fields []string
 		for _, k := range varKeys {
-			fields = append(fields, k+": any")
+			typeStr := "any"
+			if model, ok := ctxVarModel[k]; ok {
+				// `typeof schema.<model>.$inferSelect` is Drizzle's row type.
+				typeStr = "typeof schema." + toCamelCase(model) + ".$inferSelect"
+			}
+			fields = append(fields, k+": "+typeStr)
 		}
 		fmt.Fprintf(&b, "export const %s = new Hono<{ Variables: { %s } }>();\n\n",
 			routeVar, strings.Join(fields, "; "))

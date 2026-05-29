@@ -9,6 +9,28 @@ import (
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen"
 )
 
+// fnSignatureTS returns the typed TypeScript parameter list and return type
+// for a Blueprint `fn` declaration. Mirrors the per-fn emit logic in
+// genFunction (model-typed inputs collapse to `any` to dodge Drizzle nullable
+// field issues; outputs stay `any` for now since OutputStmt is value-shaped,
+// not type-shaped). Shared by the merged-stub scaffold path in generateAll so
+// user-owned scaffolds expose the real signatures rather than `...args: any[]`.
+func (g *Generator) fnSignatureTS(fn *ast.Fn) (paramsStr, retType string) {
+	params := make([]string, len(fn.Inputs))
+	for i, inp := range fn.Inputs {
+		paramType := typeToTS(inp.Type)
+		if nt, ok := inp.Type.(*ast.NamedType); ok && g.declaredModels[nt.Name] {
+			paramType = "any"
+		}
+		params[i] = fmt.Sprintf("%s: %s", toCamelCase(inp.Name), paramType)
+	}
+	retType = "void"
+	if len(fn.Outputs) > 0 && fn.Outputs[0].Value != nil {
+		retType = "any"
+	}
+	return strings.Join(params, ", "), retType
+}
+
 // --- Functions ---
 
 func (g *Generator) genFunction(fn *ast.Fn) []codegen.OutputFile {
