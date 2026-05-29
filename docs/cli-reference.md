@@ -233,21 +233,30 @@ bp test my-service.bp
 
 ## `bp migrate`
 
-Run Drizzle Kit database migrations.
+Run database migrations. Default delegates to `drizzle-kit`; `--target python`
+delegates to `alembic` via `uv run`.
 
 ```bash
-bp migrate <file.bp> [generate|push|studio] [--out <dir>]
+bp migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>]
 ```
 
-Builds the service first, then delegates to `drizzle-kit`.
+Builds the service first, then runs the matching migration tool.
 
 **Subcommands:**
 
-| Subcommand | Description |
-|------------|-------------|
-| `generate` | Generate SQL migration files from schema changes |
-| `push` | Push schema directly to the database (no migration files) |
-| `studio` | Open Drizzle Studio (visual database UI) |
+| Subcommand | node (drizzle-kit) | python (alembic) |
+|------------|--------------------|------------------|
+| `generate` | `drizzle-kit generate` | `alembic revision --autogenerate -m "auto"` |
+| `push` | `drizzle-kit push` | `alembic upgrade head` |
+| `check` | `drizzle-kit check` | `alembic check` |
+| `studio` | Open Drizzle Studio | unsupported (alembic has no GUI) |
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out <dir>` | `generated/` | Build output directory |
+| `--target <name>` | `node` | Codegen target: `node` (drizzle-kit) or `python` (alembic) |
 
 **Examples:**
 
@@ -260,7 +269,16 @@ bp migrate my-service.bp generate
 
 # Open Drizzle Studio
 bp migrate my-service.bp studio
+
+# Python: generate an alembic revision
+bp migrate my-service.bp generate --target python
+
+# Python: apply migrations
+bp migrate my-service.bp push --target python
 ```
+
+`--target python` requires `uv` on PATH. The generated project's `pyproject.toml`
+already pins `alembic`, so the first `uv run` will install it on demand.
 
 ---
 
@@ -519,10 +537,11 @@ bp diff my-service.bp --apply
 
 ## `bp deploy`
 
-Deploy the generated application to Docker or Fly.io.
+Build a Docker image from the generated project, then smoke-test it by running
+the image and probing `/health`.
 
 ```bash
-bp deploy <file.bp> [--out <dir>] [--tag <image>]
+bp deploy <file.bp> [--out <dir>] [--tag <image>] [--target <name>] [--no-run]
 ```
 
 **Flags:**
@@ -530,16 +549,21 @@ bp deploy <file.bp> [--out <dir>] [--tag <image>]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <dir>` | `generated/` | Build output directory |
-| `--tag <image>` | blueprint-app | Docker image tag |
+| `--tag <image>` | `blueprint-app:latest` | Docker image tag |
+| `--target <name>` | `docker` | Deploy target. `fly` is reserved for v0.11. |
+| `--no-run` | false | Skip the smoke-test `docker run` after build (e.g. CI image builds) |
 
 **Example:**
 
 ```bash
-# Build and deploy locally with Docker
+# Build and smoke-test locally
 bp deploy my-service.bp --tag my-app:latest
 
-# Deploy to Fly.io (requires flyctl)
-bp deploy my-service.bp --tag my-app:latest
+# Build the image but skip the smoke run (CI image builds)
+bp deploy my-service.bp --tag my-app:latest --no-run
+
+# Fly.io is not implemented yet (see docs/production-readiness.md Pillar 5)
+bp deploy my-service.bp --target fly   # exits 2 with a clear error
 ```
 
 ---

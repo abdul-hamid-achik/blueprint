@@ -247,17 +247,21 @@ func main() {
 		os.Exit(cmdTest(os.Args[2], outDir))
 	case "migrate":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("migrate", "migrate <file.bp> [generate|push|studio] [--out <dir>]",
-				"Build and run Drizzle Kit database migrations.",
-				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+			printCommandHelp("migrate", "migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>]",
+				"Build and run database migrations.\nnode (default): Drizzle Kit. python: Alembic via uv.",
+				[][2]string{
+					{"--out <dir>", "Output directory (default: generated/)"},
+					{"--target <name>", "Codegen target: node (default, drizzle-kit) or python (alembic)"},
+				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp migrate <file.bp> [generate|push|studio] [--out <dir>]")
+			fmt.Fprintln(os.Stderr, "Usage: bp migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>]")
 			os.Exit(1)
 		}
 		outDir := "generated"
 		subCmd := "generate"
+		target := targetNode
 		for i := 3; i < len(os.Args); i++ {
 			switch os.Args[i] {
 			case "generate", "push", "studio", "check":
@@ -267,9 +271,14 @@ func main() {
 					outDir = os.Args[i+1]
 					i++
 				}
+			case "--target":
+				if i+1 < len(os.Args) {
+					target = os.Args[i+1]
+					i++
+				}
 			}
 		}
-		os.Exit(cmdMigrate(os.Args[2], outDir, subCmd))
+		os.Exit(cmdMigrate(os.Args[2], outDir, subCmd, target))
 	case "generate":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("generate", "generate <file.bp> [--write]",
@@ -406,29 +415,46 @@ func main() {
 		os.Exit(cmdDiff(os.Args[2], outDir, target, reactQuery, frontendOnly, genTests, apply, exitOnDiff, noColor))
 	case "deploy":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("deploy", "deploy <file.bp> [--out <dir>] [--tag <tag>]",
+			printCommandHelp("deploy", "deploy <file.bp> [--out <dir>] [--tag <tag>] [--target <name>] [--no-run]",
 				"Build and run a Docker container from your Blueprint.",
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
-					{"--tag <tag>", "Docker image tag (default: blueprint-app:latest)"}})
+					{"--tag <tag>", "Docker image tag (default: blueprint-app:latest)"},
+					{"--target <name>", "Deploy target: docker (default). fly is reserved for v0.11."},
+					{"--no-run", "Skip the smoke-test docker run after build"},
+				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp deploy <file.bp> [--out <dir>] [--tag <tag>]")
+			fmt.Fprintln(os.Stderr, "Usage: bp deploy <file.bp> [--out <dir>] [--tag <tag>] [--target <name>] [--no-run]")
 			os.Exit(1)
 		}
 		outDir := "generated"
 		tag := "blueprint-app:latest"
+		deployTarget := "docker"
+		noRun := false
 		for i := 3; i < len(os.Args); i++ {
-			if os.Args[i] == "--out" && i+1 < len(os.Args) {
-				outDir = os.Args[i+1]
-				i++
-			} else if os.Args[i] == "--tag" && i+1 < len(os.Args) {
-				tag = os.Args[i+1]
-				i++
+			switch os.Args[i] {
+			case "--out":
+				if i+1 < len(os.Args) {
+					outDir = os.Args[i+1]
+					i++
+				}
+			case "--tag":
+				if i+1 < len(os.Args) {
+					tag = os.Args[i+1]
+					i++
+				}
+			case "--target":
+				if i+1 < len(os.Args) {
+					deployTarget = os.Args[i+1]
+					i++
+				}
+			case "--no-run":
+				noRun = true
 			}
 		}
-		os.Exit(cmdDeploy(os.Args[2], outDir, tag))
+		os.Exit(cmdDeploy(os.Args[2], outDir, tag, deployTarget, noRun))
 	case "version", "--version", "-v":
 		fmt.Printf("bp version %s\n", version)
 	case "completion":
@@ -1045,11 +1071,45 @@ func cmdTest(filename, outDir string) int {
 	return 0
 }
 
-func cmdMigrate(filename, outDir, subCmd string) int {
-	if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
+func cmdMigrate(filename, outDir, subCmd, target string) int {
+	// Validate target up front so we don't half-build a node tree before
+	// realising the user asked for python or vice versa.
+	canonical, err := resolveTarget(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return 2
+	}
+	target = canonical
+
+	if code := cmdBuild(filename, outDir, target, false, false, false); code != 0 {
 		return code
 	}
 
+	// Copy .env from the project directory (parent of outDir) to outDir if it exists.
+	// Both drizzle-kit and alembic read DATABASE_URL from .env, so keep this
+	// behavior identical across targets.
+	projectDir := filepath.Dir(filename)
+	envSrc := filepath.Join(projectDir, ".env")
+	envDst := filepath.Join(outDir, ".env")
+	if _, err := os.Stat(envSrc); err == nil {
+		if envContent, err := os.ReadFile(envSrc); err == nil {
+			if err := os.WriteFile(envDst, envContent, 0644); err == nil {
+				fmt.Printf("Copied .env from %s to %s\n", projectDir, outDir)
+			}
+		}
+	}
+
+	switch target {
+	case targetPython:
+		return runAlembic(outDir, subCmd)
+	default:
+		return runDrizzleKit(outDir, subCmd)
+	}
+}
+
+// runDrizzleKit installs node deps if needed, then shells to `bunx drizzle-kit
+// <subCmd>` in outDir.
+func runDrizzleKit(outDir, subCmd string) int {
 	if _, err := os.Stat(filepath.Join(outDir, "node_modules")); os.IsNotExist(err) {
 		fmt.Printf("Installing dependencies in %s...\n", outDir)
 		install := exec.Command("bun", "install")
@@ -1062,25 +1122,55 @@ func cmdMigrate(filename, outDir, subCmd string) int {
 		}
 	}
 
-	// Copy .env from the project directory (parent of outDir) to generated/ if it exists.
-	// Drizzle-kit needs DATABASE_URL which is typically in the project root's .env file.
-	projectDir := filepath.Dir(filename)
-	envSrc := filepath.Join(projectDir, ".env")
-	envDst := filepath.Join(outDir, ".env")
-	if _, err := os.Stat(envSrc); err == nil {
-		if envContent, err := os.ReadFile(envSrc); err == nil {
-			if err := os.WriteFile(envDst, envContent, 0644); err == nil {
-				fmt.Printf("Copied .env from %s to %s\n", projectDir, outDir)
-			}
-		}
-	}
-
 	fmt.Printf("Running drizzle-kit %s in %s...\n", subCmd, outDir)
 	cmd := exec.Command("bunx", "drizzle-kit", subCmd)
 	cmd.Dir = outDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		return 1
+	}
+	return 0
+}
+
+// runAlembic translates Blueprint's migrate subcommands into alembic invocations
+// and shells to `uv run alembic ...` so users don't have to activate a venv.
+// We check for `uv` on PATH first to give a clean error rather than the cryptic
+// "executable file not found" message exec.Command produces.
+func runAlembic(outDir, subCmd string) int {
+	if _, err := exec.LookPath("uv"); err != nil {
+		fmt.Fprintln(os.Stderr, "Error: uv not found on PATH. Install uv to run python migrations.")
+		fmt.Fprintln(os.Stderr, "See https://docs.astral.sh/uv/ for installation instructions.")
+		return 2
+	}
+
+	var alembicArgs []string
+	switch subCmd {
+	case "generate":
+		alembicArgs = []string{"run", "alembic", "revision", "--autogenerate", "-m", "auto"}
+	case "push":
+		alembicArgs = []string{"run", "alembic", "upgrade", "head"}
+	case "check":
+		alembicArgs = []string{"run", "alembic", "check"}
+	case "studio":
+		fmt.Fprintln(os.Stderr, "Error: 'studio' is not supported with --target python (alembic has no GUI).")
+		fmt.Fprintln(os.Stderr, "Use 'bp migrate <file> generate --target python' or 'bp migrate <file> push --target python'.")
+		return 2
+	default:
+		fmt.Fprintf(os.Stderr, "Error: unknown migrate subcommand %q for --target python\n", subCmd)
+		return 2
+	}
+
+	fmt.Printf("Running uv %s in %s...\n", strings.Join(alembicArgs, " "), outDir)
+	cmd := exec.Command("uv", alembicArgs...)
+	cmd.Dir = outDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// uv exits non-zero when alembic itself is missing; surface a clearer
+		// hint instead of letting users hunt through uv's output.
+		fmt.Fprintf(os.Stderr, "alembic invocation failed: %s\n", err)
+		fmt.Fprintln(os.Stderr, "If alembic is not installed, run `uv sync` inside the generated project first.")
 		return 1
 	}
 	return 0
@@ -1515,7 +1605,21 @@ func isTerminal(f *os.File) bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-func cmdDeploy(filename, outDir, tag string) int {
+func cmdDeploy(filename, outDir, tag, deployTarget string, noRun bool) int {
+	// Resolve and validate --target before doing any work so unsupported
+	// targets fail fast with a clear pointer to the production-readiness gate.
+	switch deployTarget {
+	case "", "docker":
+		deployTarget = "docker"
+	case "fly":
+		fmt.Fprintln(os.Stderr, "Error: --target fly is not implemented yet; tracked for v0.11.")
+		fmt.Fprintln(os.Stderr, "See docs/production-readiness.md (Pillar 5: deployable artifacts) for status.")
+		return 2
+	default:
+		fmt.Fprintf(os.Stderr, "Error: unknown --target %q (supported: docker; fly is reserved for v0.11)\n", deployTarget)
+		return 2
+	}
+
 	// First, build the project
 	fmt.Println("Building...")
 	src, err := os.ReadFile(filename)
@@ -1572,8 +1676,55 @@ func cmdDeploy(filename, outDir, tag string) int {
 		return 2
 	}
 
+	// Smoke-test the built image to honor Pillar 5 row 1 ("build and run").
+	// Skipped via --no-run for CI flows that only want to validate the build.
+	if !noRun {
+		if code := dockerSmokeTest(tag); code != 0 {
+			return code
+		}
+	}
+
 	fmt.Printf("\nDeploy complete! Image: %s\n", tag)
 	fmt.Println("Run with: docker run -p 3000:3000", tag)
+	return 0
+}
+
+// dockerSmokeTest runs the freshly-built image, hits /health, then tears it down.
+// Returns a non-zero exit code if the container fails to start or /health does
+// not respond. The container is named bp-smoke so a stale instance from a
+// previous run cannot wedge the host.
+func dockerSmokeTest(tag string) int {
+	const containerName = "bp-smoke"
+
+	// Best-effort: remove any leftover container from a previous interrupted run.
+	_ = exec.Command("docker", "rm", "-f", containerName).Run()
+
+	fmt.Printf("Smoke-testing image %s (docker run -d -p 3000:3000 --name %s)...\n", tag, containerName)
+	runCmd := exec.Command("docker", "run", "-d", "-p", "3000:3000", "--name", containerName, tag)
+	runCmd.Stdout = os.Stdout
+	runCmd.Stderr = os.Stderr
+	if err := runCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "docker run failed: %s\n", err)
+		return 2
+	}
+	// Make sure we tear the container down even if /health fails.
+	defer func() {
+		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	}()
+
+	time.Sleep(2 * time.Second)
+
+	// Probe /health from inside the container so we don't depend on host curl.
+	// The generated server exposes /health on port 3000 by default.
+	healthCmd := exec.Command("docker", "exec", containerName,
+		"sh", "-c", "wget -qO- http://127.0.0.1:3000/health || curl -fsS http://127.0.0.1:3000/health")
+	healthCmd.Stdout = os.Stdout
+	healthCmd.Stderr = os.Stderr
+	if err := healthCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Smoke test failed: /health did not respond (%s)\n", err)
+		return 1
+	}
+	fmt.Println("Smoke test passed: /health responded.")
 	return 0
 }
 
@@ -1786,14 +1937,14 @@ func printUsage() {
 	fmt.Println("  run        <file.bp> [--out dir]           Build and start the server")
 	fmt.Println("  dev        <file.bp> [--out dir]           Watch mode — rebuild and restart on changes")
 	fmt.Println("  test       <file.bp> [--out dir]           Build and run vitest")
-	fmt.Println("  migrate    <file.bp> [generate|push|…]     Build and run drizzle-kit migration")
+	fmt.Println("  migrate    <file.bp> [generate|push|…]     Build and run drizzle-kit (node) or alembic (--target python)")
 	fmt.Println("  generate   <file.bp> [--write]             Resolve @> slots via LLM (needs ANTHROPIC_API_KEY)")
 	fmt.Println("  docs       <file.bp> [--out file.json]     Generate OpenAPI 3.1 JSON spec")
 	fmt.Println("  fmt        <file.bp> [--write]             Format a .bp file")
 	fmt.Println("  lint       <file.bp>                       Lint a .bp file for best practices")
 	fmt.Println("  init       [name]                          Scaffold a new Blueprint project")
 	fmt.Println("  eject      <dir>                           Remove Blueprint markers from generated code")
-	fmt.Println("  deploy     <file.bp> [--tag <image>]       Build and run Docker container")
+	fmt.Println("  deploy     <file.bp> [--tag <image>]       Build and smoke-run Docker image (--target docker default; fly reserved)")
 	fmt.Println("  completion <bash|zsh|fish>                 Generate shell completion script")
 	fmt.Println("  stats      <file.bp> [--json]              Show code statistics")
 	fmt.Println("  doctor                                     Check environment dependencies")

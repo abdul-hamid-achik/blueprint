@@ -927,3 +927,215 @@ func TestCheckInvalidTestdata(t *testing.T) {
 		})
 	}
 }
+
+// TestDeployTargetFlyRejected pins the Pillar 5 contract: `bp deploy --target fly`
+// must exit non-zero and point at the production-readiness doc, not silently
+// fall back to docker.
+func TestDeployTargetFlyRejected(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	stdout, stderr, code := runBP(t, "deploy", bp, "--out", outDir, "--target", "fly")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for --target fly, got 0\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "fly is not implemented") {
+		t.Errorf("expected 'fly is not implemented' in stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "production-readiness.md") {
+		t.Errorf("expected pointer to production-readiness.md, got: %q", stderr)
+	}
+}
+
+// TestDeployTargetUnknown ensures arbitrary --target values get a clean error
+// rather than crashing or silently doing the wrong thing.
+func TestDeployTargetUnknown(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	_, stderr, code := runBP(t, "deploy", bp, "--out", outDir, "--target", "kubernetes")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for unknown --target")
+	}
+	if !strings.Contains(stderr, "unknown --target") {
+		t.Errorf("expected 'unknown --target' in stderr, got: %q", stderr)
+	}
+}
+
+// TestDeployDockerNoRun stubs the `docker` binary on PATH and verifies that the
+// --no-run flag skips the smoke-test `docker run` step. We can't actually run a
+// container in unit tests, so --no-run is the only path we can exercise end to
+// end here. The stub logs every invocation so we can assert what bp called.
+func TestDeployDockerNoRun(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "docker.log")
+	dockerStub := filepath.Join(binDir, "docker")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_DOCKER_LOG\"\n" +
+		"exit 0\n"
+	if err := os.WriteFile(dockerStub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_DOCKER_LOG=" + logFile,
+	}
+	stdout, stderr, code := runBPEnv(t, env, "deploy", bp, "--out", outDir, "--no-run", "--tag", "bp-test:latest")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStr := string(logBytes)
+	if !strings.Contains(logStr, "build -t bp-test:latest") {
+		t.Errorf("expected docker build to be invoked, log: %q", logStr)
+	}
+	if strings.Contains(logStr, "run -d") {
+		t.Errorf("--no-run should skip docker run, but log contained it: %q", logStr)
+	}
+}
+
+// TestMigratePythonRunsAlembic stubs `uv` on PATH and verifies the migrate
+// command builds the python tree (pyproject.toml exists) and invokes
+// `uv run alembic ...` with the right subcommand. This is the bun-stub-on-PATH
+// pattern from TestFrontendPublishCommand, adapted for uv.
+func TestMigratePythonRunsAlembic(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := t.TempDir()
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "uv.log")
+	uvStub := filepath.Join(binDir, "uv")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_UV_LOG\"\n" +
+		"exit 0\n"
+	if err := os.WriteFile(uvStub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_UV_LOG=" + logFile,
+	}
+	stdout, stderr, code := runBPEnv(t, env, "migrate", bp, "generate", "--out", outDir, "--target", "python")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	// Confirm we built the python tree, not the node one.
+	if _, err := os.Stat(filepath.Join(outDir, "pyproject.toml")); err != nil {
+		t.Errorf("expected pyproject.toml in python migrate output, got err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "package.json")); err == nil {
+		t.Error("python migrate should not have produced a package.json")
+	}
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStr := string(logBytes)
+	if !strings.Contains(logStr, "run alembic revision --autogenerate") {
+		t.Errorf("expected alembic revision --autogenerate, log: %q", logStr)
+	}
+}
+
+// TestMigratePythonPush ensures the push subcommand maps to alembic upgrade head.
+func TestMigratePythonPush(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := t.TempDir()
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "uv.log")
+	uvStub := filepath.Join(binDir, "uv")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_UV_LOG\"\n" +
+		"exit 0\n"
+	if err := os.WriteFile(uvStub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_UV_LOG=" + logFile,
+	}
+	stdout, stderr, code := runBPEnv(t, env, "migrate", bp, "push", "--out", outDir, "--target", "python")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logBytes), "run alembic upgrade head") {
+		t.Errorf("expected alembic upgrade head, log: %q", string(logBytes))
+	}
+}
+
+// TestMigratePythonStudioRejected covers the "studio has no python equivalent"
+// branch — alembic is CLI-only, so we error rather than silently doing nothing.
+func TestMigratePythonStudioRejected(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := t.TempDir()
+	binDir := t.TempDir()
+	// Even with uv on PATH, studio should error before invoking it.
+	uvStub := filepath.Join(binDir, "uv")
+	if err := os.WriteFile(uvStub, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+	_, stderr, code := runBPEnv(t, env, "migrate", bp, "studio", "--out", outDir, "--target", "python")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for studio + python")
+	}
+	if !strings.Contains(stderr, "not supported with --target python") {
+		t.Errorf("expected studio rejection message, got: %q", stderr)
+	}
+}
+
+// TestMigrateUnknownTargetRejected confirms the --target validation surfaces a
+// clean error rather than a stack trace.
+func TestMigrateUnknownTargetRejected(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := t.TempDir()
+	_, stderr, code := runBP(t, "migrate", bp, "generate", "--out", outDir, "--target", "ruby")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for unknown migrate target")
+	}
+	if !strings.Contains(stderr, "unknown --target") {
+		t.Errorf("expected 'unknown --target' message, got: %q", stderr)
+	}
+}
+
+// TestDeployHelpMentionsTarget protects against drift between the actual flag
+// parser and the `bp deploy --help` text — both must mention --target.
+// printCommandHelp writes to stderr, so we read it from there.
+func TestDeployHelpMentionsTarget(t *testing.T) {
+	_, stderr, code := runBP(t, "deploy", "--help")
+	if code != 0 {
+		t.Fatalf("expected exit 0 for help, got %d", code)
+	}
+	if !strings.Contains(stderr, "--target") {
+		t.Errorf("deploy help should mention --target, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "--no-run") {
+		t.Errorf("deploy help should mention --no-run, got: %q", stderr)
+	}
+}
+
+// TestMigrateHelpMentionsTarget mirrors TestDeployHelpMentionsTarget for migrate.
+func TestMigrateHelpMentionsTarget(t *testing.T) {
+	_, stderr, code := runBP(t, "migrate", "--help")
+	if code != 0 {
+		t.Fatalf("expected exit 0 for help, got %d", code)
+	}
+	if !strings.Contains(stderr, "--target") {
+		t.Errorf("migrate help should mention --target, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "alembic") {
+		t.Errorf("migrate help should mention alembic, got: %q", stderr)
+	}
+}
