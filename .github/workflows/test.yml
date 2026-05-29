@@ -101,6 +101,23 @@ jobs:
             ./bin/bp diff "$src" --out "$dir" --no-color --exit-code
           done
 
+      - name: Generate Drizzle migrations on all examples
+        # drizzle-kit is already in each generated package.json's devDeps and was
+        # installed by the previous "Validate generated TypeScript" step. We just
+        # need to invoke it. DATABASE_URL is required at config-load time but
+        # `generate` only needs the schema, not a live database.
+        run: |
+          for dir in /tmp/todo /tmp/auth /tmp/ecommerce /tmp/chat /tmp/full; do
+            if [ ! -f "$dir/drizzle.config.ts" ]; then
+              echo "(skipping $dir — no drizzle.config.ts, spec has no models)"
+              continue
+            fi
+            echo "=== drizzle-kit generate in $dir ==="
+            cd "$dir"
+            DATABASE_URL=postgresql://localhost/x npx drizzle-kit generate >/tmp/drizzle.log 2>&1 || (cat /tmp/drizzle.log; exit 1)
+            ls drizzle/*.sql >/dev/null 2>&1 || (echo "no SQL migration emitted in $dir"; ls -la drizzle/; exit 1)
+          done
+
       - name: Build with --target python (phase 1 smoke)
         # Phase 1 supports static endpoints only. hello-world is the canonical
         # spec; idempotency is enforced so non-determinism in the Python
@@ -128,6 +145,39 @@ jobs:
           sys.exit(err)
           PY
           echo "--target python output OK"
+
+      - name: Build with --target python on all 5 examples
+        # CHANGELOG[0.9.0] claims "5/5 examples compile on --target python".
+        # The Phase 1 smoke above only proves it for hello-world; this step
+        # proves the claim by building every example, AST-parsing all emitted
+        # .py files, and enforcing idempotency via bp diff --exit-code.
+        # Without this gate, a regression in stream.go/ws.go/cache.go/
+        # middleware.go (today 0% unit-test covered) would ship silently.
+        run: |
+          for pair in "examples/hello-world.bp /tmp/py-hello-all" "examples/todo-api.bp /tmp/py-todo" "examples/auth-service.bp /tmp/py-auth" "examples/ecommerce-api.bp /tmp/py-ecommerce" "examples/realtime-chat.bp /tmp/py-chat"; do
+            src="${pair% *}"; dir="${pair#* }"
+            echo "=== --target python: $src -> $dir ==="
+            rm -rf "$dir"
+            ./bin/bp build "$src" --out "$dir" --target python
+            ./bin/bp diff "$src" --out "$dir" --target python --no-color --exit-code
+            DIR="$dir" python3 - <<'PY'
+          import ast, os, sys
+          err = 0
+          d = os.environ['DIR']
+          for root, _, files in os.walk(d):
+              for f in files:
+                  if not f.endswith('.py'):
+                      continue
+                  path = os.path.join(root, f)
+                  try:
+                      ast.parse(open(path).read(), filename=path)
+                  except SyntaxError as e:
+                      print(path, e)
+                      err = 1
+          sys.exit(err)
+          PY
+          done
+          echo "5/5 Python examples build + parse + idempotent"
 
       - name: Build with --gen-tests (verify harness emits cleanly)
         # Exercises the contract-test + PGlite harness path so a regression in
