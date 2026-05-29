@@ -27,7 +27,9 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 		deps["pg"] = "^8.13.0"
 	}
 	if hasCache {
-		deps["redis"] = "^4.7.0"
+		// bullmq@5.30+ peer-requires redis>=5.0.0; keep these in lockstep
+		// so `npm install` on a generated project doesn't ERESOLVE.
+		deps["redis"] = "^5.0.0"
 	}
 	if hasStorage {
 		deps["@aws-sdk/client-s3"] = "^3.700.0"
