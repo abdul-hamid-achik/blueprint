@@ -2,6 +2,7 @@ package linter
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 )
@@ -27,6 +28,8 @@ func Lint(f *ast.File) []Issue {
 	issues = append(issues, checkBlockOrdering(f)...)
 	issues = append(issues, checkIntentOnEndpoints(f)...)
 	issues = append(issues, checkEmptyEndpoints(f)...)
+	issues = append(issues, checkWherePredicateSelfEqual(f)...)
+	issues = append(issues, checkUnusedInput(f)...)
 	return issues
 }
 
@@ -342,4 +345,461 @@ func checkEmptyEndpoints(f *ast.File) []Issue {
 	}
 
 	return issues
+}
+
+// checkWherePredicateSelfEqual flags `where(X == X)` predicates where both
+// sides are the same identifier name. In Blueprint's data-op convention the
+// left side is taken to be a column reference and the right side an in-scope
+// variable; when both identifiers are spelled the same the intent is
+// ambiguous to the reader. We only warn when there is NO in-scope binding
+// (input, step binding, or for-loop variable) with that name — i.e. the
+// expression cannot be disambiguated by the codegen's positional convention
+// and the comparison really would be column-against-itself.
+func checkWherePredicateSelfEqual(f *ast.File) []Issue {
+	var issues []Issue
+
+	for _, block := range f.Blocks {
+		bindings := collectScopeBindings(block)
+		walkArrowContainersForWhere(block, func(stmts []ast.ArrowStmt) {
+			for _, stmt := range stmts {
+				issues = append(issues, findSelfEqualWheres(stmt, bindings)...)
+			}
+		})
+	}
+
+	return issues
+}
+
+// findSelfEqualWheres recursively inspects expressions within an arrow
+// statement looking for FnCall{Name:"where"} whose args are BinaryExpr with
+// Op "==" and both sides identical Ident.Name, where that name is not bound
+// in scope.
+func findSelfEqualWheres(stmt ast.ArrowStmt, bindings map[string]bool) []Issue {
+	var issues []Issue
+	switch n := stmt.(type) {
+	case *ast.StepStmt:
+		issues = append(issues, scanExprForSelfEqualWhere(n.Expr, bindings)...)
+	case *ast.GuardStmt:
+		issues = append(issues, scanExprForSelfEqualWhere(n.Condition, bindings)...)
+	case *ast.WhenStmt:
+		issues = append(issues, scanExprForSelfEqualWhere(n.Condition, bindings)...)
+		issues = append(issues, scanExprForSelfEqualWhere(n.Inline, bindings)...)
+		for _, s := range n.Body {
+			issues = append(issues, findSelfEqualWheres(s, bindings)...)
+		}
+	case *ast.OutputStmt:
+		issues = append(issues, scanExprForSelfEqualWhere(n.Value, bindings)...)
+	case *ast.TryRecover:
+		for _, s := range n.Try {
+			issues = append(issues, findSelfEqualWheres(s, bindings)...)
+		}
+		for _, s := range n.Recover {
+			issues = append(issues, findSelfEqualWheres(s, bindings)...)
+		}
+	}
+	return issues
+}
+
+func scanExprForSelfEqualWhere(e ast.Expr, bindings map[string]bool) []Issue {
+	var issues []Issue
+	if e == nil {
+		return issues
+	}
+	switch n := e.(type) {
+	case *ast.FnCall:
+		if n.Name == "where" {
+			for _, arg := range n.Args {
+				if bin, ok := arg.(*ast.BinaryExpr); ok && bin.Op == "==" {
+					leftIdent, lok := bin.Left.(*ast.Ident)
+					rightIdent, rok := bin.Right.(*ast.Ident)
+					if lok && rok && leftIdent.Name == rightIdent.Name {
+						if !bindings[leftIdent.Name] {
+							loc := bin.Loc
+							issues = append(issues, Issue{
+								File:    loc.File,
+								Line:    loc.Line,
+								Col:     loc.Col,
+								Level:   "warning",
+								Rule:    "where-predicate-self-equal",
+								Message: fmt.Sprintf("where predicate `%s == %s` compares an identifier to itself; no input or binding named %q is in scope", leftIdent.Name, rightIdent.Name, leftIdent.Name),
+								Hint:    fmt.Sprintf("Did you mean `%s == :<input-name>`? Add an `<- %s ...` input or reference a bound variable on the right side.", leftIdent.Name, leftIdent.Name),
+							})
+						}
+					}
+				}
+				// Also recurse into the arg for nested where(...) (defensive).
+				issues = append(issues, scanExprForSelfEqualWhere(arg, bindings)...)
+			}
+		}
+		// Recurse into all args regardless (e.g. query model where(...) order(...)).
+		for _, a := range n.Args {
+			issues = append(issues, scanExprForSelfEqualWhere(a, bindings)...)
+		}
+	case *ast.BinaryExpr:
+		issues = append(issues, scanExprForSelfEqualWhere(n.Left, bindings)...)
+		issues = append(issues, scanExprForSelfEqualWhere(n.Right, bindings)...)
+	case *ast.UnaryExpr:
+		issues = append(issues, scanExprForSelfEqualWhere(n.Operand, bindings)...)
+	case *ast.FieldAccess:
+		issues = append(issues, scanExprForSelfEqualWhere(n.Base, bindings)...)
+	case *ast.IndexAccess:
+		issues = append(issues, scanExprForSelfEqualWhere(n.Base, bindings)...)
+		issues = append(issues, scanExprForSelfEqualWhere(n.Index, bindings)...)
+	case *ast.ParenExpr:
+		issues = append(issues, scanExprForSelfEqualWhere(n.Expr, bindings)...)
+	case *ast.ListExpr:
+		for _, el := range n.Elements {
+			issues = append(issues, scanExprForSelfEqualWhere(el, bindings)...)
+		}
+	case *ast.BlockExpr:
+		for _, kv := range n.Entries {
+			issues = append(issues, scanExprForSelfEqualWhere(kv.Value, bindings)...)
+		}
+	}
+	return issues
+}
+
+// walkArrowContainersForWhere invokes fn for every []ArrowStmt slice that
+// belongs to the given top-level block. This lets the where-predicate rule
+// run against every place a `where(...)` can appear (endpoint stmts, worker
+// stmts, stream handlers, ws handlers, fn logic, …).
+func walkArrowContainersForWhere(block ast.TopLevel, fn func([]ast.ArrowStmt)) {
+	switch n := block.(type) {
+	case *ast.Endpoint:
+		fn(n.Stmts)
+	case *ast.StreamEndpoint:
+		fn(n.Stmts)
+		for _, h := range n.Handlers {
+			fn(h.Body)
+		}
+	case *ast.WsEndpoint:
+		fn(n.OnConnect)
+		fn(n.OnMessage)
+		fn(n.OnDisconnect)
+	case *ast.Worker:
+		fn(n.Stmts)
+		fn(n.OnFail)
+	case *ast.Schedule:
+		fn(n.Stmts)
+	case *ast.Subscribe:
+		fn(n.Stmts)
+	case *ast.Pipe:
+		fn(n.Stmts)
+	case *ast.Middleware:
+		fn(n.Before)
+		fn(n.After)
+	case *ast.Fn:
+		if n.Logic != nil {
+			fn(n.Logic.Stmts)
+		}
+	}
+}
+
+// collectScopeBindings returns the set of identifier names bound in the
+// given top-level block: inputs (<-), step bindings (|> x = ...), URL path
+// params (e.g. /api/foo/:id binds id), and meta names referenced in stream
+// handlers (event name).
+func collectScopeBindings(block ast.TopLevel) map[string]bool {
+	bindings := map[string]bool{}
+	var stmts []ast.ArrowStmt
+	var path string
+
+	switch n := block.(type) {
+	case *ast.Endpoint:
+		stmts = n.Stmts
+		path = n.Path
+	case *ast.StreamEndpoint:
+		stmts = n.Stmts
+		path = n.Path
+		for _, h := range n.Handlers {
+			stmts = append(stmts, h.Body...)
+		}
+	case *ast.WsEndpoint:
+		stmts = append(stmts, n.OnConnect...)
+		stmts = append(stmts, n.OnMessage...)
+		stmts = append(stmts, n.OnDisconnect...)
+		path = n.Path
+	case *ast.Worker:
+		stmts = append(stmts, n.Stmts...)
+		stmts = append(stmts, n.OnFail...)
+	case *ast.Schedule:
+		stmts = n.Stmts
+	case *ast.Subscribe:
+		stmts = n.Stmts
+	case *ast.Pipe:
+		stmts = n.Stmts
+	case *ast.Middleware:
+		stmts = append(stmts, n.Before...)
+		stmts = append(stmts, n.After...)
+	case *ast.Fn:
+		for _, in := range n.Inputs {
+			bindings[in.Name] = true
+		}
+		if n.Logic != nil {
+			stmts = n.Logic.Stmts
+		}
+	}
+
+	// URL path params: tokens prefixed with ':' bind identifiers.
+	for _, seg := range splitPath(path) {
+		if len(seg) > 1 && seg[0] == ':' {
+			bindings[seg[1:]] = true
+		}
+	}
+
+	collectBindingsFromStmts(stmts, bindings)
+	return bindings
+}
+
+func collectBindingsFromStmts(stmts []ast.ArrowStmt, bindings map[string]bool) {
+	for _, stmt := range stmts {
+		switch n := stmt.(type) {
+		case *ast.InputStmt:
+			bindings[n.Name] = true
+		case *ast.StepStmt:
+			if n.Binding != "" {
+				bindings[n.Binding] = true
+			}
+		case *ast.WhenStmt:
+			collectBindingsFromStmts(n.Body, bindings)
+		case *ast.TryRecover:
+			collectBindingsFromStmts(n.Try, bindings)
+			collectBindingsFromStmts(n.Recover, bindings)
+		}
+	}
+}
+
+// splitPath splits a URL path on '/' returning each segment.
+func splitPath(path string) []string {
+	if path == "" {
+		return nil
+	}
+	var out []string
+	start := 0
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			if i > start {
+				out = append(out, path[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(path) {
+		out = append(out, path[start:])
+	}
+	return out
+}
+
+// checkUnusedInput flags `<- foo type ...` inputs that are never referenced
+// in the endpoint body (steps, output, guard conditions, etc).
+func checkUnusedInput(f *ast.File) []Issue {
+	var issues []Issue
+
+	for _, block := range f.Blocks {
+		issues = append(issues, unusedInputsForBlock(block)...)
+	}
+
+	return issues
+}
+
+func unusedInputsForBlock(block ast.TopLevel) []Issue {
+	var inputs []*ast.InputStmt
+	var bodies [][]ast.ArrowStmt
+
+	var ctxName string
+	switch n := block.(type) {
+	case *ast.Endpoint:
+		ctxName = fmt.Sprintf("%s %s", n.Method, n.Path)
+		for _, s := range n.Stmts {
+			if in, ok := s.(*ast.InputStmt); ok {
+				inputs = append(inputs, in)
+			}
+		}
+		bodies = append(bodies, n.Stmts)
+	case *ast.StreamEndpoint:
+		ctxName = fmt.Sprintf("STREAM %s", n.Path)
+		for _, s := range n.Stmts {
+			if in, ok := s.(*ast.InputStmt); ok {
+				inputs = append(inputs, in)
+			}
+		}
+		bodies = append(bodies, n.Stmts)
+		for _, h := range n.Handlers {
+			bodies = append(bodies, h.Body)
+		}
+	case *ast.WsEndpoint:
+		ctxName = fmt.Sprintf("WS %s", n.Path)
+		for _, s := range n.OnConnect {
+			if in, ok := s.(*ast.InputStmt); ok {
+				inputs = append(inputs, in)
+			}
+		}
+		bodies = append(bodies, n.OnConnect, n.OnMessage, n.OnDisconnect)
+	default:
+		return nil
+	}
+
+	if len(inputs) == 0 {
+		return nil
+	}
+
+	// Collect all identifier references that appear anywhere in the body
+	// (excluding the input statements themselves).
+	used := map[string]bool{}
+	for _, body := range bodies {
+		for _, stmt := range body {
+			if _, ok := stmt.(*ast.InputStmt); ok {
+				continue
+			}
+			collectIdentRefsFromStmt(stmt, used)
+		}
+	}
+
+	var issues []Issue
+	for _, in := range inputs {
+		if used[in.Name] {
+			continue
+		}
+		// Auto-applied search/filter inputs are picked up by the codegen by
+		// name even without an explicit AST reference; skip them so we
+		// don't false-positive on the common `<- search string optional`
+		// pattern.
+		if isAutoAppliedSearchInput(in.Name) {
+			continue
+		}
+		issues = append(issues, Issue{
+			File:    in.Loc.File,
+			Line:    in.Loc.Line,
+			Col:     in.Loc.Col,
+			Level:   "warning",
+			Rule:    "unused-input",
+			Message: fmt.Sprintf("Input %q in endpoint %s is never referenced in the body", in.Name, ctxName),
+			Hint:    "Remove the input or use it in the endpoint body",
+		})
+	}
+	return issues
+}
+
+func collectIdentRefsFromStmt(stmt ast.ArrowStmt, used map[string]bool) {
+	switch n := stmt.(type) {
+	case *ast.StepStmt:
+		collectIdentRefsFromExpr(n.Expr, used)
+	case *ast.GuardStmt:
+		collectIdentRefsFromExpr(n.Condition, used)
+	case *ast.WhenStmt:
+		collectIdentRefsFromExpr(n.Condition, used)
+		collectIdentRefsFromExpr(n.Inline, used)
+		for _, s := range n.Body {
+			collectIdentRefsFromStmt(s, used)
+		}
+	case *ast.OutputStmt:
+		collectIdentRefsFromExpr(n.Value, used)
+	case *ast.TryRecover:
+		for _, s := range n.Try {
+			collectIdentRefsFromStmt(s, used)
+		}
+		for _, s := range n.Recover {
+			collectIdentRefsFromStmt(s, used)
+		}
+	}
+}
+
+func collectIdentRefsFromExpr(e ast.Expr, used map[string]bool) {
+	if e == nil {
+		return
+	}
+	switch n := e.(type) {
+	case *ast.Ident:
+		used[n.Name] = true
+	case *ast.StringLit:
+		// String interpolation: any `{ident...}` segment references identifiers.
+		for _, name := range extractInterpolationIdents(n.Value) {
+			used[name] = true
+		}
+	case *ast.BinaryExpr:
+		collectIdentRefsFromExpr(n.Left, used)
+		collectIdentRefsFromExpr(n.Right, used)
+	case *ast.UnaryExpr:
+		collectIdentRefsFromExpr(n.Operand, used)
+	case *ast.FnCall:
+		for _, a := range n.Args {
+			collectIdentRefsFromExpr(a, used)
+		}
+	case *ast.FieldAccess:
+		collectIdentRefsFromExpr(n.Base, used)
+	case *ast.IndexAccess:
+		collectIdentRefsFromExpr(n.Base, used)
+		collectIdentRefsFromExpr(n.Index, used)
+	case *ast.ParenExpr:
+		collectIdentRefsFromExpr(n.Expr, used)
+	case *ast.ListExpr:
+		for _, el := range n.Elements {
+			collectIdentRefsFromExpr(el, used)
+		}
+	case *ast.BlockExpr:
+		for _, kv := range n.Entries {
+			collectIdentRefsFromExpr(kv.Value, used)
+			// Block expr keys may also reference inputs as shorthand
+			// (`{ name: name }` already covered by the value walk; the
+			// key itself is a label, not a reference).
+		}
+	}
+}
+
+// extractInterpolationIdents walks a string template and returns the
+// identifier root of every `{expr}` segment. For `"Hello {user.name}!"` it
+// returns ["user"]; for `"{name} is {count} long"` it returns
+// ["name", "count"]. Used to detect inputs referenced only inside string
+// interpolations (e.g. `-> 200 { msg: "Hello, {name}!" }`).
+func extractInterpolationIdents(s string) []string {
+	var idents []string
+	i := 0
+	for i < len(s) {
+		if s[i] == '{' {
+			i++
+			var body strings.Builder
+			depth := 1
+			for i < len(s) && depth > 0 {
+				if s[i] == '{' {
+					depth++
+				} else if s[i] == '}' {
+					depth--
+					if depth == 0 {
+						i++
+						break
+					}
+				}
+				body.WriteByte(s[i])
+				i++
+			}
+			text := strings.TrimSpace(body.String())
+			// Take the head identifier (before '.', '[', '(', whitespace, etc.).
+			end := 0
+			for end < len(text) {
+				c := text[end]
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+					end++
+					continue
+				}
+				break
+			}
+			if end > 0 {
+				idents = append(idents, text[:end])
+			}
+		} else {
+			i++
+		}
+	}
+	return idents
+}
+
+// isAutoAppliedSearchInput reports whether an input name matches the codegen
+// convention that auto-applies it as a search filter (case-insensitive LIKE
+// across the model's text columns) without an explicit AST reference.
+func isAutoAppliedSearchInput(name string) bool {
+	switch name {
+	case "q", "search", "query", "keyword", "term", "filter":
+		return true
+	}
+	return false
 }

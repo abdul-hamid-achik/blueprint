@@ -1,6 +1,7 @@
 package linter_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/linter"
@@ -270,6 +271,256 @@ GET /api/health {
 	for _, iss := range issues {
 		if iss.Rule == "intent-on-endpoints" {
 			t.Errorf("endpoint with intent should not produce intent-on-endpoints issue, got: %s", iss)
+		}
+	}
+}
+
+func TestLint_WherePredicateSelfEqual_NoMatchingInput(t *testing.T) {
+	// `where(name == name)` with NO input named `name` in scope — the
+	// predicate is genuinely column-against-itself and ambiguous.
+	src := minimalHeader + `
+model widget {
+  id   uuid   primary
+  name string required
+}
+
+@ "Buggy search"
+GET /api/widgets {
+  |> all = query widget where(name == name)
+  -> 200 { items: all }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	var found bool
+	for _, iss := range issues {
+		if iss.Rule == "where-predicate-self-equal" {
+			found = true
+			if iss.Level != "warning" {
+				t.Errorf("expected level 'warning', got %q", iss.Level)
+			}
+			if iss.Hint == "" {
+				t.Errorf("expected non-empty Hint, got %q", iss.Hint)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected where-predicate-self-equal issue, got: %v", issues)
+	}
+}
+
+func TestLint_WherePredicateSelfEqual_WithMatchingInput_NoIssue(t *testing.T) {
+	// `where(name == name)` WITH input `name` — codegen convention applies
+	// (left=column, right=input variable). Don't flag.
+	src := minimalHeader + `
+model widget {
+  id   uuid   primary
+  name string required
+}
+
+@ "Lookup by name"
+POST /api/widgets {
+  <- name string required
+  |> existing = query widget where(name == name) first
+  |> guard not existing -> 409 "Already exists"
+  |> w = save widget { name: name }
+  -> 201 { id: w.id }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	for _, iss := range issues {
+		if iss.Rule == "where-predicate-self-equal" {
+			t.Errorf("predicate with matching input should not flag, got: %s", iss)
+		}
+	}
+}
+
+func TestLint_WherePredicateSelfEqual_PathParam_NoIssue(t *testing.T) {
+	// URL path param `:id` binds `id`; `where(id == id)` should NOT flag.
+	src := minimalHeader + `
+model widget {
+  id   uuid   primary
+  name string required
+}
+
+@ "Get widget"
+GET /api/widgets/:id {
+  |> w = query widget where(id == id) first
+  -> 200 { id: w.id }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	for _, iss := range issues {
+		if iss.Rule == "where-predicate-self-equal" {
+			t.Errorf("path-param binding should disambiguate predicate, got: %s", iss)
+		}
+	}
+}
+
+func TestLint_WherePredicateSelfEqual_StepBinding_NoIssue(t *testing.T) {
+	// A prior step `|> name = ...` binds `name`; `where(name == name)` should not flag.
+	src := minimalHeader + `
+model widget {
+  id   uuid   primary
+  name string required
+}
+
+@ "Compute and lookup"
+GET /api/widgets/lookup {
+  |> name = "alpha"
+  |> w = query widget where(name == name) first
+  -> 200 { id: w.id }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	for _, iss := range issues {
+		if iss.Rule == "where-predicate-self-equal" {
+			t.Errorf("step-binding should disambiguate predicate, got: %s", iss)
+		}
+	}
+}
+
+func TestLint_UnusedInput(t *testing.T) {
+	// `unused` is declared but never referenced.
+	src := minimalHeader + `
+@ "Has unused input"
+GET /api/items {
+  <- unused string required
+  <- limit  int default(10)
+  -> 200 { items: [], limit: limit }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	var foundUnused bool
+	var foundLimit bool
+	for _, iss := range issues {
+		if iss.Rule == "unused-input" {
+			if iss.Level != "warning" {
+				t.Errorf("expected level 'warning', got %q", iss.Level)
+			}
+			if iss.Message == "" || iss.Hint == "" {
+				t.Errorf("expected non-empty Message and Hint, got Message=%q Hint=%q", iss.Message, iss.Hint)
+			}
+			// Find which input it is.
+			if iss.Line == 0 {
+				continue
+			}
+			// The unused input is at line 14 (header is 5 lines + blank + 2 lines).
+			// Rather than hardcoding lines, check by message content.
+			switch {
+			case strings.Contains(iss.Message, `"unused"`):
+				foundUnused = true
+			case strings.Contains(iss.Message, `"limit"`):
+				foundLimit = true
+			}
+		}
+	}
+	if !foundUnused {
+		t.Errorf("expected unused-input issue for `unused`, got: %v", issues)
+	}
+	if foundLimit {
+		t.Errorf("input `limit` IS used in output, should not be flagged")
+	}
+}
+
+func TestLint_UnusedInput_StringInterpolation_NoIssue(t *testing.T) {
+	// Input `name` used only inside a string interpolation should NOT be flagged.
+	src := minimalHeader + `
+@ "Greeting"
+GET /api/hello/:name {
+  <- name string required
+  -> 200 { message: "Hello, {name}!" }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	for _, iss := range issues {
+		if iss.Rule == "unused-input" {
+			t.Errorf("input used in string interpolation should not flag, got: %s", iss)
+		}
+	}
+}
+
+func TestLint_UnusedInput_SearchParamConvention_NoIssue(t *testing.T) {
+	// `<- search string optional` is auto-applied by codegen as an ILIKE filter.
+	src := minimalHeader + `
+model widget {
+  id   uuid   primary
+  name string required
+}
+
+@ "List widgets"
+GET /api/widgets {
+  <- search string optional
+  |> items = query widget
+  -> 200 { items: items }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	for _, iss := range issues {
+		if iss.Rule == "unused-input" {
+			t.Errorf("search-convention input should not flag, got: %s", iss)
+		}
+	}
+}
+
+func TestLint_UnusedInput_BlockExprShorthand_NoIssue(t *testing.T) {
+	// `save widget { name: name }` references `name` in the block expression value.
+	src := minimalHeader + `
+model widget {
+  id   uuid   primary
+  name string required
+}
+
+@ "Create"
+POST /api/widgets {
+  <- name string required
+  |> w = save widget { name: name }
+  -> 201 { id: w.id }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	for _, iss := range issues {
+		if iss.Rule == "unused-input" {
+			t.Errorf("block-expr value reference should count as usage, got: %s", iss)
 		}
 	}
 }
