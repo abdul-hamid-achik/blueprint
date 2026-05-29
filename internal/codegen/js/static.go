@@ -53,6 +53,9 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 	if hasDB {
 		devDeps["drizzle-kit"] = "^0.28.0"
 	}
+	if g.genTests && hasDB {
+		devDeps["@electric-sql/pglite"] = "^0.2.0"
+	}
 	if g.reactQuery {
 		devDeps["@types/react"] = "^18.3.12"
 	}

@@ -2,84 +2,22 @@ package js
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
+	"github.com/abdul-hamid-achik/blueprint/internal/codegen/common"
 )
 
-// toCamelCase converts snake_case to camelCase.
-func toCamelCase(s string) string {
-	// Split on both underscores and hyphens so that file keys like "rooms-stream"
-	// produce valid JS identifiers like "roomsStream".
-	s = strings.ReplaceAll(s, "-", "_")
-	parts := strings.Split(s, "_")
-	for i := 1; i < len(parts); i++ {
-		if len(parts[i]) > 0 {
-			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
-		}
-	}
-	return strings.Join(parts, "")
-}
-
-// toPascalCase converts snake_case or kebab-case to PascalCase.
-func toPascalCase(s string) string {
-	// Split on both underscores and hyphens so that names like "user-profile"
-	// produce "UserProfile".
-	s = strings.ReplaceAll(s, "-", "_")
-	parts := strings.Split(s, "_")
-	for i := range parts {
-		if len(parts[i]) > 0 {
-			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
-		}
-	}
-	return strings.Join(parts, "")
-}
-
-// toKebabCase converts snake_case to kebab-case.
-func toKebabCase(s string) string {
-	return strings.ReplaceAll(s, "_", "-")
-}
-
-// pluralize naively pluralizes a model name for table names.
-func pluralize(s string) string {
-	// Irregular forms
-	irregulars := map[string]string{
-		"person": "people",
-		"man":    "men",
-		"woman":  "women",
-		"child":  "children",
-		"tooth":  "teeth",
-		"foot":   "feet",
-		"mouse":  "mice",
-		"goose":  "geese",
-	}
-	lower := strings.ToLower(s)
-	if plural, ok := irregulars[lower]; ok {
-		// Preserve case of first letter
-		if len(s) > 0 && s[0] >= 'A' && s[0] <= 'Z' {
-			return strings.ToUpper(plural[:1]) + plural[1:]
-		}
-		return plural
-	}
-
-	// All-caps acronyms (e.g., "API" -> "APIs", not "APIes")
-	if strings.ToUpper(s) == s && len(s) > 1 {
-		return s + "s"
-	}
-
-	if strings.HasSuffix(s, "s") || strings.HasSuffix(s, "x") || strings.HasSuffix(s, "z") ||
-		strings.HasSuffix(s, "sh") || strings.HasSuffix(s, "ch") {
-		return s + "es"
-	}
-	if strings.HasSuffix(s, "y") && len(s) > 1 {
-		prev := s[len(s)-2]
-		if prev != 'a' && prev != 'e' && prev != 'i' && prev != 'o' && prev != 'u' {
-			return s[:len(s)-1] + "ies"
-		}
-	}
-	return s + "s"
-}
+// The target-agnostic string + path helpers live in internal/codegen/common.
+// These short aliases keep the dozens of existing call sites readable
+// (`toCamelCase(name)` is clearer than `common.CamelCase(name)` in tight
+// JS-emit code) without forking the implementation.
+func toCamelCase(s string) string  { return common.CamelCase(s) }
+func toPascalCase(s string) string { return common.PascalCase(s) }
+func toKebabCase(s string) string  { return common.KebabCase(s) }
+func pluralize(s string) string    { return common.Pluralize(s) }
 
 // fileHeader returns the standard generated file header comment.
 func fileHeader(sourceFile string) string {
@@ -899,24 +837,8 @@ func parseRateLimit(rate string) (int, int) {
 	}
 }
 
-// extractResource extracts the resource name from an endpoint path.
-// e.g. "/api/watermark" -> "watermark", "/api/jobs/:id" -> "jobs"
-func extractResource(path string) string {
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	for _, p := range parts {
-		if p == "api" || p == "" {
-			continue
-		}
-		if strings.HasPrefix(p, ":") {
-			continue
-		}
-		return p
-	}
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
-	}
-	return "root"
-}
+// extractResource — see internal/codegen/common.ExtractResource.
+func extractResource(path string) string { return common.ExtractResource(path) }
 
 // extractInjectedVars scans middleware stmts for inject(val, name) calls
 // and returns the set of injected variable names (e.g., {"auth": true}).
@@ -1002,22 +924,11 @@ func isDataOp(name string) bool {
 	return false
 }
 
-// isPathParam checks if a parameter name appears as :name in the URL path.
-func isPathParam(name, path string) bool {
-	return strings.Contains(path, ":"+name)
-}
+// isPathParam — see internal/codegen/common.IsPathParam.
+func isPathParam(name, path string) bool { return common.IsPathParam(name, path) }
 
-// extractPathParams returns the list of path parameter names from a URL path.
-// e.g. "/api/rooms/:id" -> ["id"], "/ws/:org/:room" -> ["org", "room"]
-func extractPathParams(path string) []string {
-	var params []string
-	for _, seg := range strings.Split(path, "/") {
-		if strings.HasPrefix(seg, ":") {
-			params = append(params, seg[1:])
-		}
-	}
-	return params
-}
+// extractPathParams — see internal/codegen/common.ExtractPathParams.
+func extractPathParams(path string) []string { return common.ExtractPathParams(path) }
 
 // dataOpToJSWithCtx converts a data operation FnCall to Drizzle ORM JavaScript code,
 // using context to resolve bound variable names for WHERE clauses.
@@ -1116,13 +1027,19 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 				idRef = boundVar + ".id"
 			} else if boundVar, ok := ctx.boundVars[modelName]; ok {
 				idRef = boundVar + ".id"
-			} else {
-				// Fallback: if we're in a map context (any bound vars exist),
-				// use the loop variable's .id to avoid bare undefined "id"
-				for _, bv := range ctx.boundVars {
-					idRef = bv + ".id"
-					break
+			} else if len(ctx.boundVars) > 0 {
+				// Fallback: when the model isn't directly bound (typically
+				// inside `map items: update <other-model>`), use any available
+				// bound variable's .id so the WHERE clause is at least valid
+				// JS. The choice is arbitrary — sort the model-name keys to
+				// keep the choice deterministic across builds (otherwise
+				// random map iteration breaks `bp diff --exit-code` idempotency).
+				keys := make([]string, 0, len(ctx.boundVars))
+				for k := range ctx.boundVars {
+					keys = append(keys, k)
 				}
+				sort.Strings(keys)
+				idRef = ctx.boundVars[keys[0]] + ".id"
 			}
 		}
 		if len(v.Args) >= 2 {

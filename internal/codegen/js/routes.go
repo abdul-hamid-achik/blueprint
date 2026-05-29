@@ -256,29 +256,32 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	b.WriteString("  return c.json({ error: 'Internal server error' }, 500 as const);\n")
 	b.WriteString("});\n\n")
 
-	fmt.Fprintf(&b, "console.log('%%s listening on port %%d', %q, %d);\n", bp.Name, port)
+	// Start the server and register shutdown handlers — skipped under test runners
+	// (Vitest) so importing the app for `app.request(...)` never binds a port.
+	b.WriteString("if (!process.env.VITEST) {\n")
+	fmt.Fprintf(&b, "  console.log('%%s listening on port %%d', %q, %d);\n", bp.Name, port)
 
 	// If WS: use injectWebSocket(serve(...)), otherwise capture server ref for graceful shutdown
 	if len(ws) > 0 {
-		fmt.Fprintf(&b, "const server = serve({ fetch: app.fetch, port: %d });\n", port)
-		b.WriteString("injectWebSocket(server);\n\n")
+		fmt.Fprintf(&b, "  const server = serve({ fetch: app.fetch, port: %d });\n", port)
+		b.WriteString("  injectWebSocket(server);\n")
 	} else {
-		fmt.Fprintf(&b, "const server = serve({ fetch: app.fetch, port: %d });\n\n", port)
+		fmt.Fprintf(&b, "  const server = serve({ fetch: app.fetch, port: %d });\n", port)
 	}
 
 	// Graceful shutdown
-	b.WriteString("// Graceful shutdown\n")
-	b.WriteString("const shutdown = async () => {\n")
-	b.WriteString("  console.log('Shutting down gracefully...');\n")
-	b.WriteString("  await new Promise<void>((resolve) => server.close(() => resolve()));\n")
+	b.WriteString("  const shutdown = async () => {\n")
+	b.WriteString("    console.log('Shutting down gracefully...');\n")
+	b.WriteString("    await new Promise<void>((resolve) => server.close(() => resolve()));\n")
 	if hasDB {
-		b.WriteString("  // Close database pool\n")
-		b.WriteString("  await db.$client.end();\n")
+		b.WriteString("    // Close database pool\n")
+		b.WriteString("    await db.$client.end();\n")
 	}
-	b.WriteString("  process.exit(0);\n")
-	b.WriteString("};\n")
-	b.WriteString("process.on('SIGTERM', shutdown);\n")
-	b.WriteString("process.on('SIGINT', shutdown);\n\n")
+	b.WriteString("    process.exit(0);\n")
+	b.WriteString("  };\n")
+	b.WriteString("  process.on('SIGTERM', shutdown);\n")
+	b.WriteString("  process.on('SIGINT', shutdown);\n")
+	b.WriteString("}\n\n")
 
 	b.WriteString("export default app;\n")
 

@@ -976,6 +976,9 @@ func (p *printer) printExpr(e Expr) string {
 	case *IndexAccess:
 		return fmt.Sprintf("%s[%s]", p.printExpr(n.Base), p.printExpr(n.Index))
 	case *FnCall:
+		if s, ok := p.printDataOpShorthand(n); ok {
+			return s
+		}
 		args := make([]string, len(n.Args))
 		for i, a := range n.Args {
 			args[i] = p.printExpr(a)
@@ -996,6 +999,99 @@ func (p *printer) printExpr(e Expr) string {
 	default:
 		return fmt.Sprintf("/* unknown expr: %T */", e)
 	}
+}
+
+// isDataOpName reports whether name is a Blueprint data-operation keyword
+// that participates in the |> step shorthand (e.g. `query todo paginate(...)`).
+// Note: import_bundle / export_bundle look like regular function calls in
+// source, so they keep the standard call form.
+func isDataOpName(name string) bool {
+	switch name {
+	case "query", "save", "fetch", "update", "delete", "count", "seed":
+		return true
+	}
+	return false
+}
+
+// isDataOpMarker reports whether e is a marker FnCall (where / order /
+// paginate) attached to a data operation.
+func isDataOpMarker(e Expr) bool {
+	fn, ok := e.(*FnCall)
+	if !ok {
+		return false
+	}
+	switch fn.Name {
+	case "where", "order", "paginate":
+		return true
+	}
+	return false
+}
+
+// isFirstIdent reports whether e is the bare identifier `first`, used as a
+// modifier on a data operation (e.g. `query todo where(...) first`).
+func isFirstIdent(e Expr) bool {
+	id, ok := e.(*Ident)
+	return ok && id.Name == "first"
+}
+
+// printDataOpShorthand renders a data-operation FnCall in its canonical
+// shorthand form (e.g. `query todo paginate(page, per_page)`), preserving
+// the README idiom and column alignment found in hand-written sources.
+// Returns ("", false) when n does not match the shorthand shape, in which
+// case callers should fall back to the standard `name(args, ...)` form.
+func (p *printer) printDataOpShorthand(n *FnCall) (string, bool) {
+	if !isDataOpName(n.Name) {
+		return "", false
+	}
+	if len(n.Args) == 0 {
+		return "", false
+	}
+	model, ok := n.Args[0].(*Ident)
+	if !ok {
+		return "", false
+	}
+
+	rest := n.Args[1:]
+
+	// For `fetch`, the optional second positional argument is the id
+	// expression rendered inside parens: `fetch todo(id)`. Detect it as
+	// "first arg that isn't a marker / block / `first`".
+	var idArg Expr
+	if n.Name == "fetch" && len(rest) > 0 {
+		first := rest[0]
+		if _, isBlock := first.(*BlockExpr); !isBlock && !isDataOpMarker(first) && !isFirstIdent(first) {
+			idArg = first
+			rest = rest[1:]
+		}
+	}
+
+	// All remaining args must be one of: BlockExpr (body), marker FnCall
+	// (where/order/paginate), or the ident `first`. Anything else (e.g. a
+	// stray scalar from a hand-built AST) bails out to the standard form.
+	for _, a := range rest {
+		if _, ok := a.(*BlockExpr); ok {
+			continue
+		}
+		if isDataOpMarker(a) || isFirstIdent(a) {
+			continue
+		}
+		return "", false
+	}
+
+	var sb strings.Builder
+	sb.WriteString(n.Name)
+	sb.WriteByte(' ')
+	sb.WriteString(model.Name)
+	if idArg != nil {
+		sb.WriteByte('(')
+		sb.WriteString(p.printExpr(idArg))
+		sb.WriteByte(')')
+	}
+	for _, a := range rest {
+		sb.WriteByte(' ')
+		sb.WriteString(p.printExpr(a))
+	}
+	return sb.String(), true
 }
 
 func (p *printer) printBlockExpr(n *BlockExpr) string {

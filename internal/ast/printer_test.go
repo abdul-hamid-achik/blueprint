@@ -338,6 +338,121 @@ func TestPrint_NonEmpty(t *testing.T) {
 	}
 }
 
+func TestPrint_DataOpShorthand(t *testing.T) {
+	// bp fmt must preserve the README idiom for data-op steps:
+	//   |> todos = query todo paginate(page, per_page)
+	// rather than rewriting them into the equivalent function-call form
+	//   |> todos = query(todo, paginate(page, per_page))
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 8080
+  runtime node
+}
+
+model todo {
+  id    uuid   primary
+  title string required
+}
+
+GET /api/todos {
+  <- page int default(1)
+  <- per_page int default(20)
+  |> todos = query todo paginate(page, per_page)
+  -> 200 { items: todos.items }
+}
+
+POST /api/todos {
+  <- title string required
+  |> todo = save todo { title: title }
+  -> 201 { id: todo.id }
+}
+
+GET /api/todos/:id {
+  <- id uuid required
+  |> todo = fetch todo(id)
+  |> guard todo -> 404 "not found"
+  -> 200 { id: todo.id }
+}
+
+DELETE /api/todos/:id {
+  <- id uuid required
+  |> todo = fetch todo(id)
+  |> delete todo
+  -> 204 "deleted"
+}
+`
+	file := parseForPrint(t, src)
+	out := ast.Print(file)
+
+	mustContain := []string{
+		"query todo paginate(page, per_page)",
+		"save todo { title: title }",
+		"fetch todo(id)",
+		"|> delete todo",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(out, want) {
+			t.Errorf("printer dropped data-op shorthand %q\nfull output:\n%s", want, out)
+		}
+	}
+
+	forbidden := []string{
+		"query(todo,",
+		"save(todo,",
+		"fetch(todo,",
+		"delete(todo)",
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(out, bad) {
+			t.Errorf("printer emitted function-call form for data op (%q)\nfull output:\n%s", bad, out)
+		}
+	}
+
+	// Idempotence: a second round-trip must produce identical output.
+	file2, errs := parser.ParseFile("test.bp", []byte(out))
+	if len(errs) > 0 {
+		t.Fatalf("re-parse errors: %v\nprinted:\n%s", errs, out)
+	}
+	out2 := ast.Print(file2)
+	if out != out2 {
+		t.Errorf("data-op printing is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", out, out2)
+	}
+}
+
+func TestPrint_DataOpWithMarkers(t *testing.T) {
+	// where(...) and order(...) markers should also stay in shorthand form,
+	// alongside paginate(...) and the trailing `first` modifier.
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 8080
+  runtime node
+}
+
+model job {
+  id      uuid   primary
+  status  string required
+  created timestamp default(now)
+}
+
+GET /api/jobs {
+  |> active = query job where(status == "active") order(created) first
+  -> 200 { job: active }
+}
+`
+	file := parseForPrint(t, src)
+	out := ast.Print(file)
+
+	// All markers must appear in shorthand order, no surrounding parens
+	// around the whole call.
+	wantSubstr := "query job where(status == \"active\") order(created) first"
+	if !strings.Contains(out, wantSubstr) {
+		t.Errorf("printer dropped marker shorthand\nwant substring: %s\nfull output:\n%s", wantSubstr, out)
+	}
+	if strings.Contains(out, "query(job,") {
+		t.Errorf("printer emitted call-form for marker-bearing query\nfull output:\n%s", out)
+	}
+}
+
 func TestPrint_Middleware(t *testing.T) {
 	src := `blueprint "test" {
   version "1.0.0"

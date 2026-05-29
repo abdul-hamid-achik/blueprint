@@ -34,10 +34,10 @@ bp check my-service.bp
 
 ## `bp build`
 
-Compile a `.bp` file to TypeScript.
+Compile a `.bp` file to TypeScript (default) or Python.
 
 ```bash
-bp build <file.bp> [--out <dir>] [--react-query] [--frontend-only]
+bp build <file.bp> [--out <dir>] [--target <node|python>] [--react-query] [--frontend-only] [--gen-tests]
 ```
 
 **Flags:**
@@ -45,8 +45,41 @@ bp build <file.bp> [--out <dir>] [--react-query] [--frontend-only]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <dir>` | `generated/` | Output directory |
-| `--react-query` | off | Generate `src/types/react-query.ts` and add TanStack React Query deps |
-| `--frontend-only` | off | Emit only the standalone frontend contract package |
+| `--target <name>` | `node` | Codegen target. `node` emits Hono + Drizzle + Zod (production-ready, all examples). `python` emits FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (beta — see "Python target status" below) |
+| `--react-query` | off | Generate `src/types/react-query.ts` and add TanStack React Query deps (node target only) |
+| `--frontend-only` | off | Emit only the standalone frontend contract package (node target only) |
+| `--gen-tests` | off | Generate contract + happy-path tests. **Node target:** Vitest suite under `test/generated/` with an in-memory (PGlite) database harness — runs with no external Postgres. **Python target:** pytest suite under `tests/` backed by `testcontainers[postgresql]` — Docker required, real Postgres per session, function-scoped TRUNCATE between tests |
+
+### Python target status
+
+`--target python` is a beta target tracked under the "Multi-target codegen
+progress" table in [docs/production-readiness.md](./production-readiness.md).
+Coverage today:
+
+- **Compiles end-to-end:** `examples/hello-world.bp`, `examples/todo-api.bp`.
+- **Rejects with a specific message:**
+  - `auth-service.bp` — `fn` declarations, `middleware` declarations, calls to
+    user fns (`hash_password`, `sign_jwt`, `verify_jwt`, `verify_password`).
+  - `ecommerce-api.bp` — `fn` declarations, calls to user fns (`charge_stripe`,
+    `sum`).
+  - `realtime-chat.bp` — `STREAM` endpoints, `WS` endpoints, `cache`,
+    `fn` declarations.
+- **Supported endpoint-body constructs:** `save` / `fetch` / `update` /
+  `delete` / `query` (with `paginate(page, per_page)`, `first`, `order(col, dir)`,
+  `where(col == val, ...)` `==`-only predicates), `guard`, `when` block + inline
+  form, `try`/`recover`, `map items: save M { ... }` (bound + unbound),
+  `map items: update M { ... }`, FK access (`item.product.x` via cached
+  `db.get` lookups), `log "msg"` → `print(f"...")`.
+- **Still rejected (Phase 3d/4 in BACKLOG.md):** non-`==` `where` predicates,
+  bare-expression step bindings, user-fn step calls, structured `log` modifiers,
+  partial-commit `try`/`recover` rollback, middleware → FastAPI dependencies,
+  `fn`/`pipe` with `impl python { ... }`.
+
+Generated layout: `pyproject.toml` (uv), `src/app.py`, `src/lib/{env,db}.py`,
+`src/models/{schema,pydantic}.py`, `src/routes/<resource>.py`, full Alembic
+skeleton (`alembic.ini`, `alembic/env.py`, `alembic/script.py.mako`,
+`alembic/versions/`). Run with `uv sync && uv run uvicorn src.app:app`. With
+`--gen-tests`: `uv sync && uv run pytest` (Docker required).
 
 **Example:**
 
@@ -180,13 +213,19 @@ bp test <file.bp> [--out <dir>]
 
 Compiles the service (including test files), then runs `bun run test` in the output directory.
 
+`bp test` enables `--gen-tests` automatically, so every endpoint gets a contract +
+happy-path test backed by an in-memory PGlite database. Tests run with **no external
+Postgres** — the generated harness mocks `src/lib/db` with an in-process instance and
+seeds foreign-key parents as needed. Hand-written `test { }` blocks run alongside the
+generated suite.
+
 **Example:**
 
 ```bash
 bp test my-service.bp
 # Built my-service.bp -> generated/
+# ✓ test/generated/todos.test.ts (5)
 # ✓ test/watermark-success.test.ts (1)
-# ✓ test/watermark-oversized.test.ts (1)
 # Test Files 2 passed (2)
 ```
 
@@ -436,33 +475,44 @@ bp help
 
 ## `bp diff`
 
-Preview what changes `bp build` will make before overwriting output.
+Preview what changes `bp build` will make before overwriting output. Shows a
+line-level unified diff per modified file (`---`/`+++`/`@@` hunks), plus
+new and deleted file summaries.
 
 ```bash
-bp diff <file.bp> [--out <dir>] [--react-query] [--frontend-only]
+bp diff <file.bp> [--out <dir>] [--target <node|python>] [--react-query] [--frontend-only] [--gen-tests] [--apply] [--exit-code] [--no-color]
 ```
 
-Compares current generated output against what a fresh build would produce. Shows a unified diff of changes.
+The codegen manifest (`.blueprint/manifest.json`) is suppressed from output — its
+content is just hashes derived from the other files, not something you can review.
+
+Color is on when stdout is a TTY (use `--no-color` to disable, e.g. for pipes).
+Shells out to `diff -u` for the unified patch.
 
 **Flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--out <dir>` | `generated/` | Output directory |
-| `--react-query` | off | Compare output as if `bp build --react-query` were used |
-| `--frontend-only` | off | Compare output as if `bp build --frontend-only` were used |
+| `--out <dir>` | `generated/` | Output directory to compare against |
+| `--target <name>` | `node` | Target to diff against (`node` or `python`) — must match the target the directory was built with |
+| `--react-query` | off | Compare as if `bp build --react-query` were used |
+| `--frontend-only` | off | Compare as if `bp build --frontend-only` were used |
+| `--gen-tests` | off | Compare as if `bp build --gen-tests` were used |
+| `--apply` | off | After showing the diff, actually write the changes (equivalent to running `bp build` afterwards) |
+| `--exit-code` | off | Exit `1` if there are any changes — useful in CI / pre-commit hooks |
+| `--no-color` | off | Disable ANSI color in diff output |
 
-**Example:**
+**Examples:**
 
 ```bash
+# Preview what would change.
 bp diff my-service.bp
-# Shows diff between current generated/ and new build output
 
-bp diff my-service.bp --react-query
-# Also includes changes from generated React Query hooks and frontend package files
+# CI / pre-commit: fail if generated/ is stale.
+bp diff my-service.bp --exit-code
 
-bp diff my-service.bp --frontend-only
-# Compares only the standalone frontend package output
+# Review then apply in one step.
+bp diff my-service.bp --apply
 ```
 
 ---

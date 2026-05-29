@@ -14,7 +14,7 @@
     "frontend/src/schemas.ts": "sha256:e3e46943efd91865f23587097bcf2978bdf9a705966fa493304f3b12d09e9bca",
     "frontend/tsconfig.json": "sha256:c01c3263c79bfe7999b6f3367c19a4a9b99d2d5ff4fcea18fbcdf50b2a634aa1",
     "package.json": "sha256:a246799aba0c24179835e9e8bceb02f48d096ab0b9683d71589534c34b2c1b79",
-    "src/index.ts": "sha256:8db4b5c09f586255c06e2b85909cb54cd52775e5ae8393743347953eec064bf1",
+    "src/index.ts": "sha256:93c000b20c79d523b6db6fcae2cb6f98964c4c08b71badf8b5d7b9c2b9cb53db",
     "src/lib/db.ts": "sha256:183a41e74a148925ed387842a57f2ab698f1faeb695779d6f64ec7cf0021024c",
     "src/lib/env.ts": "sha256:f99f7ec2ab2255e3443457f615288dcefc05f003818a3727f1ca01e3b3b16b8d",
     "src/lib/errors.ts": "sha256:8fca6ecfe90abdc08929d8482d83e870361ab9fa8df3dce9cb0dfd71d2530439",

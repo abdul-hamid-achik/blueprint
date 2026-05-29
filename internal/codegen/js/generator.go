@@ -2,17 +2,13 @@
 package js
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen"
+	"github.com/abdul-hamid-achik/blueprint/internal/resolve"
 )
 
 // Generator produces a Node.js project from a Blueprint AST.
@@ -23,14 +19,16 @@ type Generator struct {
 	middlewares  map[string]*ast.Middleware // name -> middleware definition
 	reactQuery   bool
 	frontendOnly bool
+	genTests     bool
 	// Lookup maps for declared names (built once in generateAll).
 	declaredFns       map[string]bool
 	declaredPipes     map[string]bool
 	declaredModels    map[string]bool
 	declaredEnums     map[string]bool
 	declaredSaves     map[string]bool
-	structEnums       map[string]bool // enums with struct-body variants (e.g., Plan)
-	declaredExternals map[string]bool // normalized camelCase external service names
+	structEnums       map[string]bool     // enums with struct-body variants (e.g., Plan)
+	declaredExternals map[string]bool     // normalized camelCase external service names
+	enumVariants      map[string][]string // enum name -> variant names (for test value synthesis)
 	hasStorage        bool
 }
 
@@ -48,6 +46,12 @@ func (g *Generator) WithReactQuery(enabled bool) *Generator {
 // WithFrontendOnly enables outputting only the standalone frontend package.
 func (g *Generator) WithFrontendOnly(enabled bool) *Generator {
 	g.frontendOnly = enabled
+	return g
+}
+
+// WithGenTests enables auto-generated contract tests with an in-memory (PGlite) harness.
+func (g *Generator) WithGenTests(enabled bool) *Generator {
+	g.genTests = enabled
 	return g
 }
 
@@ -83,142 +87,7 @@ func (g *Generator) Generate(file *ast.File, outDir string) error {
 		return fmt.Errorf("codegen: %w", err)
 	}
 
-	return writeOutputFiles(outDir, files)
-}
-
-const outputManifestPath = ".blueprint/manifest.json"
-
-type outputManifest struct {
-	Version   int               `json:"version"`
-	Generated map[string]string `json:"generated"`
-}
-
-func writeOutputFiles(outDir string, files []codegen.OutputFile) error {
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", outDir, err)
-	}
-
-	manifest, err := loadOutputManifest(outDir)
-	if err != nil {
-		return err
-	}
-
-	generated := make(map[string]codegen.OutputFile)
-	userOwned := make(map[string]codegen.OutputFile)
-	for _, f := range files {
-		rel, err := normalizeOutputPath(f.Path)
-		if err != nil {
-			return err
-		}
-		f.Path = rel
-		if f.UserOwned {
-			userOwned[rel] = f
-			continue
-		}
-		generated[rel] = f
-	}
-
-	for rel := range manifest.Generated {
-		if _, stillGenerated := generated[rel]; stillGenerated {
-			continue
-		}
-		if _, nowUserOwned := userOwned[rel]; nowUserOwned {
-			continue
-		}
-		path := filepath.Join(outDir, filepath.FromSlash(rel))
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove stale generated file %s: %w", path, err)
-		}
-	}
-
-	for _, rel := range sortedOutputPaths(generated) {
-		f := generated[rel]
-		if err := writeFile(outDir, rel, f.Content); err != nil {
-			return err
-		}
-	}
-
-	for _, rel := range sortedOutputPaths(userOwned) {
-		f := userOwned[rel]
-		path := filepath.Join(outDir, filepath.FromSlash(rel))
-		if _, err := os.Stat(path); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("stat %s: %w", path, err)
-		}
-		if err := writeFile(outDir, rel, f.Content); err != nil {
-			return err
-		}
-	}
-
-	next := outputManifest{
-		Version:   1,
-		Generated: make(map[string]string, len(generated)),
-	}
-	for rel, f := range generated {
-		next.Generated[rel] = "sha256:" + hashContent(f.Content)
-	}
-	data, err := json.MarshalIndent(next, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal output manifest: %w", err)
-	}
-	data = append(data, '\n')
-	return writeFile(outDir, outputManifestPath, data)
-}
-
-func loadOutputManifest(outDir string) (outputManifest, error) {
-	manifest := outputManifest{Version: 1, Generated: map[string]string{}}
-	path := filepath.Join(outDir, outputManifestPath)
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return manifest, nil
-	}
-	if err != nil {
-		return manifest, fmt.Errorf("read output manifest %s: %w", path, err)
-	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return manifest, fmt.Errorf("parse output manifest %s: %w", path, err)
-	}
-	if manifest.Generated == nil {
-		manifest.Generated = map[string]string{}
-	}
-	return manifest, nil
-}
-
-func normalizeOutputPath(path string) (string, error) {
-	if path == "" {
-		return "", fmt.Errorf("invalid output path: empty")
-	}
-	clean := filepath.Clean(path)
-	if filepath.IsAbs(clean) || clean == "." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
-		return "", fmt.Errorf("invalid output path %q: must stay within output directory", path)
-	}
-	return filepath.ToSlash(clean), nil
-}
-
-func writeFile(outDir, rel string, content []byte) error {
-	path := filepath.Join(outDir, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
-	}
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
-}
-
-func sortedOutputPaths(files map[string]codegen.OutputFile) []string {
-	paths := make([]string, 0, len(files))
-	for path := range files {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths
-}
-
-func hashContent(content []byte) string {
-	sum := sha256.Sum256(content)
-	return hex.EncodeToString(sum[:])
+	return codegen.WriteOutputFiles(outDir, files)
 }
 
 func resolveTranslationKeyTypes(file *ast.File) {
@@ -246,45 +115,27 @@ func (r *translationKeyResolver) VisitTranslationKeyType(node *ast.TranslationKe
 	return true
 }
 
-// buildAsyncFns returns the set of camelCase function names that should be awaited in generated code.
+// buildAsyncFns returns the set of camelCase function names that should be
+// awaited in generated code.
+//
+// Composition:
+//   - JS-specific built-ins (`upload`, `deleteS3Object`) — owned by this target.
+//   - declared fn + pipe names — resolved by internal/resolve.AsyncFunctions
+//     (raw, snake_case) and camelCased here for the JS naming convention.
 func (g *Generator) buildAsyncFns() map[string]bool {
 	fns := map[string]bool{
 		"upload":         true,
 		"deleteS3Object": true,
 	}
-	for name := range g.declaredFns {
-		fns[toCamelCase(name)] = true
-	}
-	for name := range g.declaredPipes {
+	for name := range resolve.AsyncFunctions(g.file) {
 		fns[toCamelCase(name)] = true
 	}
 	return fns
 }
 
-// getModelFieldRef checks if a model has a field named fieldName+"_id" with a ref(target) constraint.
-// If found, returns the target model name. This is used to resolve FK relation access patterns
-// like item.product.stock where cart_item has product_id ref(product).
-func (g *Generator) getModelFieldRef(modelName, fieldName string) (targetModel string, ok bool) {
-	for _, m := range g.models {
-		if m.Name != modelName {
-			continue
-		}
-		for _, f := range m.Fields {
-			if f.Name == fieldName+"_id" {
-				for _, c := range f.Constraints {
-					if c.Kind == "ref" {
-						if ident, isIdent := c.Value.(*ast.Ident); isIdent {
-							return ident.Name, true
-						}
-					}
-				}
-			}
-		}
-	}
-	return "", false
-}
-
-// fkAccessInfo describes a foreign key access pattern found in an expression.
+// fkAccessInfo carries the JS-specific naming (camelCase var + FK column) for
+// the FK access patterns resolved by internal/resolve. Conversion from the
+// target-agnostic resolve.FKAccess happens at call sites via toFKAccessInfo.
 type fkAccessInfo struct {
 	varName     string // camelCase variable name (e.g., "item")
 	fieldName   string // FK field name without _id (e.g., "product")
@@ -292,83 +143,37 @@ type fkAccessInfo struct {
 	fkColumn    string // camelCase FK column name (e.g., "productId")
 }
 
-// scanFKAccessInExpr finds all FK access patterns in an expression tree.
-// Returns deduplicated results keyed by "varName.fieldName".
-func (g *Generator) scanFKAccessInExpr(e ast.Expr, ctx *emitCtx) []fkAccessInfo {
-	seen := make(map[string]bool)
-	var result []fkAccessInfo
-	walkExpr(e, func(node ast.Expr) {
-		fa, isFA := node.(*ast.FieldAccess)
-		if !isFA {
-			return
-		}
-		// We want the intermediate FieldAccess: X.Y where X is a model var
-		baseIdent, isIdent := fa.Base.(*ast.Ident)
-		if !isIdent {
-			return
-		}
-		varNameRaw := baseIdent.Name
-		varNameCamel := toCamelCase(varNameRaw)
-		// Look up the model for this variable
-		modelName := ""
-		if m, found := ctx.varModels[varNameRaw]; found {
-			modelName = m
-		} else if m, found := ctx.varModels[varNameCamel]; found {
-			modelName = m
-		}
-		if modelName == "" {
-			return
-		}
-		// Check if the field access matches a FK ref
-		targetModel, hasRef := g.getModelFieldRef(modelName, fa.Field)
-		if !hasRef {
-			return
-		}
-		key := varNameCamel + "." + fa.Field
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		result = append(result, fkAccessInfo{
-			varName:     varNameCamel,
-			fieldName:   fa.Field,
-			targetModel: targetModel,
-			fkColumn:    toCamelCase(fa.Field + "_id"),
-		})
-	})
-	return result
+// toFKAccessInfo applies JS naming conventions (camelCase) to a target-agnostic
+// resolve.FKAccess so downstream emit helpers can stay JS-flavored.
+func toFKAccessInfo(fk resolve.FKAccess) fkAccessInfo {
+	return fkAccessInfo{
+		varName:     toCamelCase(fk.VarName),
+		fieldName:   fk.FieldName,
+		targetModel: fk.TargetModel,
+		fkColumn:    toCamelCase(fk.FKColumn()),
+	}
 }
 
-// scanFKAccessInStmt finds all FK access patterns in a single arrow statement.
-func (g *Generator) scanFKAccessInStmt(stmt ast.ArrowStmt, ctx *emitCtx) []fkAccessInfo {
-	var exprs []ast.Expr
-	switch s := stmt.(type) {
-	case *ast.StepStmt:
-		exprs = append(exprs, s.Expr)
-	case *ast.GuardStmt:
-		exprs = append(exprs, s.Condition)
-	case *ast.WhenStmt:
-		exprs = append(exprs, s.Condition)
-		if s.Inline != nil {
-			exprs = append(exprs, s.Inline)
-		}
-	case *ast.OutputStmt:
-		if s.Value != nil {
-			exprs = append(exprs, s.Value)
-		}
+// fkAccessesInExpr returns JS-flavored FK access infos for the expression,
+// resolved via the shared internal/resolve package.
+func (g *Generator) fkAccessesInExpr(e ast.Expr, ctx *emitCtx) []fkAccessInfo {
+	src := resolve.FKAccessesInExpr(e, g.models, ctx.varModels)
+	out := make([]fkAccessInfo, len(src))
+	for i, fk := range src {
+		out[i] = toFKAccessInfo(fk)
 	}
-	seen := make(map[string]bool)
-	var result []fkAccessInfo
-	for _, e := range exprs {
-		for _, fk := range g.scanFKAccessInExpr(e, ctx) {
-			key := fk.varName + "." + fk.fieldName
-			if !seen[key] {
-				seen[key] = true
-				result = append(result, fk)
-			}
-		}
+	return out
+}
+
+// fkAccessesInStmt returns JS-flavored FK access infos for the statement,
+// resolved via the shared internal/resolve package.
+func (g *Generator) fkAccessesInStmt(stmt ast.ArrowStmt, ctx *emitCtx) []fkAccessInfo {
+	src := resolve.FKAccessesInStmt(stmt, g.models, ctx.varModels)
+	out := make([]fkAccessInfo, len(src))
+	for i, fk := range src {
+		out[i] = toFKAccessInfo(fk)
 	}
-	return result
+	return out
 }
 
 // emitFKSubQuery emits a sub-query to fetch a related record for an FK access pattern.
@@ -514,12 +319,13 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	g.declaredEnums = make(map[string]bool)
 	g.declaredSaves = make(map[string]bool)
 	g.structEnums = make(map[string]bool)
+	g.enumVariants = make(map[string][]string)
 	for _, e := range enums {
 		g.declaredEnums[e.Name] = true
 		for _, v := range e.Variants {
+			g.enumVariants[e.Name] = append(g.enumVariants[e.Name], v.Name)
 			if v.Body != nil && len(v.Body.Entries) > 0 {
 				g.structEnums[e.Name] = true
-				break
 			}
 		}
 	}
@@ -825,6 +631,11 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		files = append(files, g.genTest(t, fixtures))
 	}
 
+	// Auto-generated contract tests + in-memory (PGlite) harness (opt-in).
+	if g.genTests && len(endpoints) > 0 {
+		files = append(files, g.genAutoTests(endpoints, secrets)...)
+	}
+
 	return files, nil
 }
 
@@ -930,76 +741,31 @@ func collectIdentsFromExpr(e ast.Expr, refs map[string]bool) {
 	}
 }
 
-// collectStepBindingsReassigned checks which input variable names are later reassigned in steps.
+// The three pre-scans below delegate to internal/resolve (which returns raw
+// .bp names) and camelCase the keys for the existing JS-side lookup sites.
+// Keeping these thin wrappers means a single line changed at each call site
+// instead of touching every consumer.
+
 func collectStepBindingsReassigned(stmts []ast.ArrowStmt) map[string]bool {
-	inputNames := make(map[string]bool)
-	reassigned := make(map[string]bool)
-
-	for _, s := range stmts {
-		switch v := s.(type) {
-		case *ast.InputStmt:
-			inputNames[toCamelCase(v.Name)] = true
-		case *ast.StepStmt:
-			if v.Binding != "" {
-				name := toCamelCase(v.Binding)
-				if inputNames[name] {
-					reassigned[name] = true
-				}
-			}
-		}
-	}
-	return reassigned
+	return camelKeys(resolve.InputsReassignedInSteps(stmts))
 }
 
-// collectUpdateReassignments detects fetch-bound variables that will be implicitly
-// reassigned by a subsequent update without a binding.
-// E.g., |> note = fetch note(id) ... |> update note { title: title }
-// The variable "note" must use `let` so the update result can be reassigned to it.
 func collectUpdateReassignments(stmts []ast.ArrowStmt) map[string]bool {
-	// First: find variables bound from fetch data ops
-	fetchBindings := make(map[string]string) // model_name -> camelCase variable_name
-	for _, s := range stmts {
-		if step, ok := s.(*ast.StepStmt); ok && step.Binding != "" {
-			if fn, ok := step.Expr.(*ast.FnCall); ok && fn.Name == "fetch" && len(fn.Args) > 0 {
-				if ident, ok := fn.Args[0].(*ast.Ident); ok {
-					fetchBindings[ident.Name] = toCamelCase(step.Binding)
-				}
-			}
-		}
-	}
-	// Second: find updates without binding that target a model with a fetch-bound variable
-	result := make(map[string]bool)
-	for _, s := range stmts {
-		if step, ok := s.(*ast.StepStmt); ok && step.Binding == "" {
-			if fn, ok := step.Expr.(*ast.FnCall); ok && fn.Name == "update" && len(fn.Args) > 0 {
-				if ident, ok := fn.Args[0].(*ast.Ident); ok {
-					if varName, found := fetchBindings[ident.Name]; found {
-						result[varName] = true
-					}
-				}
-			}
-		}
-	}
-	return result
+	return camelKeys(resolve.FetchVarsReassignedByUnboundUpdate(stmts))
 }
 
-// collectPropertyMutations returns the set of variable names that have property mutations
-// via `when cond: var.field = value` inline assignment patterns.
-// These need `Record<string, any>` type annotation.
 func collectPropertyMutations(stmts []ast.ArrowStmt) map[string]bool {
-	mutated := make(map[string]bool)
-	for _, stmt := range stmts {
-		if when, ok := stmt.(*ast.WhenStmt); ok && when.Inline != nil {
-			if bin, ok := when.Inline.(*ast.BinaryExpr); ok && bin.Op == "=" {
-				if fa, ok := bin.Left.(*ast.FieldAccess); ok {
-					if ident, ok := fa.Base.(*ast.Ident); ok {
-						mutated[toCamelCase(ident.Name)] = true
-					}
-				}
-			}
-		}
+	return camelKeys(resolve.VarsWithPropertyMutation(stmts))
+}
+
+// camelKeys returns a copy of the input set with every key converted to
+// camelCase — the form JS lookup sites use today.
+func camelKeys(raw map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(raw))
+	for name := range raw {
+		out[toCamelCase(name)] = true
 	}
-	return mutated
+	return out
 }
 
 // emitArrowStmts generates JavaScript for a sequence of arrow statements.
@@ -1024,6 +790,27 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 		ctx.fkAliases = make(map[string]string)
 	}
 	ctx.generator = g
+
+	// Resolve block facts up front (model + cardinality for every data-op binding,
+	// plus map outer bindings). Seeding the ctx maps in document order mirrors the
+	// old incremental "populate while emitting" behavior — last write wins.
+	// External seeds done by the caller (function inputs in functions.go,
+	// middleware-injected models in routes.go, etc.) are left in place; the
+	// resolver only adds the data-op step facts on top.
+	facts := resolve.ResolveBlock(stmts)
+	for _, f := range facts.DataOps {
+		ctx.varModels[f.Name] = f.Model
+		ctx.boundVars[f.Model] = toCamelCase(f.Name)
+		switch f.Cardinality {
+		case resolve.SingleCard:
+			ctx.singleVars[f.Name] = true
+		case resolve.PaginatedCard:
+			ctx.paginatedVars[f.Name] = true
+		}
+	}
+	for _, f := range facts.MapResults {
+		ctx.varModels[toCamelCase(f.Name)] = f.Model
+	}
 
 	// Pre-scan: find input variables that are later reassigned (for let vs const)
 	reassigned := collectStepBindingsReassigned(stmts)
@@ -1052,8 +839,15 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 		}
 	}
 
-	// Emit hoisted variable declarations before the main body
+	// Emit hoisted variable declarations before the main body. Sort the names
+	// so the emitted order is stable across builds (random map iteration would
+	// break `bp diff --exit-code` idempotency).
+	hoistedNames := make([]string, 0, len(hoisted))
 	for name := range hoisted {
+		hoistedNames = append(hoistedNames, name)
+	}
+	sort.Strings(hoistedNames)
+	for _, name := range hoistedNames {
 		fmt.Fprintf(b, "%slet %s: any;\n", indent, name)
 		ctx.declared[name] = true
 	}
@@ -1093,28 +887,8 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 			// In function/pipe context, inputs are function params — skip
 
 		case *ast.StepStmt:
-			// Track data-op bindings BEFORE codegen so context is available
-			if s.Binding != "" {
-				if fn, ok := s.Expr.(*ast.FnCall); ok && isDataOp(fn.Name) {
-					if len(fn.Args) > 0 {
-						if ident, ok := fn.Args[0].(*ast.Ident); ok {
-							name := toCamelCase(s.Binding)
-							ctx.boundVars[ident.Name] = name
-							ctx.varModels[s.Binding] = ident.Name
-							// fetch returns a single record; query returns a collection
-							if fn.Name == "fetch" {
-								ctx.singleVars[s.Binding] = true
-							}
-							// Track paginated queries (result has .items/.total shape)
-							if fn.Name == "query" {
-								if queryIsPaginated(fn) {
-									ctx.paginatedVars[s.Binding] = true
-								}
-							}
-						}
-					}
-				}
-			}
+			// Variable facts (model + cardinality) for this binding are pre-resolved
+			// above via resolve.ResolveBlock — no per-step bookkeeping needed here.
 
 			// Special-case: delete <variable> where variable holds tracked model records
 			if fn, ok := s.Expr.(*ast.FnCall); ok && fn.Name == "delete" && len(fn.Args) > 0 {
@@ -1162,7 +936,7 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 						}
 
 						// Check if the body expression has FK access patterns (e.g., item.product.price_cents)
-						bodyFKAccesses := g.scanFKAccessInExpr(fn.Args[1], &innerCtx)
+						bodyFKAccesses := g.fkAccessesInExpr(fn.Args[1], &innerCtx)
 						if len(bodyFKAccesses) > 0 {
 							// Need a block-body lambda to inject FK sub-queries
 							// Build FK sub-queries for inside the lambda
@@ -1236,7 +1010,7 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 			}
 
 			// Pre-scan: emit FK sub-queries for any FK access patterns in this step
-			for _, fk := range g.scanFKAccessInStmt(stmt, &ctx) {
+			for _, fk := range g.fkAccessesInStmt(stmt, &ctx) {
 				key := fk.varName + "." + fk.fieldName
 				if _, already := ctx.fkAliases[key]; !already {
 					alias := g.emitFKSubQuery(b, fk, indent)
@@ -1284,7 +1058,7 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 
 		case *ast.GuardStmt:
 			// Pre-scan: emit FK sub-queries for any FK access patterns in the guard condition
-			for _, fk := range g.scanFKAccessInStmt(stmt, &ctx) {
+			for _, fk := range g.fkAccessesInStmt(stmt, &ctx) {
 				key := fk.varName + "." + fk.fieldName
 				if _, already := ctx.fkAliases[key]; !already {
 					alias := g.emitFKSubQuery(b, fk, indent)

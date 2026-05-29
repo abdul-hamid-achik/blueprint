@@ -21,9 +21,9 @@ type Server struct {
 
 // Document represents an open text document.
 type Document struct {
-	URI     string `json:"uri"`
-	Version int    `json:"version"`
-	Text    string `json:"text"`
+	URI        string `json:"uri"`
+	Version    int    `json:"version"`
+	Text       string `json:"text"`
 	LanguageID string `json:"languageId"`
 }
 
@@ -141,8 +141,8 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) error {
 // handleInitialize handles the initialize request.
 func (s *Server) handleInitialize(msg *jsonRPCMessage) error {
 	var params struct {
-		ProcessID int `json:"processId"`
-		RootURI   string `json:"rootUri"`
+		ProcessID    int    `json:"processId"`
+		RootURI      string `json:"rootUri"`
 		Capabilities struct {
 			TextDocument struct {
 				Synchronization struct {
@@ -152,13 +152,13 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) error {
 					DidSave             bool `json:"didSave"`
 				} `json:"synchronization"`
 				Hover struct {
-					DynamicRegistration bool `json:"dynamicRegistration"`
+					DynamicRegistration bool     `json:"dynamicRegistration"`
 					ContentFormat       []string `json:"contentFormat"`
 				} `json:"hover"`
 			} `json:"textDocument"`
 		} `json:"capabilities"`
 	}
-	
+
 	if err := json.Unmarshal(msg.Params, &params); err != nil {
 		return s.sendError(msg.ID, -32602, "Invalid params", err.Error())
 	}
@@ -187,7 +187,7 @@ func (s *Server) handleDidOpen(msg *jsonRPCMessage) error {
 	}
 
 	s.docs[params.TextDocument.URI] = &params.TextDocument
-	
+
 	// TODO: Validate document and publish diagnostics
 	return s.publishDiagnostics(params.TextDocument.URI)
 }
@@ -195,7 +195,7 @@ func (s *Server) handleDidOpen(msg *jsonRPCMessage) error {
 // handleDidChange handles textDocument/didChange notification.
 func (s *Server) handleDidChange(msg *jsonRPCMessage) error {
 	var params struct {
-		TextDocument   struct {
+		TextDocument struct {
 			URI     string `json:"uri"`
 			Version int    `json:"version"`
 		} `json:"textDocument"`
@@ -233,7 +233,7 @@ func (s *Server) handleDidClose(msg *jsonRPCMessage) error {
 	}
 
 	delete(s.docs, params.TextDocument.URI)
-	
+
 	// Clear diagnostics
 	return s.sendNotification("textDocument/publishDiagnostics", map[string]interface{}{
 		"uri":         params.TextDocument.URI,
@@ -251,7 +251,7 @@ func (s *Server) handleHover(msg *jsonRPCMessage) error {
 	}
 
 	content := s.getHoverContent(params.TextDocument.URI, params.Position.Line, params.Position.Character)
-	
+
 	result := map[string]interface{}{
 		"contents": map[string]string{
 			"kind":  "markdown",
@@ -267,7 +267,7 @@ type TextDocumentPositionParams struct {
 	TextDocument struct {
 		URI string `json:"uri"`
 	} `json:"textDocument"`
-	Position     struct {
+	Position struct {
 		Line      int `json:"line"`
 		Character int `json:"character"`
 	} `json:"position"`
@@ -315,14 +315,14 @@ func isWordChar(c byte) bool {
 // getKeywordDocumentation returns documentation for Blueprint keywords.
 func getKeywordDocumentation(word string) string {
 	docs := map[string]string{
-		"blueprint": "**blueprint** - Declares the service name and configuration\n\n```bp\nblueprint \"my-api\" {\n  version \"1.0.0\"\n  port 3000\n}\n```",
-		"model": "**model** - Defines a database table\n\n```bp\nmodel user {\n  id   uuid  primary\n  name string required\n}\n```",
-		"fn": "**fn** - Declares a function\n\n```bp\nfn process {\n  <- input string\n  -> output string\n}\n```",
-		"pipe": "**pipe** - Declares a reusable pipeline\n\n```bp\npipe validate {\n  <- input string\n  |> guard input != \"\" -> 400 \"Required\"\n  -> input\n}\n```",
+		"blueprint":  "**blueprint** - Declares the service name and configuration\n\n```bp\nblueprint \"my-api\" {\n  version \"1.0.0\"\n  port 3000\n}\n```",
+		"model":      "**model** - Defines a database table\n\n```bp\nmodel user {\n  id   uuid  primary\n  name string required\n}\n```",
+		"fn":         "**fn** - Declares a function\n\n```bp\nfn process {\n  <- input string\n  -> output string\n}\n```",
+		"pipe":       "**pipe** - Declares a reusable pipeline\n\n```bp\npipe validate {\n  <- input string\n  |> guard input != \"\" -> 400 \"Required\"\n  -> input\n}\n```",
 		"middleware": "**middleware** - Declares reusable middleware\n\n```bp\nmiddleware auth {\n  before { |> inject user }\n}\n```",
-		"guard": "**guard** - Early return if condition fails\n\n```bp\n|> guard user.active -> 403 \"Forbidden\"\n```",
-		"when": "**when** - Conditional execution\n\n```bp\n|> when plan == \"pro\": limit = 1000\n```",
-		"try": "**try** - Error handling block\n\n```bp\n|> try {\n  |> risky_operation()\n} recover {\n  |> log error\n}\n```",
+		"guard":      "**guard** - Early return if condition fails\n\n```bp\n|> guard user.active -> 403 \"Forbidden\"\n```",
+		"when":       "**when** - Conditional execution\n\n```bp\n|> when plan == \"pro\": limit = 1000\n```",
+		"try":        "**try** - Error handling block\n\n```bp\n|> try {\n  |> risky_operation()\n} recover {\n  |> log error\n}\n```",
 	}
 
 	if doc, ok := docs[word]; ok {

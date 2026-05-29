@@ -2,17 +2,20 @@ package parser
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
+	"github.com/abdul-hamid-achik/blueprint/internal/diag"
 	"github.com/abdul-hamid-achik/blueprint/internal/lexer"
 )
 
 // ParseError represents a syntax error found during parsing.
+//
+// Code is an optional structured error code (e.g. "P001") that, once populated
+// across error sites, lets `bp explain <code>` link to documentation.
 type ParseError struct {
 	Loc     lexer.Loc
 	Message string
 	Hint    string
+	Code    string
 }
 
 func (e ParseError) Error() string {
@@ -23,46 +26,14 @@ func (e ParseError) Error() string {
 	return s
 }
 
-// useColor returns true if ANSI color output should be used.
-func useColor() bool {
-	return os.Getenv("NO_COLOR") == ""
-}
-
-// FormatError formats a parse error with source context for display.
+// FormatError renders a ParseError using the shared diagnostic formatter
+// (source-line context, caret, hint, optional code).
 func FormatError(err ParseError, src []byte) string {
-	var b strings.Builder
-
-	color := useColor()
-	red, cyan, yellow, reset := "\033[31m", "\033[36m", "\033[33m", "\033[0m"
-	if !color {
-		red, cyan, yellow, reset = "", "", "", ""
-	}
-
-	fmt.Fprintf(&b, "%serror:%s %s%s%s\n\n", red, reset, cyan, err.Loc, reset)
-
-	// Extract the source line
-	line := getSourceLine(src, err.Loc.Line)
-	if line != "" {
-		fmt.Fprintf(&b, "  %s\n", line)
-		// Build pointer
-		if err.Loc.Col > 0 {
-			pointer := strings.Repeat(" ", err.Loc.Col-1+2) + "^"
-			fmt.Fprintf(&b, "%s\n", pointer)
-		}
-	}
-
-	fmt.Fprintf(&b, "\n  %s\n", err.Message)
-	if err.Hint != "" {
-		fmt.Fprintf(&b, "  %s%s%s\n", yellow, err.Hint, reset)
-	}
-
-	return b.String()
-}
-
-func getSourceLine(src []byte, lineNum int) string {
-	lines := strings.Split(string(src), "\n")
-	if lineNum >= 1 && lineNum <= len(lines) {
-		return lines[lineNum-1]
-	}
-	return ""
+	return diag.Format(&diag.Diagnostic{
+		Severity: diag.SeverityError,
+		Code:     err.Code,
+		Loc:      err.Loc,
+		Message:  err.Message,
+		Hint:     err.Hint,
+	}, src)
 }

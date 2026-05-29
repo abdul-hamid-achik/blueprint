@@ -87,6 +87,77 @@ jobs:
             npx tsc --noEmit --skipLibCheck
           done
 
+      - name: Build idempotency check (bp diff --exit-code after build)
+        # A fresh `bp build` followed immediately by `bp diff --exit-code` must
+        # report no changes. Catches non-determinism in codegen (sort order,
+        # map iteration, time-based output) before it ships.
+        run: |
+          for pair in "examples/hello-world.bp /tmp/hello" "examples/todo-api.bp /tmp/todo" "examples/auth-service.bp /tmp/auth" "examples/ecommerce-api.bp /tmp/ecommerce" "examples/realtime-chat.bp /tmp/chat"; do
+            src="${pair% *}"; dir="${pair#* }"
+            echo "=== Idempotency: $src -> $dir ==="
+            ./bin/bp diff "$src" --out "$dir" --no-color --exit-code
+          done
+
+      - name: Build with --target python (phase 1 smoke)
+        # Phase 1 supports static endpoints only. hello-world is the canonical
+        # spec; idempotency is enforced so non-determinism in the Python
+        # generator is caught here.
+        run: |
+          rm -rf /tmp/py-hello
+          ./bin/bp build examples/hello-world.bp --out /tmp/py-hello --target python
+          ./bin/bp diff examples/hello-world.bp --out /tmp/py-hello --target python --no-color --exit-code
+          test -f /tmp/py-hello/pyproject.toml || (echo "missing pyproject.toml" && exit 1)
+          test -f /tmp/py-hello/src/app.py || (echo "missing app.py" && exit 1)
+          test -f /tmp/py-hello/src/routes/hello.py || (echo "missing hello route" && exit 1)
+          python3 -c "import ast, os, sys
+err = 0
+for root, _, files in os.walk('/tmp/py-hello/src'):
+  for f in files:
+    if not f.endswith('.py'): continue
+    path = os.path.join(root, f)
+    try: ast.parse(open(path).read(), filename=path)
+    except SyntaxError as e: print(path, e); err = 1
+sys.exit(err)"
+          echo "--target python output OK"
+
+      - name: Build with --gen-tests (verify harness emits cleanly)
+        # Exercises the contract-test + PGlite harness path so a regression in
+        # the autotest generator (DDL, harness imports, contract test shape)
+        # is caught here even though we don't run bun in this workflow.
+        run: |
+          rm -rf /tmp/todo-gentests
+          ./bin/bp build examples/todo-api.bp --out /tmp/todo-gentests --gen-tests
+          test -f /tmp/todo-gentests/test/_harness/ddl.ts || (echo "missing ddl.ts" && exit 1)
+          test -f /tmp/todo-gentests/test/_harness/db.ts || (echo "missing db.ts" && exit 1)
+          test -f /tmp/todo-gentests/test/_harness/setup.ts || (echo "missing setup.ts" && exit 1)
+          test -f /tmp/todo-gentests/vitest.config.ts || (echo "missing vitest.config.ts" && exit 1)
+          test -f /tmp/todo-gentests/test/generated/todos.test.ts || (echo "missing generated test" && exit 1)
+          echo "--gen-tests output OK"
+
+      - name: Build with --target python --gen-tests (Phase 4 smoke)
+        # Python Phase 4 emits a pytest contract suite backed by
+        # testcontainers[postgresql]. We don't run pytest here (Docker isn't
+        # guaranteed in every CI environment), but we assert the harness +
+        # per-resource test files exist, syntax-check every emitted .py, and
+        # require idempotency via bp diff --exit-code.
+        run: |
+          rm -rf /tmp/py-hello-gt
+          ./bin/bp build examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests
+          ./bin/bp diff examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests --no-color --exit-code
+          test -f /tmp/py-hello-gt/tests/conftest.py || (echo "missing conftest.py" && exit 1)
+          test -f /tmp/py-hello-gt/tests/test_hello.py || (echo "missing tests/test_hello.py" && exit 1)
+          grep -q "testcontainers" /tmp/py-hello-gt/pyproject.toml || (echo "testcontainers dep missing" && exit 1)
+          python3 -c "import ast, os, sys
+err = 0
+for root, _, files in os.walk('/tmp/py-hello-gt/tests'):
+  for f in files:
+    if not f.endswith('.py'): continue
+    path = os.path.join(root, f)
+    try: ast.parse(open(path).read(), filename=path)
+    except SyntaxError as e: print(path, e); err = 1
+sys.exit(err)"
+          echo "--target python --gen-tests output OK"
+
       - name: Lint examples
         run: |
           ./bin/bp lint examples/hello-world.bp

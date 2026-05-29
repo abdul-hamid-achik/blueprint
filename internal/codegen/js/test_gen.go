@@ -61,7 +61,14 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 
 	// Imports
 	b.WriteString(fileHeader(g.sourceFile))
-	b.WriteString("import { describe, it, expect, beforeAll } from 'vitest';\n")
+	if g.genTests {
+		// Route db through the in-memory (PGlite) harness so authored tests are
+		// self-contained alongside the generated suite (see genAutoTests).
+		b.WriteString("import { describe, it, expect, beforeAll, vi } from 'vitest';\n\n")
+		b.WriteString("vi.mock('../src/lib/db', async () => ({ db: (await import('./_harness/db.js')).db }));\n\n")
+	} else {
+		b.WriteString("import { describe, it, expect, beforeAll } from 'vitest';\n")
+	}
 	if needsFSImport {
 		b.WriteString("import { readFileSync } from 'fs';\n")
 		b.WriteString("import { join } from 'path';\n")
@@ -124,13 +131,27 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 		fmt.Fprintf(&b, "%s  method: '%s',\n", indent, method)
 
 		if t.Request != nil {
-			// Auth header (e.g. auth api_key(key.key_hash) → X-API-Key header).
+			hasBody := false
+			for _, kv := range t.Request.Entries {
+				if kv.Key == "body" {
+					hasBody = true
+				}
+			}
+			// Merge auth header and (for JSON bodies) Content-Type into one headers object.
+			var headerParts []string
+			if hasBody {
+				headerParts = append(headerParts, "'Content-Type': 'application/json'")
+			}
 			for _, kv := range t.Request.Entries {
 				if kv.Key == "auth" {
 					if hdr := testAuthHeader(kv.Value); hdr != "" {
-						fmt.Fprintf(&b, "%s  headers: %s,\n", indent, hdr)
+						inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(hdr, "{"), "}"))
+						headerParts = append(headerParts, inner)
 					}
 				}
+			}
+			if len(headerParts) > 0 {
+				fmt.Fprintf(&b, "%s  headers: { %s },\n", indent, strings.Join(headerParts, ", "))
 			}
 			// Request body with fixture() resolution.
 			for _, kv := range t.Request.Entries {

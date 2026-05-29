@@ -2,19 +2,23 @@ package checker
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"unicode"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
+	"github.com/abdul-hamid-achik/blueprint/internal/diag"
 	"github.com/abdul-hamid-achik/blueprint/internal/lexer"
 )
 
 // CheckError represents a semantic error.
+//
+// Code is an optional structured error code (e.g. "C001") that, once populated
+// across error sites, lets `bp explain <code>` link to documentation.
 type CheckError struct {
 	Loc     lexer.Loc
 	Message string
 	Hint    string
+	Code    string
 }
 
 func (e CheckError) Error() string {
@@ -53,6 +57,42 @@ func Check(file *ast.File) []CheckError {
 func (c *Checker) addError(loc lexer.Loc, msg, hint string) {
 	c.errors = append(c.errors, CheckError{Loc: loc, Message: msg, Hint: hint})
 }
+
+// addErrorCode is addError with a structured error code (e.g. "C001").
+// Use this for error sites documented in docs/error-codes.md so users can
+// `bp explain <code>` to see the long-form explanation.
+func (c *Checker) addErrorCode(loc lexer.Loc, code, msg, hint string) {
+	c.errors = append(c.errors, CheckError{Loc: loc, Message: msg, Hint: hint, Code: code})
+}
+
+// Checker error codes — keep in sync with docs/error-codes.md and
+// internal/diag/error-codes.md (the drift test enforces match).
+const (
+	// CodeMissingBlueprint = no blueprint block at file top level.
+	CodeMissingBlueprint = "C001"
+	// CodeBlueprintNameEmpty = `blueprint "" { ... }` with an empty name.
+	CodeBlueprintNameEmpty = "C002"
+	// CodeBlueprintMissingField = required blueprint entry (version, runtime) absent.
+	CodeBlueprintMissingField = "C003"
+	// CodeDuplicateName = two top-level declarations share a name.
+	CodeDuplicateName = "C004"
+	// CodeDuplicateEndpoint = two endpoints share METHOD + PATH.
+	CodeDuplicateEndpoint = "C005"
+	// CodeUnknownFunction = call to an undeclared fn/pipe/builtin.
+	CodeUnknownFunction = "C006"
+	// CodeUnknownMiddleware = `use <name>` where <name> isn't declared.
+	CodeUnknownMiddleware = "C007"
+	// CodeIdentifierNotSnakeCase = a name where Blueprint requires snake_case.
+	CodeIdentifierNotSnakeCase = "C008"
+	// CodePathParamNotSnakeCase = a :param segment in a path that isn't snake_case.
+	CodePathParamNotSnakeCase = "C009"
+	// CodeDuplicateField = two fields share a name within a single model.
+	CodeDuplicateField = "C010"
+	// CodeArrowStmtOrder = inputs/steps/outputs out of canonical order.
+	CodeArrowStmtOrder = "C011"
+	// CodeNestedTryRecover = try/recover blocks cannot be nested.
+	CodeNestedTryRecover = "C012"
+)
 
 // --- Pass 1: Collect top-level declarations ---
 
@@ -96,7 +136,7 @@ func (c *Checker) collectDeclarations() {
 func (c *Checker) define(name string, kind SymbolKind, loc lexer.Loc, node ast.Node) {
 	sym := &Symbol{Name: name, Kind: kind, Loc: loc, Node: node}
 	if existing := c.global.Define(sym); existing != nil {
-		c.addError(loc,
+		c.addErrorCode(loc, CodeDuplicateName,
 			fmt.Sprintf("duplicate %s name %q (previously defined at %s)", kind, name, existing.Loc),
 			fmt.Sprintf("Rename one of the %s declarations", kind),
 		)
@@ -107,7 +147,7 @@ func (c *Checker) define(name string, kind SymbolKind, loc lexer.Loc, node ast.N
 
 func (c *Checker) validateBlueprint() {
 	if c.file.Blueprint == nil {
-		c.addError(c.file.Loc,
+		c.addErrorCode(c.file.Loc, CodeMissingBlueprint,
 			"missing blueprint block",
 			"Every .bp file must start with: blueprint \"name\" { ... }",
 		)
@@ -116,7 +156,7 @@ func (c *Checker) validateBlueprint() {
 
 	bp := c.file.Blueprint
 	if bp.Name == "" {
-		c.addError(bp.Loc, "blueprint name is empty", "Provide a name: blueprint \"my-app\" { ... }")
+		c.addErrorCode(bp.Loc, CodeBlueprintNameEmpty, "blueprint name is empty", "Provide a name: blueprint \"my-app\" { ... }")
 	}
 
 	// Check required fields
@@ -125,10 +165,10 @@ func (c *Checker) validateBlueprint() {
 		found[e.Key] = true
 	}
 	if !found["version"] {
-		c.addError(bp.Loc, "blueprint block missing required field 'version'", `Add: version "0.1.0"`)
+		c.addErrorCode(bp.Loc, CodeBlueprintMissingField, "blueprint block missing required field 'version'", `Add: version "0.1.0"`)
 	}
 	if !found["runtime"] {
-		c.addError(bp.Loc, "blueprint block missing required field 'runtime'", "Add: runtime node")
+		c.addErrorCode(bp.Loc, CodeBlueprintMissingField, "blueprint block missing required field 'runtime'", "Add: runtime node")
 	}
 }
 
@@ -200,7 +240,7 @@ func (c *Checker) checkModel(n *ast.Model) {
 	for _, f := range n.Fields {
 		c.checkSnakeCase(f.Name, "field", f.Loc)
 		if prevLoc, dup := seen[f.Name]; dup {
-			c.addError(f.Loc,
+			c.addErrorCode(f.Loc, CodeDuplicateField,
 				fmt.Sprintf("duplicate field '%s' in model '%s'", f.Name, n.Name),
 				fmt.Sprintf("First defined at %s", prevLoc),
 			)
@@ -323,7 +363,7 @@ func (c *Checker) checkWsEndpoint(n *ast.WsEndpoint) {
 func (c *Checker) checkDuplicateEndpoint(method, path string, loc lexer.Loc, seen map[string]lexer.Loc) {
 	key := method + " " + path
 	if prev, ok := seen[key]; ok {
-		c.addError(loc,
+		c.addErrorCode(loc, CodeDuplicateEndpoint,
 			fmt.Sprintf("duplicate endpoint %s (previously defined at %s)", key, prev),
 			"Each METHOD + PATH combination must be unique",
 		)
@@ -713,7 +753,7 @@ func (c *Checker) checkFnCall(call *ast.FnCall) {
 	if suggestion := suggestName(call.Name, candidates); suggestion != "" {
 		hint += fmt.Sprintf("; did you mean %q?", suggestion)
 	}
-	c.addError(call.Loc, fmt.Sprintf("unknown function %q", call.Name), hint)
+	c.addErrorCode(call.Loc, CodeUnknownFunction, fmt.Sprintf("unknown function %q", call.Name), hint)
 }
 
 func (c *Checker) checkExternalCall(call *ast.FnCall) {
@@ -908,7 +948,7 @@ func (c *Checker) checkArrowOrdering(stmts []ast.ArrowStmt, loc lexer.Loc, block
 		switch stmt.(type) {
 		case *ast.InputStmt:
 			if phase > phaseInput {
-				c.addError(stmt.Location(),
+				c.addErrorCode(stmt.Location(), CodeArrowStmtOrder,
 					fmt.Sprintf("input (<-) must come before steps and outputs in %s", blockKind),
 					"Move all <- declarations to the top of the block",
 				)
@@ -919,7 +959,7 @@ func (c *Checker) checkArrowOrdering(stmts []ast.ArrowStmt, loc lexer.Loc, block
 				phase = phaseStep
 			}
 			if phase > phaseStep {
-				c.addError(stmt.Location(),
+				c.addErrorCode(stmt.Location(), CodeArrowStmtOrder,
 					fmt.Sprintf("steps (|>) must come before outputs (->) in %s", blockKind),
 					"Move -> statements to the end of the block",
 				)
@@ -948,7 +988,7 @@ func (c *Checker) checkTryRecoverNesting(stmts []ast.ArrowStmt, _ lexer.Loc) {
 func (c *Checker) checkNoNestedTryRecover(stmts []ast.ArrowStmt) {
 	for _, stmt := range stmts {
 		if _, ok := stmt.(*ast.TryRecover); ok {
-			c.addError(stmt.Location(),
+			c.addErrorCode(stmt.Location(), CodeNestedTryRecover,
 				"try/recover cannot be nested",
 				"Flatten the error handling or use separate pipes",
 			)
@@ -1043,7 +1083,7 @@ func (c *Checker) checkMiddlewareRef(name string, loc lexer.Loc) {
 		if suggestion := suggestName(name, candidates); suggestion != "" {
 			hint += fmt.Sprintf("; did you mean %q?", suggestion)
 		}
-		c.addError(loc,
+		c.addErrorCode(loc, CodeUnknownMiddleware,
 			fmt.Sprintf("unknown middleware %q", name),
 			hint,
 		)
@@ -1070,7 +1110,7 @@ func (c *Checker) checkPathNaming(path string, loc lexer.Loc) {
 		if strings.HasPrefix(seg, ":") {
 			param := seg[1:]
 			if !isSnakeCase(param) {
-				c.addError(loc,
+				c.addErrorCode(loc, CodePathParamNotSnakeCase,
 					fmt.Sprintf("path parameter %q must be snake_case", param),
 					"Use lowercase letters, digits, and underscores",
 				)
@@ -1175,7 +1215,7 @@ func isKebabCase(s string) bool {
 
 func (c *Checker) checkSnakeCase(name, what string, loc lexer.Loc) {
 	if !isSnakeCase(name) {
-		c.addError(loc,
+		c.addErrorCode(loc, CodeIdentifierNotSnakeCase,
 			fmt.Sprintf("%s name %q must be snake_case", what, name),
 			"Use lowercase letters, digits, and underscores (e.g. my_thing)",
 		)
@@ -1255,37 +1295,14 @@ func suggestName(name string, candidates []string) string {
 // Error Formatting
 // ═══════════════════════════════════════════════
 
-// FormatCheckError formats a check error with source context for display.
+// FormatCheckError formats a check error with source context for display,
+// delegating to the shared internal/diag formatter.
 func FormatCheckError(err CheckError, src []byte) string {
-	var b strings.Builder
-
-	color := os.Getenv("NO_COLOR") == ""
-	red, cyan, yellow, reset := "\033[31m", "\033[36m", "\033[33m", "\033[0m"
-	if !color {
-		red, cyan, yellow, reset = "", "", "", ""
-	}
-
-	fmt.Fprintf(&b, "%serror:%s %s%s%s\n\n", red, reset, cyan, err.Loc, reset)
-
-	line := getSourceLine(src, err.Loc.Line)
-	if line != "" {
-		fmt.Fprintf(&b, "  %s\n", line)
-		if err.Loc.Col > 0 {
-			fmt.Fprintf(&b, "%s\n", strings.Repeat(" ", err.Loc.Col-1+2)+"^")
-		}
-	}
-
-	fmt.Fprintf(&b, "\n  %s\n", err.Message)
-	if err.Hint != "" {
-		fmt.Fprintf(&b, "  %s%s%s\n", yellow, err.Hint, reset)
-	}
-	return b.String()
-}
-
-func getSourceLine(src []byte, lineNum int) string {
-	lines := strings.Split(string(src), "\n")
-	if lineNum >= 1 && lineNum <= len(lines) {
-		return lines[lineNum-1]
-	}
-	return ""
+	return diag.Format(&diag.Diagnostic{
+		Severity: diag.SeverityError,
+		Code:     err.Code,
+		Loc:      err.Loc,
+		Message:  err.Message,
+		Hint:     err.Hint,
+	}, src)
 }

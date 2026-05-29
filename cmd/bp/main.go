@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -14,6 +17,8 @@ import (
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/checker"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen/js"
+	pythongen "github.com/abdul-hamid-achik/blueprint/internal/codegen/python"
+	"github.com/abdul-hamid-achik/blueprint/internal/diag"
 	"github.com/abdul-hamid-achik/blueprint/internal/docs"
 	"github.com/abdul-hamid-achik/blueprint/internal/generate"
 	"github.com/abdul-hamid-achik/blueprint/internal/linter"
@@ -21,7 +26,29 @@ import (
 )
 
 // version is set by goreleaser ldflags at build time.
-var version = "0.1.0"
+var version = "0.9.0"
+
+// Supported codegen targets. New targets register here and add a case to
+// dispatchTarget below. The flag default is targetNode, so existing usage is
+// unchanged.
+const (
+	targetNode   = "node"
+	targetPython = "python"
+)
+
+// resolveTarget validates a --target flag value and returns the canonical name.
+// An empty string defaults to targetNode so callers that don't set the flag
+// keep their current behavior.
+func resolveTarget(t string) (string, error) {
+	switch t {
+	case "", targetNode:
+		return targetNode, nil
+	case targetPython:
+		return targetPython, nil
+	default:
+		return "", fmt.Errorf("unknown --target %q (supported: %s, %s)", t, targetNode, targetPython)
+	}
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -52,29 +79,47 @@ func main() {
 		os.Exit(cmdCheck(os.Args[2], jsonOutput))
 	case "build":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("build", "build <file.bp> [--out <dir>] [--react-query] [--frontend-only]",
-				"Compile a .bp file to JavaScript/TypeScript.",
-				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}, {"--react-query", "Generate React Query hooks and add frontend deps"}, {"--frontend-only", "Emit only the standalone frontend package"}})
+			printCommandHelp("build", "build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests]",
+				"Compile a .bp file to a runnable project.",
+				[][2]string{
+					{"--out <dir>", "Output directory (default: generated/)"},
+					{"--target <name>", "Codegen target: node (default) or python (FastAPI + SQLAlchemy + Alembic)"},
+					{"--react-query", "Generate React Query hooks and add frontend deps (node target)"},
+					{"--frontend-only", "Emit only the standalone frontend package (node target)"},
+					{"--gen-tests", "Generate contract tests. node: PGlite-backed Vitest. python: testcontainers-backed pytest (Docker required)"},
+				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>] [--react-query] [--frontend-only]")
+			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests]")
 			os.Exit(1)
 		}
 		outDir := "generated"
+		target := targetNode
 		reactQuery := false
 		frontendOnly := false
+		genTests := false
 		for i := 3; i < len(os.Args); i++ {
-			if os.Args[i] == "--out" && i+1 < len(os.Args) {
-				outDir = os.Args[i+1]
-				i++
-			} else if os.Args[i] == "--react-query" {
+			switch os.Args[i] {
+			case "--out":
+				if i+1 < len(os.Args) {
+					outDir = os.Args[i+1]
+					i++
+				}
+			case "--target":
+				if i+1 < len(os.Args) {
+					target = os.Args[i+1]
+					i++
+				}
+			case "--react-query":
 				reactQuery = true
-			} else if os.Args[i] == "--frontend-only" {
+			case "--frontend-only":
 				frontendOnly = true
+			case "--gen-tests":
+				genTests = true
 			}
 		}
-		os.Exit(cmdBuild(os.Args[2], outDir, reactQuery, frontendOnly))
+		os.Exit(cmdBuild(os.Args[2], outDir, target, reactQuery, frontendOnly, genTests))
 	case "frontend":
 		if len(os.Args) >= 3 && os.Args[2] == "publish" {
 			if hasHelpFlag(os.Args[3:]) {
@@ -122,7 +167,7 @@ func main() {
 				reactQuery = true
 			}
 		}
-		os.Exit(cmdBuild(os.Args[2], outDir, reactQuery, true))
+		os.Exit(cmdBuild(os.Args[2], outDir, targetNode, reactQuery, true, false))
 	case "fmt":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("fmt", "fmt <file.bp> [--write] [--check]",
@@ -305,29 +350,58 @@ func main() {
 		os.Exit(cmdEject(os.Args[2]))
 	case "diff":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("diff", "diff <file.bp> [--out <dir>] [--react-query] [--frontend-only]",
+			printCommandHelp("diff", "diff <file.bp> [--out <dir>] [--react-query] [--frontend-only] [--gen-tests] [--apply] [--exit-code] [--no-color]",
 				"Show what changes bp build would make, without overwriting.",
-				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}, {"--react-query", "Compare output as if build ran with React Query hooks enabled"}, {"--frontend-only", "Compare output as if build emitted only the standalone frontend package"}})
+				[][2]string{
+					{"--out <dir>", "Output directory (default: generated/)"},
+					{"--react-query", "Compare output as if build ran with React Query hooks enabled"},
+					{"--frontend-only", "Compare output as if build emitted only the standalone frontend package"},
+					{"--gen-tests", "Compare output as if build emitted the auto-generated test harness"},
+					{"--apply", "Write the changes (equivalent to bp build) after showing the diff"},
+					{"--exit-code", "Exit 1 if there are any changes (for CI)"},
+					{"--no-color", "Disable ANSI color in diff output"},
+				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>] [--react-query] [--frontend-only]")
+			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>] [--react-query] [--frontend-only] [--gen-tests] [--apply] [--exit-code] [--no-color]")
 			os.Exit(1)
 		}
 		outDir := "generated"
+		target := targetNode
 		reactQuery := false
 		frontendOnly := false
+		genTests := false
+		apply := false
+		exitOnDiff := false
+		noColor := false
 		for i := 3; i < len(os.Args); i++ {
-			if os.Args[i] == "--out" && i+1 < len(os.Args) {
-				outDir = os.Args[i+1]
-				i++
-			} else if os.Args[i] == "--react-query" {
+			switch os.Args[i] {
+			case "--out":
+				if i+1 < len(os.Args) {
+					outDir = os.Args[i+1]
+					i++
+				}
+			case "--target":
+				if i+1 < len(os.Args) {
+					target = os.Args[i+1]
+					i++
+				}
+			case "--react-query":
 				reactQuery = true
-			} else if os.Args[i] == "--frontend-only" {
+			case "--frontend-only":
 				frontendOnly = true
+			case "--gen-tests":
+				genTests = true
+			case "--apply":
+				apply = true
+			case "--exit-code":
+				exitOnDiff = true
+			case "--no-color":
+				noColor = true
 			}
 		}
-		os.Exit(cmdDiff(os.Args[2], outDir, reactQuery, frontendOnly))
+		os.Exit(cmdDiff(os.Args[2], outDir, target, reactQuery, frontendOnly, genTests, apply, exitOnDiff, noColor))
 	case "deploy":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("deploy", "deploy <file.bp> [--out <dir>] [--tag <tag>]",
@@ -401,6 +475,18 @@ func main() {
 			os.Exit(0)
 		}
 		os.Exit(cmdLSP())
+	case "explain":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("explain", "explain <code>",
+				"Print the documentation for a Blueprint error code (e.g. C001).",
+				nil)
+			os.Exit(0)
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: bp explain <code>")
+			os.Exit(1)
+		}
+		os.Exit(cmdExplain(os.Args[2]))
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -474,11 +560,18 @@ func cmdCheck(filename string, jsonOutput bool) int {
 	return 0
 }
 
-func cmdBuild(filename, outDir string, reactQuery, frontendOnly bool) int {
-	return cmdBuildWithOptions(filename, outDir, reactQuery, frontendOnly, false)
+func cmdBuild(filename, outDir, target string, reactQuery, frontendOnly, genTests bool) int {
+	return cmdBuildWithOptions(filename, outDir, target, reactQuery, frontendOnly, false, genTests)
 }
 
-func cmdBuildWithOptions(filename, outDir string, reactQuery, frontendOnly, preserveNodeModules bool) int {
+func cmdBuildWithOptions(filename, outDir, target string, reactQuery, frontendOnly, preserveNodeModules, genTests bool) int {
+	// Validate target before any work — keeps errors visible and short.
+	canonical, err := resolveTarget(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return 2
+	}
+	target = canonical
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
@@ -513,18 +606,36 @@ func cmdBuildWithOptions(filename, outDir string, reactQuery, frontendOnly, pres
 
 	_ = preserveNodeModules // Builds are manifest-based and no longer remove node_modules.
 
-	gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly)
-	if err := gen.Generate(file, outDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
-		return 4
+	switch target {
+	case targetNode:
+		gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly).WithGenTests(genTests)
+		if err := gen.Generate(file, outDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
+			return 4
+		}
+	case targetPython:
+		// Frontend-specific flags are still Node-only. --gen-tests is wired
+		// through in Phase 4 (testcontainers-backed pytest harness).
+		if reactQuery || frontendOnly {
+			fmt.Fprintf(os.Stderr, "Error: --react-query and --frontend-only are not supported with --target python yet\n")
+			return 2
+		}
+		if err := pythongen.New().WithGenTests(genTests).Generate(file, outDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
+			return 4
+		}
+	default:
+		// resolveTarget already filtered unknowns; this is unreachable.
+		fmt.Fprintf(os.Stderr, "Error: target %q has no generator\n", target)
+		return 2
 	}
 
-	fmt.Printf("Built %s -> %s/\n", filename, outDir)
+	fmt.Printf("Built %s -> %s/ (target=%s)\n", filename, outDir, target)
 	return 0
 }
 
 func cmdFrontendPublish(filename, outDir string, reactQuery, skipInstall bool) int {
-	if code := cmdBuildWithOptions(filename, outDir, reactQuery, true, skipInstall); code != 0 {
+	if code := cmdBuildWithOptions(filename, outDir, targetNode, reactQuery, true, skipInstall, false); code != 0 {
 		return code
 	}
 
@@ -800,7 +911,7 @@ func cmdDocs(filename, outFile string) int {
 func cmdDev(filename, outDir string) int {
 	// Initial build
 	fmt.Printf("Building %s...\n", filename)
-	if code := cmdBuild(filename, outDir, false, false); code != 0 {
+	if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
 		return code
 	}
 
@@ -848,7 +959,7 @@ func cmdDev(filename, outDir string) int {
 					proc = nil
 				}
 
-				if code := cmdBuild(filename, outDir, false, false); code != 0 {
+				if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
 					fmt.Fprintln(os.Stderr, "Build failed — waiting for next change...")
 				} else {
 					proc = startNodeProcess(outDir)
@@ -873,7 +984,7 @@ func startNodeProcess(outDir string) *exec.Cmd {
 }
 
 func cmdRun(filename, outDir string) int {
-	if code := cmdBuild(filename, outDir, false, false); code != 0 {
+	if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
 		return code
 	}
 
@@ -903,7 +1014,9 @@ func cmdRun(filename, outDir string) int {
 }
 
 func cmdTest(filename, outDir string) int {
-	if code := cmdBuild(filename, outDir, false, false); code != 0 {
+	// Enable auto-generated contract tests with the in-memory (PGlite) harness so
+	// `bp test` runs end-to-end without a live database.
+	if code := cmdBuild(filename, outDir, targetNode, false, false, true); code != 0 {
 		return code
 	}
 
@@ -931,7 +1044,7 @@ func cmdTest(filename, outDir string) int {
 }
 
 func cmdMigrate(filename, outDir, subCmd string) int {
-	if code := cmdBuild(filename, outDir, false, false); code != 0 {
+	if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
 		return code
 	}
 
@@ -1106,8 +1219,14 @@ func cmdEject(dir string) int {
 	return 0
 }
 
-func cmdDiff(filename, outDir string, reactQuery, frontendOnly bool) int {
-	// First, check if the .bp file is valid
+func cmdDiff(filename, outDir, target string, reactQuery, frontendOnly, genTests, apply, exitOnDiff, noColor bool) int {
+	canonical, err := resolveTarget(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return 2
+	}
+	target = canonical
+
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
@@ -1137,63 +1256,72 @@ func cmdDiff(filename, outDir string, reactQuery, frontendOnly bool) int {
 		return 1
 	}
 
-	// Create temp dir for new build
 	tmpDir, err := os.MkdirTemp("", "bp-diff-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		return 2
 	}
-	defer func() {
-		_ = os.RemoveAll(tmpDir)
-	}()
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Generate to temp dir
-	gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly)
-	if err := gen.Generate(file, tmpDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
-		return 4
+	switch target {
+	case targetNode:
+		gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly).WithGenTests(genTests)
+		if err := gen.Generate(file, tmpDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
+			return 4
+		}
+	case targetPython:
+		if err := pythongen.New().WithGenTests(genTests).Generate(file, tmpDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
+			return 4
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "Error: target %q has no generator\n", target)
+		return 2
 	}
 
-	// Compare temp dir with existing outDir
-	hasDiff := false
+	useColor := !noColor && isTerminal(os.Stdout)
+	report := diffReport{useColor: useColor}
 
-	// Check if outDir exists
 	if _, err := os.Stat(outDir); os.IsNotExist(err) {
-		newCount := 0
-		if err := filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
-			if err == nil && !info.IsDir() {
-				newCount++
+		// outDir absent — every emitted file is new.
+		_ = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return err
 			}
+			rel, _ := filepath.Rel(tmpDir, path)
+			if skipDiffPath(rel) {
+				return nil
+			}
+			report.added = append(report.added, rel)
 			return nil
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-			return 2
-		}
-		fmt.Printf("Directory %s does not exist — would create %d new files\n", outDir, newCount)
-		hasDiff = true
+		})
 	} else {
-		// Walk both directories and compare
 		err := filepath.Walk(tmpDir, func(newPath string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return err
 			}
 			rel, _ := filepath.Rel(tmpDir, newPath)
+			if skipDiffPath(rel) {
+				return nil
+			}
 			oldPath := filepath.Join(outDir, rel)
 
 			oldData, err := os.ReadFile(oldPath)
 			if os.IsNotExist(err) {
-				fmt.Printf("New file: %s\n", rel)
-				hasDiff = true
+				report.added = append(report.added, rel)
 				return nil
 			}
 			if err != nil {
 				return err
 			}
-
 			newData, _ := os.ReadFile(newPath)
-			if string(oldData) != string(newData) {
-				fmt.Printf("Modified: %s\n", rel)
-				hasDiff = true
+			if !bytes.Equal(oldData, newData) {
+				report.modified = append(report.modified, fileDiff{
+					rel:     rel,
+					oldPath: oldPath,
+					newPath: newPath,
+				})
 			}
 			return nil
 		})
@@ -1202,16 +1330,16 @@ func cmdDiff(filename, outDir string, reactQuery, frontendOnly bool) int {
 			return 2
 		}
 
-		// Check for deleted files
 		err = filepath.Walk(outDir, func(oldPath string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return err
 			}
 			rel, _ := filepath.Rel(outDir, oldPath)
-			newPath := filepath.Join(tmpDir, rel)
-			if _, err := os.Stat(newPath); os.IsNotExist(err) {
-				fmt.Printf("Deleted: %s\n", rel)
-				hasDiff = true
+			if skipDiffPath(rel) {
+				return nil
+			}
+			if _, err := os.Stat(filepath.Join(tmpDir, rel)); os.IsNotExist(err) {
+				report.deleted = append(report.deleted, rel)
 			}
 			return nil
 		})
@@ -1221,10 +1349,143 @@ func cmdDiff(filename, outDir string, reactQuery, frontendOnly bool) int {
 		}
 	}
 
-	if !hasDiff {
-		fmt.Println("No changes — output is up to date.")
+	sort.Strings(report.added)
+	sort.Strings(report.deleted)
+	sort.Slice(report.modified, func(i, j int) bool { return report.modified[i].rel < report.modified[j].rel })
+
+	report.print(os.Stdout)
+
+	if !report.any() {
+		return 0
+	}
+
+	if apply {
+		fmt.Println()
+		fmt.Println("Applying changes...")
+		if code := cmdBuild(filename, outDir, target, reactQuery, frontendOnly, genTests); code != 0 {
+			return code
+		}
+		return 0
+	}
+
+	if exitOnDiff {
+		return 1
 	}
 	return 0
+}
+
+// --- diff reporting helpers ---
+
+// skipDiffPath hides files whose content is purely derived from the rest of the
+// output, so the diff stays focused on what the user wrote in the .bp source.
+func skipDiffPath(rel string) bool {
+	// The codegen manifest is a hash-of-everything-else; its diff is opaque noise.
+	return rel == filepath.FromSlash(".blueprint/manifest.json")
+}
+
+type fileDiff struct {
+	rel     string
+	oldPath string
+	newPath string
+}
+
+type diffReport struct {
+	added    []string
+	modified []fileDiff
+	deleted  []string
+	useColor bool
+}
+
+func (r *diffReport) any() bool {
+	return len(r.added)+len(r.modified)+len(r.deleted) > 0
+}
+
+func (r *diffReport) print(w io.Writer) {
+	for _, rel := range r.added {
+		fmt.Fprintf(w, "%snew file: %s%s\n", r.colorAdded(), rel, r.colorReset())
+	}
+	for _, rel := range r.deleted {
+		fmt.Fprintf(w, "%sdeleted:  %s%s\n", r.colorRemoved(), rel, r.colorReset())
+	}
+	for _, fd := range r.modified {
+		fmt.Fprintf(w, "%smodified: %s%s\n", r.colorHeader(), fd.rel, r.colorReset())
+		patch, err := unifiedDiff(fd.oldPath, fd.newPath, fd.rel)
+		if err != nil {
+			fmt.Fprintf(w, "  (could not produce unified diff: %v)\n", err)
+			continue
+		}
+		r.writeColored(w, patch)
+	}
+	if !r.any() {
+		fmt.Fprintln(w, "No changes — output is up to date.")
+		return
+	}
+	fmt.Fprintf(w, "\n%d added, %d modified, %d deleted.\n",
+		len(r.added), len(r.modified), len(r.deleted))
+}
+
+// unifiedDiff shells out to `diff -u`, which returns exit 1 for "files differ" —
+// that is normal and not an error.
+func unifiedDiff(oldPath, newPath, rel string) (string, error) {
+	cmd := exec.Command("diff", "-u",
+		"--label", "a/"+rel,
+		"--label", "b/"+rel,
+		oldPath, newPath)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			return string(out), nil
+		}
+		return "", err
+	}
+	return string(out), nil
+}
+
+// writeColored line-paints a unified-diff patch using ANSI escapes when enabled.
+func (r *diffReport) writeColored(w io.Writer, patch string) {
+	if !r.useColor {
+		fmt.Fprint(w, patch)
+		return
+	}
+	for _, line := range strings.SplitAfter(patch, "\n") {
+		if line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+			fmt.Fprintf(w, "%s%s%s", r.colorHeader(), line, r.colorReset())
+		case strings.HasPrefix(line, "@@"):
+			fmt.Fprintf(w, "%s%s%s", r.colorHunk(), line, r.colorReset())
+		case strings.HasPrefix(line, "+"):
+			fmt.Fprintf(w, "%s%s%s", r.colorAdded(), line, r.colorReset())
+		case strings.HasPrefix(line, "-"):
+			fmt.Fprintf(w, "%s%s%s", r.colorRemoved(), line, r.colorReset())
+		default:
+			fmt.Fprint(w, line)
+		}
+	}
+}
+
+func (r *diffReport) colorAdded() string   { return ifColor(r.useColor, "\x1b[32m") }
+func (r *diffReport) colorRemoved() string { return ifColor(r.useColor, "\x1b[31m") }
+func (r *diffReport) colorHeader() string  { return ifColor(r.useColor, "\x1b[1m") }
+func (r *diffReport) colorHunk() string    { return ifColor(r.useColor, "\x1b[36m") }
+func (r *diffReport) colorReset() string   { return ifColor(r.useColor, "\x1b[0m") }
+
+func ifColor(on bool, s string) string {
+	if on {
+		return s
+	}
+	return ""
+}
+
+// isTerminal reports whether f is a TTY without pulling in a dependency.
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 func cmdDeploy(filename, outDir, tag string) int {
@@ -1797,6 +2058,20 @@ func cmdStats(filename string, jsonOutput bool) int {
 		fmt.Printf("    Env vars:    %d\n", stats.EnvVars)
 	}
 
+	return 0
+}
+
+// cmdExplain prints the embedded documentation section for an error code.
+// Returns 0 on hit, 1 when the code isn't documented (yet) so scripts can
+// distinguish "no such code" from "lookup failed".
+func cmdExplain(code string) int {
+	body, ok := diag.Lookup(code)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Error: no documentation for code %q\n", strings.ToUpper(strings.TrimSpace(code)))
+		fmt.Fprintln(os.Stderr, "  Hint: see docs/error-codes.md for the full list of documented codes.")
+		return 1
+	}
+	fmt.Println(body)
 	return 0
 }
 

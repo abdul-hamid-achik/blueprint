@@ -9,7 +9,7 @@ import (
 
 func cmdLSP() int {
 	fmt.Fprintln(os.Stderr, "Blueprint LSP server starting...")
-	
+
 	server := lsp.NewServer(os.Stdin, os.Stdout)
 	if err := server.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "LSP error: %v\n", err)

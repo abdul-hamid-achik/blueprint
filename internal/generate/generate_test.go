@@ -9,10 +9,10 @@ import (
 
 func TestFindSlots(t *testing.T) {
 	tests := []struct {
-		name     string
-		src      string
-		wantLen  int
-		checkFn  func(slots []Slot) bool
+		name    string
+		src     string
+		wantLen int
+		checkFn func(slots []Slot) bool
 	}{
 		{
 			name: "no slots",
@@ -99,10 +99,10 @@ func TestFindSlots(t *testing.T) {
 			}`,
 			wantLen: 1,
 			checkFn: func(slots []Slot) bool {
-				return len(slots) > 0 && 
-				       slots[0].Text == "add pagination" && 
-				       len(slots[0].Hints) == 1 && 
-				       strings.Contains(slots[0].Hints[0], "using")
+				return len(slots) > 0 &&
+					slots[0].Text == "add pagination" &&
+					len(slots[0].Hints) == 1 &&
+					strings.Contains(slots[0].Hints[0], "using")
 			},
 		},
 	}

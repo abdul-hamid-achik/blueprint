@@ -22,18 +22,18 @@ app.onError((err, c) => {
   return c.json({ error: 'Internal server error' }, 500 as const);
 });
 
-console.log('%s listening on port %d', "todo-api", 3000);
-const server = serve({ fetch: app.fetch, port: 3000 });
-
-// Graceful shutdown
-const shutdown = async () => {
-  console.log('Shutting down gracefully...');
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  // Close database pool
-  await db.$client.end();
-  process.exit(0);
-};
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+if (!process.env.VITEST) {
+  console.log('%s listening on port %d', "todo-api", 3000);
+  const server = serve({ fetch: app.fetch, port: 3000 });
+  const shutdown = async () => {
+    console.log('Shutting down gracefully...');
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Close database pool
+    await db.$client.end();
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}
 
 export default app;

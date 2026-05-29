@@ -658,6 +658,220 @@ func TestCheckValidTestdata(t *testing.T) {
 	}
 }
 
+// makeTodoSource returns a minimal valid .bp source for diff/build tests.
+func makeTodoSource(extra string) string {
+	return `@ "diff test"
+blueprint "diff-test" {
+  version "1.0.0"
+  port 3000
+  runtime node
+  database postgres
+}
+secret DATABASE_URL required
+model todo {
+  id    uuid   primary
+  title string required
+}
+@ "Create"
+POST /api/todos {
+  <- title string required
+  |> todo = save todo { title: title }
+  -> 201 { id: todo.id }
+}
+` + extra
+}
+
+func TestDiffNoChanges(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "todo.bp")
+	if err := os.WriteFile(src, []byte(makeTodoSource("")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out")
+	if _, _, code := runBP(t, "build", src, "--out", out); code != 0 {
+		t.Fatalf("build failed")
+	}
+	stdout, _, code := runBP(t, "diff", src, "--out", out, "--no-color", "--exit-code")
+	if code != 0 {
+		t.Errorf("expected exit 0 when no changes, got %d. stdout=%s", code, stdout)
+	}
+	if !strings.Contains(stdout, "No changes") {
+		t.Errorf("expected 'No changes' in output, got: %s", stdout)
+	}
+}
+
+func TestDiffUnifiedAndExitCode(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "todo.bp")
+	if err := os.WriteFile(src, []byte(makeTodoSource("")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out")
+	if _, _, code := runBP(t, "build", src, "--out", out); code != 0 {
+		t.Fatalf("build failed")
+	}
+
+	// Add a new endpoint — guaranteed to change codegen output.
+	extra := `
+@ "Count"
+GET /api/todos/count {
+  |> todos = query todo
+  -> 200 { count: todos.count }
+}
+`
+	if err := os.WriteFile(src, []byte(makeTodoSource(extra)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, code := runBP(t, "diff", src, "--out", out, "--no-color", "--exit-code")
+	if code != 1 {
+		t.Errorf("expected exit 1 when there is a diff, got %d", code)
+	}
+	for _, want := range []string{"modified:", "---", "+++", "@@"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in unified diff output, got:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, ".blueprint/manifest.json") {
+		t.Errorf("manifest.json should be suppressed from diff output, got:\n%s", stdout)
+	}
+}
+
+func TestDiffApplyWritesChanges(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "todo.bp")
+	if err := os.WriteFile(src, []byte(makeTodoSource("")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out")
+	if _, _, code := runBP(t, "build", src, "--out", out); code != 0 {
+		t.Fatalf("build failed")
+	}
+	extra := `
+@ "Count"
+GET /api/todos/count {
+  |> todos = query todo
+  -> 200 { count: todos.count }
+}
+`
+	if err := os.WriteFile(src, []byte(makeTodoSource(extra)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, code := runBP(t, "diff", src, "--out", out, "--no-color", "--apply")
+	if code != 0 {
+		t.Errorf("expected exit 0 from --apply, got %d. stdout=%s", code, stdout)
+	}
+	if !strings.Contains(stdout, "Applying changes") {
+		t.Errorf("expected 'Applying changes' message, got:\n%s", stdout)
+	}
+
+	// After apply, a fresh diff should report no changes.
+	stdout2, _, code2 := runBP(t, "diff", src, "--out", out, "--no-color", "--exit-code")
+	if code2 != 0 {
+		t.Errorf("expected exit 0 after apply, got %d. stdout=%s", code2, stdout2)
+	}
+	if !strings.Contains(stdout2, "No changes") {
+		t.Errorf("expected 'No changes' after apply, got:\n%s", stdout2)
+	}
+}
+
+func TestBuildPythonHelloWorld(t *testing.T) {
+	root := getProjectRoot()
+	outDir := t.TempDir()
+	stdout, stderr, code := runBP(t, "build",
+		filepath.Join(root, "examples", "hello-world.bp"),
+		"--out", outDir, "--target", "python")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d (stdout=%q stderr=%q)", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "target=python") {
+		t.Errorf("expected stdout to mention python target, got: %q", stdout)
+	}
+	for _, rel := range []string{"pyproject.toml", "src/app.py", "src/routes/hello.py"} {
+		if _, err := os.Stat(filepath.Join(outDir, rel)); err != nil {
+			t.Errorf("expected %s to exist after build: %v", rel, err)
+		}
+	}
+}
+
+func TestBuildPythonRejectsModelSpec(t *testing.T) {
+	// Phase 1 — anything with models, DB, middleware, etc. must surface a
+	// clean error pointing at the roadmap, not silently produce broken code.
+	// ecommerce-api uses `fn` declarations, `order(...)` in a query, and
+	// `try`/`recover` in checkout — all of which are still Phase 3c+ work
+	// and must surface as a clean roadmap error.
+	root := getProjectRoot()
+	outDir := t.TempDir()
+	_, stderr, code := runBP(t, "build",
+		filepath.Join(root, "examples", "ecommerce-api.bp"),
+		"--out", outDir, "--target", "python")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit on unsupported spec")
+	}
+	for _, want := range []string{
+		"python target does not yet support",
+		"BACKLOG.md",
+		"--target node",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("expected stderr to contain %q, got: %q", want, stderr)
+		}
+	}
+}
+
+func TestBuildRejectsUnknownTarget(t *testing.T) {
+	root := getProjectRoot()
+	_, stderr, code := runBP(t, "build",
+		filepath.Join(root, "examples", "hello-world.bp"),
+		"--out", t.TempDir(), "--target", "ruby")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit on unknown target")
+	}
+	if !strings.Contains(stderr, "unknown --target") {
+		t.Errorf("expected 'unknown --target' error, got: %q", stderr)
+	}
+}
+
+func TestExplainKnownCode(t *testing.T) {
+	stdout, _, code := runBP(t, "explain", "C001")
+	if code != 0 {
+		t.Errorf("bp explain C001 should exit 0, got %d (stdout=%q)", code, stdout)
+	}
+	if !strings.Contains(stdout, "### C001") {
+		t.Errorf("expected heading in explain output, got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "missing blueprint block") {
+		t.Errorf("expected title in explain output, got: %q", stdout)
+	}
+}
+
+func TestExplainCaseInsensitive(t *testing.T) {
+	if _, _, code := runBP(t, "explain", "c004"); code != 0 {
+		t.Errorf("lowercase code should hit, exit was %d", code)
+	}
+}
+
+func TestExplainUnknownCodeExitsOne(t *testing.T) {
+	_, stderr, code := runBP(t, "explain", "C999")
+	if code != 1 {
+		t.Errorf("unknown code should exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr, "no documentation for code") {
+		t.Errorf("expected helpful stderr, got: %q", stderr)
+	}
+}
+
+func TestExplainMissingArg(t *testing.T) {
+	_, stderr, code := runBP(t, "explain")
+	if code == 0 {
+		t.Errorf("explain without code should exit non-zero")
+	}
+	if !strings.Contains(stderr, "Usage:") {
+		t.Errorf("expected usage hint, got: %q", stderr)
+	}
+}
+
 func TestCheckInvalidTestdata(t *testing.T) {
 	root := getProjectRoot()
 	// Test a few invalid testdata files

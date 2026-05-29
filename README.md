@@ -339,11 +339,11 @@ generated/
 | Command | Status | Description |
 |---------|--------|-------------|
 | `bp check <file> [--json]` | ✅ | Validate syntax and semantics |
-| `bp build <file> [--out <dir>]` | ✅ | Compile to TypeScript project |
-| `bp diff <file> [--out <dir>]` | ✅ | Preview changes before building |
+| `bp build <file> [--out <dir>] [--target <node\|python>] [--gen-tests]` | ✅ | Compile to a runnable project. `--target node` (default) → TS/Hono; `--target python` → FastAPI/uv. `--gen-tests` works on both: node emits a PGlite-backed Vitest suite, python emits a pytest suite backed by `testcontainers[postgresql]` (Docker required) |
+| `bp diff <file> [--out <dir>] [--apply] [--exit-code]` | ✅ | Preview changes as a unified diff; `--apply` writes them, `--exit-code` returns 1 on diff (CI) |
 | `bp run <file> [--out <dir>]` | ✅ | Build and start the server |
 | `bp dev <file> [--out <dir>]` | ✅ | Watch mode — rebuild and restart on changes |
-| `bp test <file> [--out <dir>]` | ✅ | Build and run vitest |
+| `bp test <file> [--out <dir>]` | ✅ | Build (with auto-generated contract tests) and run vitest — no external Postgres needed |
 | `bp migrate <file> [generate\|push]` | ✅ | Build and run drizzle-kit |
 | `bp deploy <file> [--out <dir>] [--tag <image>]` | Preview | Build a Docker image; Fly.io deployment requires local Fly configuration |
 | `bp generate <file> [--write]` | ✅ | Resolve `@>` slots via LLM (needs `ANTHROPIC_API_KEY`) |
@@ -353,6 +353,7 @@ generated/
 | `bp docs <file> [--out file.json]` | ✅ | Generate OpenAPI 3.1 JSON spec |
 | `bp stats <file> [--json]` | ✅ | Show code statistics |
 | `bp doctor` | ✅ | Check environment dependencies |
+| `bp explain <code>` | ✅ | Print the documentation for an error code (e.g. `bp explain C001`) |
 | `bp completion <bash\|zsh\|fish>` | ✅ | Generate shell completion script |
 | `bp lsp` | Basic | Start the language server |
 | `bp eject <dir>` | ✅ | Remove Blueprint markers — make generated code fully yours |

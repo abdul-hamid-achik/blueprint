@@ -14,7 +14,6 @@ const minimalHeader = `blueprint "test" {
 }
 `
 
-
 func TestLint_Clean(t *testing.T) {
 	src := minimalHeader + `
 model item {
@@ -302,4 +301,3 @@ GET /api/users {
 		}
 	}
 }
-
