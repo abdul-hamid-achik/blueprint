@@ -1330,22 +1330,26 @@ func cmdDiff(filename, outDir, target string, reactQuery, frontendOnly, genTests
 			return 2
 		}
 
-		err = filepath.Walk(outDir, func(oldPath string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return err
-			}
-			rel, _ := filepath.Rel(outDir, oldPath)
+		// Deleted files: only consider entries the previous build's manifest
+		// claimed it generated. Otherwise unrelated tree state (node_modules,
+		// .venv, user-installed deps, drizzle-kit output) gets flagged as
+		// "deleted" simply because `bp` never produced it. This is what makes
+		// `bp diff --exit-code` survive a CI pipeline that runs `npm install`
+		// (or `uv sync`) in the build directory between bp invocations.
+		prev := readPrevManifest(outDir)
+		for rel := range prev {
 			if skipDiffPath(rel) {
-				return nil
+				continue
 			}
-			if _, err := os.Stat(filepath.Join(tmpDir, rel)); os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(tmpDir, rel)); !os.IsNotExist(err) {
+				continue
+			}
+			// Was generated last time and the new build doesn't produce it.
+			// Only report if it still exists on disk — a file already removed
+			// by the writer's stale-cleanup step isn't a diff.
+			if _, err := os.Stat(filepath.Join(outDir, rel)); err == nil {
 				report.deleted = append(report.deleted, rel)
 			}
-			return nil
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error checking for deleted files: %s\n", err)
-			return 2
 		}
 	}
 
@@ -1372,6 +1376,27 @@ func cmdDiff(filename, outDir, target string, reactQuery, frontendOnly, genTests
 		return 1
 	}
 	return 0
+}
+
+// readPrevManifest reads outDir/.blueprint/manifest.json (if present) and
+// returns the set of paths it claims as generated. Used by cmdDiff to
+// constrain "deleted" detection to files bp actually owns.
+func readPrevManifest(outDir string) map[string]bool {
+	data, err := os.ReadFile(filepath.Join(outDir, ".blueprint", "manifest.json"))
+	if err != nil {
+		return nil
+	}
+	var m struct {
+		Generated map[string]string `json:"generated"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	out := make(map[string]bool, len(m.Generated))
+	for k := range m.Generated {
+		out[k] = true
+	}
+	return out
 }
 
 // --- diff reporting helpers ---

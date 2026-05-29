@@ -737,6 +737,37 @@ GET /api/todos/count {
 	}
 }
 
+func TestDiffIgnoresUntrackedFilesInOutDir(t *testing.T) {
+	// CI pipelines often run `npm install` (node) or `uv sync` (python) in
+	// the output directory between bp invocations. Those create files
+	// (node_modules/, .venv/, ...) that bp never produced. `bp diff` must
+	// not flag them as "deleted" against the next build — the manifest is
+	// the source of truth for which files bp owns.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "todo.bp")
+	if err := os.WriteFile(src, []byte(makeTodoSource("")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out")
+	if _, _, code := runBP(t, "build", src, "--out", out); code != 0 {
+		t.Fatalf("build failed")
+	}
+	// Plant the kind of files `npm install` would create.
+	if err := os.MkdirAll(filepath.Join(out, "node_modules", ".bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "node_modules", ".bin", "tsc"), []byte("#!/usr/bin/env node\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, code := runBP(t, "diff", src, "--out", out, "--no-color", "--exit-code")
+	if code != 0 {
+		t.Errorf("expected exit 0 despite planted node_modules, got %d (stdout=%q)", code, stdout)
+	}
+	if strings.Contains(stdout, "node_modules") {
+		t.Errorf("node_modules should not show up in diff output, got: %s", stdout)
+	}
+}
+
 func TestDiffApplyWritesChanges(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "todo.bp")
