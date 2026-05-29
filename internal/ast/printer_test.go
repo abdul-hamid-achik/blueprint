@@ -453,6 +453,166 @@ GET /api/jobs {
 	}
 }
 
+// TestPrint_UnaryNot guards against the silent data loss observed in v0.9:
+// `not existing` round-tripped through `bp fmt` into `notexisting`, which
+// the checker happily treated as a brand-new identifier.
+func TestPrint_UnaryNot(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 8080
+  runtime node
+}
+
+model item {
+  id   uuid   primary
+  name string required
+}
+
+POST /api/items {
+  <- name string required
+  |> existing = query item where(name == name) first
+  |> guard not existing -> 409 "exists"
+  -> 201 "ok"
+}
+`
+	file := parseForPrint(t, src)
+	out := ast.Print(file)
+	if !strings.Contains(out, "not existing") {
+		t.Errorf("printer collapsed word-form unary op: missing 'not existing'\nfull output:\n%s", out)
+	}
+	if strings.Contains(out, "notexisting") {
+		t.Errorf("printer produced the corrupted form 'notexisting'\nfull output:\n%s", out)
+	}
+}
+
+// TestPrint_BlockExprIndent guards against multi-line BlockExpr emit at
+// column 0 — the closing `}` should match the opening line's indent,
+// otherwise downstream re-parses degrade visually and the file stops being
+// idempotent under repeated bp fmt.
+func TestPrint_BlockExprIndent(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 8080
+  runtime node
+}
+
+GET /api/x {
+  <- id uuid required
+  -> 200 {
+    a: 1,
+    b: 2,
+    c: 3,
+    d: 4,
+  }
+}
+`
+	file := parseForPrint(t, src)
+	out := ast.Print(file)
+	// The closing `}` of the multi-line block must be indented to align
+	// with the `-> 200 {` line that opened it (two spaces in this fixture).
+	if !strings.Contains(out, "\n  }\n") {
+		t.Errorf("multi-line BlockExpr did not close at the caller's indent\nfull output:\n%s", out)
+	}
+	// And the entries themselves must be indented further than the parent.
+	if !strings.Contains(out, "\n    a: 1,") {
+		t.Errorf("multi-line BlockExpr entries not indented under the brace\nfull output:\n%s", out)
+	}
+	// Round-trip + idempotence on the printed output.
+	file2, errs := parser.ParseFile("test.bp", []byte(out))
+	if len(errs) > 0 {
+		t.Fatalf("re-parse failed after indented block emit: %v\n%s", errs, out)
+	}
+	out2 := ast.Print(file2)
+	if out != out2 {
+		t.Errorf("indented block emit is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", out, out2)
+	}
+}
+
+// TestPrint_StreamShorthand guards inject/join/leave/broadcast/log emit so
+// they reflect the source idiom rather than synthesising a function-call
+// form that the parser rejects.
+func TestPrint_StreamShorthand(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 8080
+  runtime node
+}
+
+model room {
+  id   uuid   primary
+  name string required
+}
+
+WS /ws/x {
+  on_connect {
+    |> inject payload.user as sender
+    |> join room(id)
+    |> log "joined" level(info)
+    |> broadcast room(id) { type: "joined", sender: sender }
+  }
+  on_disconnect {
+    |> leave room(id)
+  }
+}
+`
+	file := parseForPrint(t, src)
+	out := ast.Print(file)
+
+	mustContain := []string{
+		"|> inject payload.user as sender",
+		"|> join room(id)",
+		`|> log "joined" level(info)`,
+		"|> broadcast room(id) { type: \"joined\", sender: sender }",
+		"|> leave room(id)",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(out, want) {
+			t.Errorf("stream shorthand missing %q\nfull output:\n%s", want, out)
+		}
+	}
+	forbidden := []string{
+		"inject(payload.user",
+		"join(room",
+		"log(\"joined\"",
+		"broadcast(room(id),",
+		"leave(room",
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(out, bad) {
+			t.Errorf("stream op emitted as plain FnCall (%q)\nfull output:\n%s", bad, out)
+		}
+	}
+
+	// Round-trip: the printed output must parse cleanly.
+	if _, errs := parser.ParseFile("test.bp", []byte(out)); len(errs) > 0 {
+		t.Fatalf("printed stream ops failed to re-parse: %v\n%s", errs, out)
+	}
+}
+
+// TestPrint_ImplInline keeps small `impl strategy { module: ..., func: ... }`
+// blocks on a single line, mirroring the way they appear in
+// examples/auth-service.bp.
+func TestPrint_ImplInline(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 8080
+  runtime node
+}
+
+fn hash_password {
+  <- password string required
+  -> string
+  impl node { module: "./internal/auth", func: "hashPassword" }
+}
+`
+	file := parseForPrint(t, src)
+	out := ast.Print(file)
+	want := `impl node { module: "./internal/auth", func: "hashPassword" }`
+	if !strings.Contains(out, want) {
+		t.Errorf("small impl block was inflated to multi-line\nwant: %s\nfull output:\n%s", want, out)
+	}
+}
+
 func TestPrint_Middleware(t *testing.T) {
 	src := `blueprint "test" {
   version "1.0.0"

@@ -403,13 +403,49 @@ func (p *printer) printFn(n *Fn) string {
 }
 
 func (p *printer) printImplBlock(impl *ImplBlock, indent string) string {
+	// Small impl blocks (≤2 entries, none of which is itself a multi-line
+	// block expression) reflow onto a single line — that's how they appear
+	// in hand-written sources like examples/auth-service.bp and otherwise
+	// bp fmt would inflate them unnecessarily on every save.
+	if len(impl.Entries) > 0 && len(impl.Entries) <= 2 && implEntriesInlineable(impl.Entries) {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "%simpl %s { ", indent, impl.Strategy)
+		for i, kv := range impl.Entries {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			fmt.Fprintf(&sb, "%s: %s", kv.Key, p.printExprAt(kv.Value, indent))
+		}
+		sb.WriteString(" }\n")
+		return sb.String()
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%simpl %s {\n", indent, impl.Strategy)
 	for _, kv := range impl.Entries {
-		fmt.Fprintf(&sb, "%s  %s: %s\n", indent, kv.Key, p.printExpr(kv.Value))
+		fmt.Fprintf(&sb, "%s  %s: %s\n", indent, kv.Key, p.printExprAt(kv.Value, indent+"  "))
 	}
 	fmt.Fprintf(&sb, "%s}\n", indent)
 	return sb.String()
+}
+
+// implEntriesInlineable returns true when none of the entries would force
+// the line to wrap (e.g. a BlockExpr with > 3 entries, or a string with a
+// newline character in it). The threshold mirrors printBlockExpr's own
+// inline shortcut.
+func implEntriesInlineable(entries []KVPair) bool {
+	for _, kv := range entries {
+		switch v := kv.Value.(type) {
+		case *BlockExpr:
+			if len(v.Entries) > 3 {
+				return false
+			}
+		case *StringLit:
+			if strings.ContainsRune(v.Value, '\n') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (p *printer) printLogicBlock(logic *LogicBlock, indent string) string {
@@ -552,8 +588,18 @@ func (p *printer) printStreamEndpoint(n *StreamEndpoint) string {
 		sb.WriteString("\n")
 	}
 	sb.WriteString(p.printArrowStmtsBlock(n.Stmts, "  "))
-	for _, h := range n.Handlers {
-		sb.WriteString(p.printStreamHandler(h, "  "))
+	// Stream handlers must be wrapped in a `stream { ... }` block — the
+	// parser only recognises `|> on event(NAME) where(...) { body }` inside
+	// that wrapper. Emitting them bare round-trips into a parse error.
+	if len(n.Handlers) > 0 {
+		if len(n.Stmts) > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("  stream {\n")
+		for _, h := range n.Handlers {
+			sb.WriteString(p.printStreamHandler(h, "    "))
+		}
+		sb.WriteString("  }\n")
 	}
 	sb.WriteString("}\n")
 	return sb.String()
@@ -561,12 +607,13 @@ func (p *printer) printStreamEndpoint(n *StreamEndpoint) string {
 
 func (p *printer) printStreamHandler(h *StreamHandler, indent string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%son %s", indent, h.EventName)
-	if h.Condition != nil {
-		fmt.Fprintf(&sb, "(%s)", p.printExpr(h.Condition))
-	}
 	if h.Timeout != "" {
-		fmt.Fprintf(&sb, " timeout(%s)", h.Timeout)
+		fmt.Fprintf(&sb, "%s|> on timeout(%s)", indent, h.Timeout)
+	} else {
+		fmt.Fprintf(&sb, "%s|> on event(%s)", indent, h.EventName)
+		if h.Condition != nil {
+			fmt.Fprintf(&sb, " where(%s)", p.printExprAt(h.Condition, indent))
+		}
 	}
 	sb.WriteString(" {\n")
 	sb.WriteString(p.printArrowStmtsBlock(h.Body, indent+"  "))
@@ -834,13 +881,13 @@ func (p *printer) printArrowStmt(stmt ArrowStmt, indent string) string {
 	case *InputStmt:
 		return p.printInputStmt(s)
 	case *StepStmt:
-		return p.printStepStmt(s)
+		return p.printStepStmt(s, indent)
 	case *GuardStmt:
-		return p.printGuardStmt(s)
+		return p.printGuardStmt(s, indent)
 	case *WhenStmt:
 		return p.printWhenStmt(s, indent)
 	case *OutputStmt:
-		return p.printOutputStmt(s)
+		return p.printOutputStmt(s, indent)
 	case *TryRecover:
 		return p.printTryRecover(s, indent)
 	case *IntentStep:
@@ -862,26 +909,26 @@ func (p *printer) printInputStmt(s *InputStmt) string {
 	return sb.String()
 }
 
-func (p *printer) printStepStmt(s *StepStmt) string {
+func (p *printer) printStepStmt(s *StepStmt, indent string) string {
 	if s.Binding != "" {
-		return fmt.Sprintf("|> %s = %s", s.Binding, p.printExpr(s.Expr))
+		return fmt.Sprintf("|> %s = %s", s.Binding, p.printExprAt(s.Expr, indent))
 	}
-	return fmt.Sprintf("|> %s", p.printExpr(s.Expr))
+	return fmt.Sprintf("|> %s", p.printExprAt(s.Expr, indent))
 }
 
-func (p *printer) printGuardStmt(s *GuardStmt) string {
+func (p *printer) printGuardStmt(s *GuardStmt, indent string) string {
 	if s.Message != "" {
-		return fmt.Sprintf("|> guard %s -> %s %q", p.printExpr(s.Condition), s.Status, s.Message)
+		return fmt.Sprintf("|> guard %s -> %s %q", p.printExprAt(s.Condition, indent), s.Status, s.Message)
 	}
-	return fmt.Sprintf("|> guard %s -> %s", p.printExpr(s.Condition), s.Status)
+	return fmt.Sprintf("|> guard %s -> %s", p.printExprAt(s.Condition, indent), s.Status)
 }
 
 func (p *printer) printWhenStmt(s *WhenStmt, indent string) string {
 	if s.Inline != nil {
-		return fmt.Sprintf("|> when %s: %s", p.printExpr(s.Condition), p.printExpr(s.Inline))
+		return fmt.Sprintf("|> when %s: %s", p.printExprAt(s.Condition, indent), p.printExprAt(s.Inline, indent))
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "|> when %s {\n", p.printExpr(s.Condition))
+	fmt.Fprintf(&sb, "|> when %s {\n", p.printExprAt(s.Condition, indent))
 	inner := indent + "  "
 	for _, st := range s.Body {
 		sb.WriteString(inner)
@@ -892,15 +939,15 @@ func (p *printer) printWhenStmt(s *WhenStmt, indent string) string {
 	return sb.String()
 }
 
-func (p *printer) printOutputStmt(s *OutputStmt) string {
+func (p *printer) printOutputStmt(s *OutputStmt, indent string) string {
 	if s.Status != "" && s.Value != nil {
-		return fmt.Sprintf("-> %s %s", s.Status, p.printExpr(s.Value))
+		return fmt.Sprintf("-> %s %s", s.Status, p.printExprAt(s.Value, indent))
 	}
 	if s.Status != "" {
 		return fmt.Sprintf("-> %s", s.Status)
 	}
 	if s.Value != nil {
-		return fmt.Sprintf("-> %s", p.printExpr(s.Value))
+		return fmt.Sprintf("-> %s", p.printExprAt(s.Value, indent))
 	}
 	return "->"
 }
@@ -939,7 +986,30 @@ func (p *printer) printGenerateStep(s *GenerateStep) string {
 
 // --- Expressions ---
 
+// isWordOp reports whether op is a word-form (alphabetic) prefix unary
+// operator that must be separated from its operand by whitespace.
+func isWordOp(op string) bool {
+	if op == "" {
+		return false
+	}
+	r := op[0]
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
+}
+
+// printExpr formats an expression without an enclosing indentation context.
+// Multi-line BlockExpr values are emitted as if their lines started at
+// column 0 — callers that print expressions at a known indent level should
+// use printExprAt instead.
 func (p *printer) printExpr(e Expr) string {
+	return p.printExprAt(e, "")
+}
+
+// printExprAt formats an expression knowing that subsequent lines (e.g. of
+// a multi-line BlockExpr) should be indented to align with the line on which
+// the expression starts. indent is the prefix that already precedes the
+// caller's line. The expression's first line is NOT prefixed by indent
+// (the caller handles that); only continuation lines pick it up.
+func (p *printer) printExprAt(e Expr, indent string) string {
 	if e == nil {
 		return ""
 	}
@@ -968,32 +1038,42 @@ func (p *printer) printExpr(e Expr) string {
 	case *RateLit:
 		return n.Value
 	case *BinaryExpr:
-		return fmt.Sprintf("%s %s %s", p.printExpr(n.Left), n.Op, p.printExpr(n.Right))
+		return fmt.Sprintf("%s %s %s", p.printExprAt(n.Left, indent), n.Op, p.printExprAt(n.Right, indent))
 	case *UnaryExpr:
-		return fmt.Sprintf("%s%s", n.Op, p.printExpr(n.Operand))
+		// Word-form prefix operators (e.g. `not`) must be separated from the
+		// operand by a space — otherwise `not existing` round-trips into the
+		// single identifier `notexisting`, silently corrupting the program.
+		// Symbolic operators (`!`, `-`) keep the tight form.
+		if isWordOp(n.Op) {
+			return fmt.Sprintf("%s %s", n.Op, p.printExprAt(n.Operand, indent))
+		}
+		return fmt.Sprintf("%s%s", n.Op, p.printExprAt(n.Operand, indent))
 	case *FieldAccess:
-		return fmt.Sprintf("%s.%s", p.printExpr(n.Base), n.Field)
+		return fmt.Sprintf("%s.%s", p.printExprAt(n.Base, indent), n.Field)
 	case *IndexAccess:
-		return fmt.Sprintf("%s[%s]", p.printExpr(n.Base), p.printExpr(n.Index))
+		return fmt.Sprintf("%s[%s]", p.printExprAt(n.Base, indent), p.printExprAt(n.Index, indent))
 	case *FnCall:
-		if s, ok := p.printDataOpShorthand(n); ok {
+		if s, ok := p.printStreamShorthand(n, indent); ok {
+			return s
+		}
+		if s, ok := p.printDataOpShorthand(n, indent); ok {
 			return s
 		}
 		args := make([]string, len(n.Args))
 		for i, a := range n.Args {
-			args[i] = p.printExpr(a)
+			args[i] = p.printExprAt(a, indent)
 		}
 		return fmt.Sprintf("%s(%s)", n.Name, strings.Join(args, ", "))
 	case *ParenExpr:
-		return fmt.Sprintf("(%s)", p.printExpr(n.Expr))
+		return fmt.Sprintf("(%s)", p.printExprAt(n.Expr, indent))
 	case *ListExpr:
 		elems := make([]string, len(n.Elements))
 		for i, el := range n.Elements {
-			elems[i] = p.printExpr(el)
+			elems[i] = p.printExprAt(el, indent)
 		}
 		return fmt.Sprintf("[%s]", strings.Join(elems, ", "))
 	case *BlockExpr:
-		return p.printBlockExpr(n)
+		return p.printBlockExprAt(n, indent)
 	case *PathExpr:
 		return n.Value
 	default:
@@ -1039,7 +1119,7 @@ func isFirstIdent(e Expr) bool {
 // the README idiom and column alignment found in hand-written sources.
 // Returns ("", false) when n does not match the shorthand shape, in which
 // case callers should fall back to the standard `name(args, ...)` form.
-func (p *printer) printDataOpShorthand(n *FnCall) (string, bool) {
+func (p *printer) printDataOpShorthand(n *FnCall, indent string) (string, bool) {
 	if !isDataOpName(n.Name) {
 		return "", false
 	}
@@ -1084,32 +1164,216 @@ func (p *printer) printDataOpShorthand(n *FnCall) (string, bool) {
 	sb.WriteString(model.Name)
 	if idArg != nil {
 		sb.WriteByte('(')
-		sb.WriteString(p.printExpr(idArg))
+		sb.WriteString(p.printExprAt(idArg, indent))
 		sb.WriteByte(')')
 	}
 	for _, a := range rest {
 		sb.WriteByte(' ')
-		sb.WriteString(p.printExpr(a))
+		sb.WriteString(p.printExprAt(a, indent))
 	}
 	return sb.String(), true
 }
 
+// printStreamShorthand renders stream / WS / log operations in their
+// hand-written shorthand form so that bp fmt round-trips them through the
+// parser cleanly. Without this, an `|> inject payload.user as sender` step
+// gets reprinted as `|> inject(payload.user, sender)` — which is not valid
+// Blueprint syntax and fails on re-parse.
+//
+// Covered shapes:
+//
+//	inject X            -> "inject X"
+//	inject X as Y       -> "inject X as Y"
+//	join   T(args)      -> "join T(args)"     (also leave)
+//	broadcast T(args)   -> "broadcast T(args)"        (also whisper)
+//	broadcast T(args) { -> "broadcast T(args) { ... }"
+//	  body }
+//	log "msg"           -> `log "msg"`
+//	log "msg" level(L)  -> `log "msg" level(L)`
+func (p *printer) printStreamShorthand(n *FnCall, indent string) (string, bool) {
+	switch n.Name {
+	case "inject":
+		if len(n.Args) == 0 || len(n.Args) > 2 {
+			return "", false
+		}
+		var sb strings.Builder
+		sb.WriteString("inject ")
+		sb.WriteString(p.printExprAt(n.Args[0], indent))
+		if len(n.Args) == 2 {
+			alias, ok := n.Args[1].(*Ident)
+			if !ok {
+				return "", false
+			}
+			sb.WriteString(" as ")
+			sb.WriteString(alias.Name)
+		}
+		return sb.String(), true
+	case "join", "leave":
+		// Parser shape: { Name: op, Args: [ FnCall{Name: target, Args: [id?]} ] }
+		if len(n.Args) != 1 {
+			return "", false
+		}
+		target, ok := n.Args[0].(*FnCall)
+		if !ok {
+			return "", false
+		}
+		var sb strings.Builder
+		sb.WriteString(n.Name)
+		sb.WriteByte(' ')
+		sb.WriteString(target.Name)
+		if len(target.Args) > 0 {
+			parts := make([]string, len(target.Args))
+			for i, a := range target.Args {
+				parts[i] = p.printExprAt(a, indent)
+			}
+			sb.WriteByte('(')
+			sb.WriteString(strings.Join(parts, ", "))
+			sb.WriteByte(')')
+		}
+		return sb.String(), true
+	case "broadcast", "whisper":
+		// Parser shape: { Name: op, Args: [ FnCall{Name: target, Args: [id?]}, BlockExpr? ] }
+		if len(n.Args) < 1 || len(n.Args) > 2 {
+			return "", false
+		}
+		target, ok := n.Args[0].(*FnCall)
+		if !ok {
+			return "", false
+		}
+		var sb strings.Builder
+		sb.WriteString(n.Name)
+		sb.WriteByte(' ')
+		sb.WriteString(target.Name)
+		if len(target.Args) > 0 {
+			parts := make([]string, len(target.Args))
+			for i, a := range target.Args {
+				parts[i] = p.printExprAt(a, indent)
+			}
+			sb.WriteByte('(')
+			sb.WriteString(strings.Join(parts, ", "))
+			sb.WriteByte(')')
+		}
+		if len(n.Args) == 2 {
+			block, ok := n.Args[1].(*BlockExpr)
+			if !ok {
+				return "", false
+			}
+			sb.WriteByte(' ')
+			sb.WriteString(p.printBlockExprAt(block, indent))
+		}
+		return sb.String(), true
+	case "log":
+		// Parser shape: { Name: "log", Args: [ msg, levelIdent? ] }
+		if len(n.Args) == 0 || len(n.Args) > 2 {
+			return "", false
+		}
+		var sb strings.Builder
+		sb.WriteString("log ")
+		sb.WriteString(p.printExprAt(n.Args[0], indent))
+		if len(n.Args) == 2 {
+			lvl, ok := n.Args[1].(*Ident)
+			if !ok {
+				return "", false
+			}
+			sb.WriteString(" level(")
+			sb.WriteString(lvl.Name)
+			sb.WriteString(")")
+		}
+		return sb.String(), true
+	case "map":
+		// Parser shape: { Name: "map", Args: [ collection, body? ] }
+		// Sources write `map collection: body` (body optional). The default
+		// call-form `map(coll, body)` is not valid Blueprint syntax.
+		if len(n.Args) == 0 || len(n.Args) > 2 {
+			return "", false
+		}
+		var sb strings.Builder
+		sb.WriteString("map ")
+		sb.WriteString(p.printExprAt(n.Args[0], indent))
+		if len(n.Args) == 2 {
+			sb.WriteString(": ")
+			sb.WriteString(p.printExprAt(n.Args[1], indent))
+		}
+		return sb.String(), true
+	case "emit":
+		// Parser shape: { Name: "emit", Args: [ eventNameStringOrIdent, toIdent?, BlockExpr? ] }
+		// The optional service-target slot is identified by looking for the
+		// trailing BlockExpr (always the body when present) and treating an
+		// Ident between event and body as `to(svc)`.
+		if len(n.Args) == 0 {
+			return "", false
+		}
+		var sb strings.Builder
+		sb.WriteString("emit ")
+		// Event name: either a string literal or an identifier.
+		switch ev := n.Args[0].(type) {
+		case *StringLit:
+			sb.WriteString(blueprintQuote(ev.Value))
+		case *Ident:
+			sb.WriteString(ev.Name)
+		default:
+			return "", false
+		}
+		rest := n.Args[1:]
+		// Optional `to(svc)` lives between event and body and is an Ident.
+		var body *BlockExpr
+		if len(rest) > 0 {
+			if b, ok := rest[len(rest)-1].(*BlockExpr); ok {
+				body = b
+				rest = rest[:len(rest)-1]
+			}
+		}
+		if len(rest) > 1 {
+			return "", false
+		}
+		if len(rest) == 1 {
+			to, ok := rest[0].(*Ident)
+			if !ok {
+				return "", false
+			}
+			sb.WriteString(" to(")
+			sb.WriteString(to.Name)
+			sb.WriteString(")")
+		}
+		if body != nil {
+			sb.WriteByte(' ')
+			sb.WriteString(p.printBlockExprAt(body, indent))
+		}
+		return sb.String(), true
+	}
+	return "", false
+}
+
+// printBlockExpr renders a BlockExpr without an enclosing indent context.
+// Kept for backwards-compatibility with callers that genuinely don't have
+// indentation state (e.g. test scaffolding); production code paths should
+// prefer printBlockExprAt so multi-line blocks line up.
 func (p *printer) printBlockExpr(n *BlockExpr) string {
+	return p.printBlockExprAt(n, "")
+}
+
+// printBlockExprAt renders a BlockExpr knowing that the opening brace
+// appears on a line already prefixed by indent. The closing brace and each
+// entry line are emitted with matching indentation so the printer round-
+// trips correctly under bp check.
+func (p *printer) printBlockExprAt(n *BlockExpr, indent string) string {
 	if len(n.Entries) == 0 {
 		return "{}"
 	}
 	if len(n.Entries) <= 3 {
 		parts := make([]string, len(n.Entries))
 		for i, kv := range n.Entries {
-			parts[i] = fmt.Sprintf("%s: %s", kv.Key, p.printExpr(kv.Value))
+			parts[i] = fmt.Sprintf("%s: %s", kv.Key, p.printExprAt(kv.Value, indent))
 		}
 		return fmt.Sprintf("{ %s }", strings.Join(parts, ", "))
 	}
+	inner := indent + "  "
 	var sb strings.Builder
 	sb.WriteString("{\n")
 	for _, kv := range n.Entries {
-		fmt.Fprintf(&sb, "  %s: %s,\n", kv.Key, p.printExpr(kv.Value))
+		fmt.Fprintf(&sb, "%s%s: %s,\n", inner, kv.Key, p.printExprAt(kv.Value, inner))
 	}
+	sb.WriteString(indent)
 	sb.WriteString("}")
 	return sb.String()
 }
