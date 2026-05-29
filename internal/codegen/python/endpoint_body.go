@@ -495,7 +495,15 @@ func emitDelete(b *strings.Builder, fn *ast.FnCall, ctx *bodyCtx, indent string)
 			}
 		}
 	}
-	fmt.Fprintf(b, "%sdb.delete(%s)\n", indent, target)
+	// SQLAlchemy's db.delete() only accepts a mapped instance, not a list,
+	// so `delete sessions` after a `query` would raise UnmappedInstanceError.
+	// Iterate and delete each row when the target is a collection.
+	if ctx.cardinality[target] == resolve.CollectionCard {
+		fmt.Fprintf(b, "%sfor _row in %s:\n", indent, target)
+		fmt.Fprintf(b, "%s    db.delete(_row)\n", indent)
+	} else {
+		fmt.Fprintf(b, "%sdb.delete(%s)\n", indent, target)
+	}
 	fmt.Fprintf(b, "%sdb.commit()\n", indent)
 }
 
@@ -582,7 +590,13 @@ func emitMap(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx, i
 			}
 		}
 
-		result := bindingOrPlaceholder(binding, "_rows")
+		// Unbound `map items: save M { ... }` is conventionally referenced
+		// downstream by the snake-plural of the model (e.g. `order_items` for
+		// `save order_item { ... }`) — matching the JS target. Naming the
+		// result `_rows` (the old placeholder) made downstream references
+		// like `sum(order_items.price_cents * ...)` NameError at runtime.
+		implicitName := common.Pluralize(common.SnakeCase(model))
+		result := bindingOrPlaceholder(binding, implicitName)
 		fmt.Fprintf(b, "%s%s = []\n", indent, result)
 		fmt.Fprintf(b, "%sfor item in %s:\n", indent, collection)
 		b.WriteString(fkLines.String())
@@ -592,13 +606,14 @@ func emitMap(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx, i
 		fmt.Fprintf(b, "%sdb.commit()\n", indent)
 		fmt.Fprintf(b, "%sfor _row in %s:\n", indent, result)
 		fmt.Fprintf(b, "%sdb.refresh(_row)\n", inner)
-		if binding != "" {
-			// Track the result binding's model so subsequent references
-			// (e.g. `total = sum(order_items.price_cents * order_items.quantity)`)
-			// can resolve.
-			ctx.varModel[binding] = model
-			ctx.cardinality[binding] = resolve.CollectionCard
+		// Track the result name's model + cardinality so subsequent steps
+		// resolve (sum/where/etc.). Applies to both bound and unbound forms.
+		trackName := binding
+		if trackName == "" {
+			trackName = implicitName
 		}
+		ctx.varModel[trackName] = model
+		ctx.cardinality[trackName] = resolve.CollectionCard
 
 	case "update":
 		if len(bodyFn.Args) < 1 {
@@ -855,6 +870,16 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 				key := baseIdent.Name + "." + inner.Field
 				if alias, ok := ctx.fkAliases[key]; ok {
 					return alias + "." + v.Field
+				}
+			}
+		}
+		// `.count` on a collection binding resolves to Python `len(x)` —
+		// `list.count` is the method object, not a number, so the original
+		// emit (`items.count > 0`) would TypeError at runtime.
+		if v.Field == "count" {
+			if baseIdent, ok := v.Base.(*ast.Ident); ok {
+				if ctx.cardinality[baseIdent.Name] == resolve.CollectionCard {
+					return fmt.Sprintf("len(%s)", baseIdent.Name)
 				}
 			}
 		}
