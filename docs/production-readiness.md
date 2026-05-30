@@ -96,15 +96,17 @@ table and the CHANGELOG together.
 | 2 | Examples tsc clean | ✅ green | 2026-05-29 (CI) |
 | 2 | Examples pass `bp test --gen-tests` | ✅ verified locally | 2026-05-29 |
 | 2 | `bp build` idempotent | ✅ green (CI gate) | 2026-05-29 |
-| 2 | No `: any` in handler boundaries | 🟡 audit pending | 2026-05-29 |
+| 2 | No `: any` in handler boundaries | ✅ Hono `Variables` typed from middleware-injected model (`typeof schema.M.$inferSelect` with `NonNullable` mapped fields); merged fn scaffolds typed from `fn.Inputs`/`Outputs` instead of `...args: any[]` | 2026-05-29 |
 | 3 | Errors have `Hint:` on every kind | ✅ green (54/54 checker sites) | 2026-05-29 |
 | 3 | Structured error codes | ✅ green (L001, P001, C001–C015 documented + emitted; `bp explain` shipped) | 2026-05-29 |
-| 3 | `bp fmt --check` on all examples | 🟡 hello-world wired in CI; data-op shorthand bug fixed (`internal/ast/printer.go`), remaining 4 examples blocked only on column-alignment + blank-line preservation — see BACKLOG | 2026-05-29 |
+| 3 | `bp fmt --check` on all examples | 🟡 hello-world wired in CI; printer round-trip bugs fixed (`not <ident>` data loss, BlockExpr indent, stream/WS shorthand round-trip, ImplBlock inline) so all 5 examples round-trip cleanly; CI gate stays on hello-world until column-alignment + comment-trivia preservation land — see BACKLOG | 2026-05-29 |
 | 3 | LSP feature depth | ✅ diagnostics (parser + checker), `textDocument/definition`, context-aware hover for models/fns/pipes/middleware/fields/@intents wired in `internal/lsp`; 12 unit/roundtrip tests | 2026-05-29 |
+| 3 | `bp doctor` checks every external dep | ✅ probes drizzle-kit, tsc, python3, uv, alembic, pytest in addition to bun/node/postgres/redis/git; version-parser fixed (Redis no longer reports as `redis-cli`, Docker no longer keeps trailing comma) | 2026-05-29 |
+| 3 | `bp lint` produces 0 warnings on every shipped example | ✅ green; two new rules ship in v0.10 (`where-predicate-self-equal`, `unused-input`) | 2026-05-29 |
 | 4 | Self-contained `bp test` | ✅ shipped | 2026-05-29 |
-| 4 | `bp migrate generate` on every example | 🟡 only hello/todo wired | 2026-05-29 |
-| 5 | `bp deploy --target docker` smoke | 🟡 preview | 2026-05-29 |
-| 5 | `bp deploy --target fly` smoke | 🔴 not implemented | 2026-05-29 |
+| 4 | `bp migrate generate` on every example | ✅ CI runs `drizzle-kit generate` against all 5 examples on every push; `bp migrate --target python` shells to `uv run alembic ...` | 2026-05-29 |
+| 5 | `bp deploy --target docker` smoke | 🟡 `--target` parsing + post-build `docker run` + `/health` probe + teardown wired in `cmdDeploy`; `--no-run` opt-out for CI image builds. Smoke happy path verified manually; not yet exercised in CI (would need Docker on the runner) | 2026-05-29 |
+| 5 | `bp deploy --target fly` smoke | 🔴 explicit "not implemented; v0.11" error from `--target fly` parsing; spec-wide Fly support still pending | 2026-05-29 |
 
 Legend: ✅ meets gate · 🟡 partial · 🔴 not started · ⏳ implemented, gate not yet enforced in CI.
 

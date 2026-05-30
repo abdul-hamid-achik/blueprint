@@ -29,7 +29,7 @@ import (
 // version is set by goreleaser ldflags at build time. Between releases this
 // stays at the next planned version with a `-dev` suffix so `bp version`
 // makes it obvious the binary was built from source rather than a release.
-var version = "0.10.0-dev"
+var version = "0.10.0"
 
 // Supported codegen targets. New targets register here and add a case to
 // dispatchTarget below. The flag default is targetNode, so existing usage is
