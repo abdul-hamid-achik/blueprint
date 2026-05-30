@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`bp context [topic] [--format md|json]`** — agent-facing language + CLI surface, embedded into the binary. With no topic, prints a synthesized full surface (version, command index, codegen target list, topic catalogue) modeled on `cairntrace`'s `cairn explain`. With a topic, prints focused docs for one of eight curated topics: `overview`, `language`, `cli`, `codegen`, `targets`, `errors`, `workflow`, `examples`. Each topic is a hand-written Markdown file under `internal/agentctx/topics/` (embedded via `go:embed`), kept short and scannable so agents can bootstrap on Blueprint in one or two reads. JSON output is structured under the URN `urn:blueprint.dev:context:v1` with parsed sections + fenced-code examples for tooling consumers. Self-contained — works offline, no network access required. Mirrors the pattern of `bp explain <code>` (which prints one error code's docs) but covers language + CLI rather than diagnostics.
+
 ## [0.10.0] - 2026-05-29
 
 A focused release that closes the 1.0 audit gates for typed handler boundaries, LSP, structured codes, fmt round-trip safety, doctor, and migrate/deploy `--target` plumbing — plus fixes three Python-target runtime bugs that were shipping silently in v0.9.0. Five Pillar gates flip 🟡/🔴 → ✅; one new high-leverage Pillar 3 row (doctor) was added and lands ✅.

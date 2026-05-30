@@ -673,6 +673,56 @@ Configure your editor to use `bp lsp` for `.bp` files.
 
 ---
 
+## `bp context`
+
+Print the agent-facing language + CLI surface — concise, structured, and embedded into the binary (no network access required). Designed for AI agents that need to bootstrap on Blueprint without pulling the full VitePress site.
+
+```bash
+bp context [topic] [--format md|json]
+```
+
+With **no topic**, prints the full surface: Blueprint version, command index, codegen target index, and the topic catalogue. Mirrors the structure of `cairntrace`'s `cairn explain` so agents that handle one handle both.
+
+With a **topic**, prints the focused doc for that topic. Available topics:
+
+| Topic | Covers |
+|---|---|
+| `overview` | What Blueprint is, the compile loop, the codebase map |
+| `language` | `.bp` DSL: top-level decls, types, constraints, pipeline steps |
+| `cli` | The `bp` command surface, common flags, typical flows |
+| `codegen` | What `bp build` writes (Node + Python tree, manifest) |
+| `targets` | Choosing between `--target node` and `--target python` |
+| `errors` | Diagnostic shape, code namespaces (`L###`/`P###`/`C###`), `bp explain` |
+| `workflow` | Recommended agent loop: read → edit → check → build → diff |
+| `examples` | What each `examples/*.bp` demonstrates |
+
+**Examples:**
+
+```bash
+# Full surface (Markdown, default)
+bp context
+
+# Single topic, Markdown
+bp context language
+
+# Same topic as structured JSON (for tooling)
+bp context language --format json
+
+# Bootstrap an agent session
+bp context             # learn the surface
+bp context workflow    # learn the loop
+bp context language    # learn the DSL
+```
+
+**Output formats**
+
+- `md` (default) — verbatim Markdown, suitable for pasting into a system prompt.
+- `json` — structured shape: `{ "$schema": "urn:blueprint.dev:context:v1", "topic": { name, title, summary, sections[], relatedTopics[] } }` for topic output, or the synthesized `Surface` shape for the no-topic full surface.
+
+Topics ship as embedded Markdown files (`internal/agentctx/topics/*.md`) so the binary is self-contained — `bp context` works offline.
+
+---
+
 ## Environment Variables
 
 | Variable | Used by | Description |

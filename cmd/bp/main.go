@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/abdul-hamid-achik/blueprint/internal/agentctx"
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/checker"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen/js"
@@ -516,6 +517,38 @@ func main() {
 			os.Exit(1)
 		}
 		os.Exit(cmdExplain(os.Args[2]))
+	case "context":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("context", "context [topic] [--format md|json]",
+				"Print the agent-facing language + CLI surface. With no topic, prints the full surface (version, command list, target list, topic index). With a topic, prints the focused docs for that topic. Available topics: "+strings.Join(agentctx.Topics(), ", ")+".",
+				nil)
+			os.Exit(0)
+		}
+		topic := ""
+		format := "md"
+		args := os.Args[2:]
+		for i := 0; i < len(args); i++ {
+			switch args[i] {
+			case "--format":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "Error: --format needs a value (md or json)")
+					os.Exit(1)
+				}
+				format = args[i+1]
+				i++
+			default:
+				if strings.HasPrefix(args[i], "-") {
+					fmt.Fprintf(os.Stderr, "Error: unknown flag %s\n", args[i])
+					os.Exit(1)
+				}
+				if topic != "" {
+					fmt.Fprintln(os.Stderr, "Error: at most one topic argument is supported")
+					os.Exit(1)
+				}
+				topic = args[i]
+			}
+		}
+		os.Exit(cmdContext(topic, format))
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -1948,6 +1981,8 @@ func printUsage() {
 	fmt.Println("  deploy     <file.bp> [--tag <image>]       Build and smoke-run Docker image (--target docker default; fly reserved)")
 	fmt.Println("  completion <bash|zsh|fish>                 Generate shell completion script")
 	fmt.Println("  stats      <file.bp> [--json]              Show code statistics")
+	fmt.Println("  explain    <code>                          Print docs for a structured error code (Cxxx/Lxxx/Pxxx)")
+	fmt.Println("  context    [topic] [--format md|json]      Agent-facing language + CLI surface")
 	fmt.Println("  doctor                                     Check environment dependencies")
 	fmt.Println("  lsp                                        Start LSP server")
 	fmt.Println("  version                                    Print version")
@@ -1958,7 +1993,8 @@ func printUsage() {
 func suggestCommand(input string) string {
 	commands := []string{"check", "build", "frontend", "diff", "run", "dev", "test", "migrate",
 		"generate", "docs", "fmt", "lint", "init", "eject", "deploy",
-		"completion", "version", "help"}
+		"completion", "explain", "context", "doctor", "lsp", "stats",
+		"version", "help"}
 
 	// Common typos mapping
 	typos := map[string]string{
@@ -2251,6 +2287,30 @@ func cmdExplain(code string) int {
 		return 1
 	}
 	fmt.Println(body)
+	return 0
+}
+
+// cmdContext prints the agent-facing language + CLI surface. When topic is
+// empty, the full surface is rendered (version + commands + targets + topic
+// index). When topic is set, the focused topic doc is rendered. Format is
+// "md" (default) or "json".
+func cmdContext(topic, format string) int {
+	if topic == "" {
+		if err := agentctx.RenderSurface(agentctx.FullSurface(version), format, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	t, err := agentctx.Get(topic)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	if err := agentctx.RenderTopic(t, format, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
 	return 0
 }
 
