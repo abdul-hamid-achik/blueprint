@@ -2,14 +2,18 @@
 
 When you run `bp build my-service.bp`, Blueprint compiles your `.bp` file into a complete Node.js project. This page explains what gets generated and how to use it.
 
+> This page describes the **default `node` target** (Hono + Drizzle + Zod). Blueprint can also emit a FastAPI project (`--target python`) or an early Effect scaffold (`--target effect`) — see [Multi-Target Codegen](./multi-target-codegen.md) for what each target covers.
+
 ## Output Structure
 
 ```
 generated/
 ├── package.json
 ├── tsconfig.json
+├── drizzle.config.ts
 ├── Dockerfile
 ├── .env.example
+├── .gitignore
 ├── frontend/
 │   ├── package.json
 │   ├── README.md
@@ -58,8 +62,20 @@ generated/
     │   └── <name>.ts
     └── schedules/
         └── <name>.ts
-test/
-└── <name>.test.ts
+```
+
+Tests are **opt-in**. When you build with `--gen-tests` (or run `bp test`), Blueprint also emits a PGlite-backed Vitest contract suite and a top-level `vitest.config.ts`:
+
+```
+generated/
+├── vitest.config.ts
+└── test/
+    ├── _harness/
+    │   ├── db.ts      # PGlite instance + resetDb()
+    │   ├── ddl.ts     # in-memory schema (mirrors models/schema.ts)
+    │   └── setup.ts   # dummy env vars for import-time validation
+    └── generated/
+        └── <resource>.test.ts   # one file per resource, not per `test` block
 ```
 
 ## Technology Stack
@@ -90,21 +106,39 @@ The Hono server entrypoint. Wires together all routes, middleware, and startup l
 ```typescript
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+import { secureHeaders } from 'hono/secure-headers';
+import { env } from './lib/env.js';
+import { db } from './lib/db.js';
 import { cors } from 'hono/cors';
-import { requestLogger } from './middleware/request-logger.js';
 import { todosRoutes } from './routes/todos.js';
 
 const app = new Hono();
 
-// Global middleware
-app.use('*', requestLogger);
-app.use('*', cors({ origin: ['https://example.com'] }));
+app.use('*', secureHeaders());
+app.use('*', cors());
 
-// Routes
 app.route('/', todosRoutes);
 
-console.log('todo-api listening on port 3000');
-serve({ fetch: app.fetch, port: 3000 });
+app.get('/health', (c) => c.json({ status: 'ok', uptime: process.uptime() }));
+
+app.onError((err, c) => {
+  console.error(err);
+  return c.json({ error: 'Internal server error' }, 500 as const);
+});
+
+// Skip binding a port under Vitest so tests import `app` without starting a server.
+if (!process.env.VITEST) {
+  console.log('%s listening on port %d', "todo-api", 3000);
+  const server = serve({ fetch: app.fetch, port: 3000 });
+  const shutdown = async () => {
+    console.log('Shutting down gracefully...');
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await db.$client.end();
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}
 
 export default app;
 ```
@@ -436,51 +470,104 @@ cron.schedule('0 4 * * 0', async () => {
 Drizzle database connection.
 
 ```typescript
-import { drizzle } from 'drizzle-orm/postgres-js';
-import postgres from 'postgres';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import pg from 'pg';
+import { env } from './env.js';
 import * as schema from '../models/schema.js';
 
-const client = postgres(process.env.DATABASE_URL!);
-export const db = drizzle(client, { schema });
+const pool = new pg.Pool({
+  connectionString: env.DATABASE_URL,
+});
+
+export const db = drizzle(pool, { schema });
 ```
 
 ### `src/lib/errors.ts`
 
-`BpError` class for typed HTTP errors.
+`BpError` class for typed HTTP errors, plus named subclasses for common statuses.
 
 ```typescript
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
+
 export class BpError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public statusCode: ContentfulStatusCode,
+    message: string,
+  ) {
     super(message);
+    this.name = 'BpError';
+  }
+}
+
+export class ValidationError extends BpError {
+  constructor(message: string) {
+    super(400, message);
+    this.name = 'ValidationError';
+  }
+}
+
+export class AuthError extends BpError {
+  constructor(message: string) {
+    super(401, message);
+    this.name = 'AuthError';
+  }
+}
+
+export class NotFoundError extends BpError {
+  constructor(message: string) {
+    super(404, message);
+    this.name = 'NotFoundError';
   }
 }
 ```
 
-### `test/<name>.test.ts`
+### `test/generated/<resource>.test.ts` (opt-in via `--gen-tests`)
 
-Vitest integration tests. One file per `test` block in the `.bp` source.
+Tests are **not** emitted by a plain `bp build`. Add `--gen-tests` (or run `bp test`) and Blueprint generates a Vitest contract suite — **one file per resource**, not one per `test` block. Each suite mocks `src/lib/db` with a PGlite in-memory Postgres (see `test/_harness/db.ts`), resets it between tests, seeds path-param ids, and asserts each endpoint responds with one of the statuses its handler and guards can declare.
 
 ```typescript
-import { describe, it, expect, beforeAll } from 'vitest';
-import app from '../src/index.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-describe('createTodo', () => {
-  it('create_todo', async () => {
-    const res = await app.request('/api/todos', {
+vi.mock('../../src/lib/db', async () => ({ db: (await import('../_harness/db.js')).db }));
+
+import app from '../../src/index.js';
+import { resetDb, db } from '../_harness/db.js';
+import * as schema from '../../src/models/schema.js';
+
+describe('todos (generated contract)', () => {
+  beforeEach(async () => { await resetDb(); });
+
+  it('POST /api/todos responds with a declared status', async () => {
+    const res = await app.request(`/api/todos`, {
       method: 'POST',
-      body: JSON.stringify({ title: 'Buy milk' }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'test' }),
     });
-    const body = await res.json() as any;
-    expect(res.status).toBe(201);
-    expect(typeof body.id).toBe('string');
-    expect(body.title).toBe('Buy milk');
+    expect([201, 400, 500]).toContain(res.status);
+    if (res.status === 201) {
+      const body = await res.json() as any;
+      expect(body).toHaveProperty('id');
+      expect(body).toHaveProperty('title');
+      expect(body).toHaveProperty('done');
+    }
   });
 });
 ```
 
+The suite is backed by a small harness:
+
+- `test/_harness/db.ts` — a PGlite instance wired to your Drizzle schema, exporting `db` and a `resetDb()` that truncates between tests.
+- `test/_harness/ddl.ts` — the in-memory `CREATE TABLE` DDL that mirrors `src/models/schema.ts`.
+- `test/_harness/setup.ts` — sets dummy env vars so `src/lib/env.ts` import-time validation passes.
+- `vitest.config.ts` — a top-level config that registers the setup file.
+
+Because PGlite runs entirely in memory, the suite needs no Docker or external Postgres. Run it with `bp test my-service.bp`, or with `bun run test` (or `npm run test`) inside the generated project.
+
 ---
 
 ## Running the Generated Project
+
+> **Runtime: bun or npm?** The convenience commands `bp run`, `bp dev`, and `bp test` drive **bun** (they shell out to `bun install` / `bun run start` / `bun run test`). But the output is a plain Node.js project — `package.json` ships standard scripts (`start`, `dev`, `build`, `test`), so `npm install && npm run start` works just as well. The examples below use `bun`; substitute `npm`/`npx` if you prefer.
 
 ### Initial Setup
 
@@ -489,7 +576,7 @@ cd generated
 cp .env.example .env
 # Edit .env with your actual values
 
-bun install
+bun install   # or: npm install
 ```
 
 ### Frontend Contracts
@@ -560,6 +647,8 @@ bun run start
 
 ### Run Tests
 
+Build with `--gen-tests` (or use `bp test`) first — a plain `bp build` emits no test files. Then:
+
 ```bash
 bun run test
 ```
@@ -605,7 +694,7 @@ cp .env.example .env
 The generated code is yours. Every file starts with:
 
 ```typescript
-// Generated by Blueprint v0.1.0 from my-service.bp
+// Generated by Blueprint from my-service.bp
 // Do not edit directly — modify the .bp source and run `bp build`
 ```
 

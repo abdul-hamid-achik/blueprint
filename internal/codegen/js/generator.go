@@ -73,8 +73,9 @@ type emitCtx struct {
 	preserveBlockKeys bool              // when true, BlockExpr keys are not camelCased (for JSON response output)
 }
 
-// Generate implements codegen.Generator.
-func (g *Generator) Generate(file *ast.File, outDir string) error {
+// Files implements codegen.Generator: it returns the generated TypeScript/Node
+// project as in-memory OutputFiles without touching disk.
+func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
 	g.file = file
 	resolveTranslationKeyTypes(file)
 	g.sourceFile = file.Loc.File
@@ -84,9 +85,17 @@ func (g *Generator) Generate(file *ast.File, outDir string) error {
 
 	files, err := g.generateAll()
 	if err != nil {
-		return fmt.Errorf("codegen: %w", err)
+		return nil, fmt.Errorf("codegen: %w", err)
 	}
+	return files, nil
+}
 
+// Generate implements codegen.Generator by building Files and persisting them.
+func (g *Generator) Generate(file *ast.File, outDir string) error {
+	files, err := g.Files(file)
+	if err != nil {
+		return err
+	}
 	return codegen.WriteOutputFiles(outDir, files)
 }
 
@@ -1129,12 +1138,94 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 
 		case *ast.TryRecover:
 			fmt.Fprintf(b, "%stry {\n", indent)
-			g.emitArrowStmts(b, s.Try, indent+"  ", ctx)
+			if tryBodyNeedsTransaction(s.Try) {
+				// Atomic: wrap the multi-write body in a DB transaction so a
+				// later failure rolls back the partial commits. `const db = tx`
+				// shadows the module-level db so the body's data ops, emitted
+				// unchanged, run inside the transaction.
+				fmt.Fprintf(b, "%s  await db.transaction(async (tx) => {\n", indent)
+				fmt.Fprintf(b, "%s    const db = tx;\n", indent)
+				g.emitArrowStmts(b, s.Try, indent+"    ", ctx)
+				fmt.Fprintf(b, "%s  });\n", indent)
+			} else {
+				g.emitArrowStmts(b, s.Try, indent+"  ", ctx)
+			}
 			fmt.Fprintf(b, "%s} catch (error: any) {\n", indent)
 			g.emitArrowStmts(b, s.Recover, indent+"  ", ctx)
 			fmt.Fprintf(b, "%s}\n", indent)
 		}
 	}
+}
+
+// tryBodyNeedsTransaction reports whether a `try` body should be wrapped in a
+// db.transaction so that partial writes roll back if a later step fails.
+//
+// We wrap only when the body performs MULTIPLE mutations (a single write is
+// already atomic) and contains no statement that returns from the handler — an
+// output (`->`) or a `guard`. A return inside the transaction callback would
+// complete the callback normally and COMMIT a partial transaction rather than
+// abort the route, so those bodies are left as a bare try/catch. External side
+// effects inside the body (e.g. an HTTP charge) are not rolled back by the DB
+// transaction; the `recover` block remains the place to compensate for those.
+func tryBodyNeedsTransaction(stmts []ast.ArrowStmt) bool {
+	return countMutations(stmts) >= 2 && !stmtsReturn(stmts)
+}
+
+// countMutations counts save/update/delete data ops (including those inside a
+// `map` body or a `when` block) within stmts.
+func countMutations(stmts []ast.ArrowStmt) int {
+	n := 0
+	for _, s := range stmts {
+		switch v := s.(type) {
+		case *ast.StepStmt:
+			if isMutationExpr(v.Expr) {
+				n++
+			}
+		case *ast.WhenStmt:
+			n += countMutations(v.Body)
+		case *ast.TryRecover:
+			n += countMutations(v.Try) + countMutations(v.Recover)
+		}
+	}
+	return n
+}
+
+func isMutationExpr(e ast.Expr) bool {
+	fn, ok := e.(*ast.FnCall)
+	if !ok {
+		return false
+	}
+	switch fn.Name {
+	case "save", "update", "delete":
+		return true
+	case "map":
+		if len(fn.Args) >= 2 {
+			return isMutationExpr(fn.Args[1])
+		}
+	}
+	return false
+}
+
+// stmtsReturn reports whether stmts contains a statement that returns from the
+// handler (an output `->` or a `guard`), recursing into `when` blocks.
+func stmtsReturn(stmts []ast.ArrowStmt) bool {
+	for _, s := range stmts {
+		switch v := s.(type) {
+		case *ast.OutputStmt:
+			return true
+		case *ast.GuardStmt:
+			return true
+		case *ast.WhenStmt:
+			if stmtsReturn(v.Body) {
+				return true
+			}
+		case *ast.TryRecover:
+			if stmtsReturn(v.Try) || stmtsReturn(v.Recover) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // webhookAuthSecretKey extracts the env variable name from a webhook_sig auth expression.

@@ -4,7 +4,7 @@
 
 ### What is Blueprint?
 
-Blueprint is a declarative programming language that compiles to TypeScript/Node.js web services. It lets you write API specifications using an intent-first syntax, then generates a complete, working backend with Hono, Drizzle ORM, and Zod.
+Blueprint is a declarative programming language for web services. It lets you write API specifications using an intent-first syntax, then generates a complete, working backend. By default it compiles to TypeScript/Node.js (Hono, Drizzle ORM, and Zod), and it can also target Python or Effect — see [Can Blueprint generate something other than Node.js?](#can-blueprint-generate-something-other-than-node-js).
 
 ### Who is Blueprint for?
 
@@ -118,6 +118,20 @@ Rules:
 - Paths are relative to the file containing `include`
 - No circular includes allowed
 
+### Can Blueprint generate something other than Node.js?
+
+Yes. The same `.bp` source can compile to three targets, selected with `--target` on `bp build` (and `bp diff`, `bp migrate`, `bp deploy`):
+
+- **`node`** (default) — TypeScript on Hono + Drizzle ORM + Zod.
+- **`python`** (`--target python`) — FastAPI + SQLAlchemy + Alembic.
+- **`effect`** (`--target effect`) — TypeScript on Effect; an early scaffold.
+
+```bash
+bp build my-api.bp --target python
+```
+
+See [Multi-Target Codegen](./multi-target-codegen.md) for what each target covers.
+
 ---
 
 ## Error Handling
@@ -135,6 +149,8 @@ By default, runtime errors return a 500 with a generic message. For explicit han
   -> 500 { error: "Operation failed" }
 }
 ```
+
+In the node target, a `try` body with multiple writes is wrapped in a `db.transaction(...)`, so if a later step throws the partial writes roll back and nothing is committed. The `recover` block then runs to compensate or respond.
 
 ### How do I validate inputs?
 
@@ -217,6 +233,8 @@ Or use `bp deploy`:
 ```bash
 bp deploy my-api.bp --tag my-app:latest
 ```
+
+`bp deploy` builds the Docker image and then smoke-runs it: it starts the container, probes `/health`, and tears it down, failing if the health check doesn't pass. Pass `--no-run` to skip the smoke test (useful in CI that only validates the build). The default `--target docker` is the only target that runs today; `--target fly` is reserved for v0.11.
 
 ---
 
@@ -408,8 +426,6 @@ See [CONTRIBUTING.md](https://github.com/abdul-hamid-achik/blueprint/blob/main/C
 
 ## Roadmap
 
-See [Roadmap](./roadmap.md) for planned features including:
-- LSP support (IDE integration)
-- Multi-target codegen (Python, Go)
+LSP support (IDE integration) and multi-target codegen (Python and Effect) have already shipped — run `bp lsp`, or build with `--target python` / `--target effect`. See [Roadmap](./roadmap.md) for what's still planned, including:
 - Package registry
 - Managed hosting

@@ -111,48 +111,64 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 		fmt.Fprintf(&b, "import type { %s } from '../types.js';\n\n", strings.Join(namedTypes, ", "))
 	}
 
-	// Build enum name lookup for column type matching
+	// Build the enum-name lookup for column type matching, plus a registry of
+	// every pgEnum keyed by its Postgres type name. A declared enum and an
+	// inline enum that lower to the same type name must NOT emit two
+	// `pgEnum('name', ...)` declarations — that yields duplicate `CREATE TYPE`
+	// statements which collide in a drizzle-kit migration.
 	enumNames := make(map[string]string) // lower(name) -> varName
+	type pgEnumReg struct {
+		varName  string
+		variants string // joined; same name + same variants → reuse, don't redeclare
+	}
+	pgEnums := make(map[string]pgEnumReg) // pgTypeName -> declaration
 	for _, e := range enums {
 		varName := toCamelCase(e.Name) + "Enum"
 		variants := make([]string, len(e.Variants))
 		for i, v := range e.Variants {
 			variants[i] = fmt.Sprintf("'%s'", v.Name)
 		}
-		fmt.Fprintf(&b, "export const %s = pgEnum('%s', [%s]);\n\n",
-			varName, strings.ToLower(e.Name), strings.Join(variants, ", "))
-		enumNames[strings.ToLower(e.Name)] = varName
+		joined := strings.Join(variants, ", ")
+		pgName := strings.ToLower(e.Name)
+		fmt.Fprintf(&b, "export const %s = pgEnum('%s', [%s]);\n\n", varName, pgName, joined)
+		enumNames[pgName] = varName
+		pgEnums[pgName] = pgEnumReg{varName: varName, variants: joined}
 	}
 
-	// Collect and emit inline enums from model fields
-	// Map: enum key (modelName_fieldName) -> { varName, variants }
-	inlineEnums := make(map[string]struct {
-		varName  string
-		variants []string
-	})
+	// Resolve each inline-enum field to the pgEnum var its column references.
+	// When an inline enum's type name + variants already exist (typically a
+	// declared enum with the same variants), reuse that declaration instead of
+	// emitting a duplicate. Iterating models/fields in source order also makes
+	// the output deterministic (the previous map-iteration was not).
+	inlineFieldEnumVar := make(map[string]string) // "model_field" -> varName
 	for _, m := range models {
 		for _, f := range m.Fields {
-			if ie, ok := f.Type.(*ast.EnumInline); ok {
-				key := m.Name + "_" + f.Name
-				ienumVariants := make([]string, len(ie.Variants))
-				for i, v := range ie.Variants {
-					ienumVariants[i] = fmt.Sprintf("'%s'", v)
-				}
-				inlineEnums[key] = struct {
-					varName  string
-					variants []string
-				}{
-					varName:  toCamelCase(m.Name) + toPascalCase(f.Name) + "Enum",
-					variants: ienumVariants,
-				}
+			ie, ok := f.Type.(*ast.EnumInline)
+			if !ok {
+				continue
 			}
+			key := m.Name + "_" + f.Name
+			varName := toCamelCase(m.Name) + toPascalCase(f.Name) + "Enum"
+			variants := make([]string, len(ie.Variants))
+			for i, v := range ie.Variants {
+				variants[i] = fmt.Sprintf("'%s'", v)
+			}
+			joined := strings.Join(variants, ", ")
+			pgName := strings.ToLower(toCamelCase(m.Name) + toPascalCase(f.Name))
+			if existing, seen := pgEnums[pgName]; seen {
+				if existing.variants == joined {
+					// Same type name + same variants — reference the existing decl.
+					inlineFieldEnumVar[key] = existing.varName
+					continue
+				}
+				// Same type name, different variants — disambiguate so two
+				// genuinely distinct enums don't collide on CREATE TYPE.
+				pgName = m.Name + "_" + f.Name
+			}
+			fmt.Fprintf(&b, "export const %s = pgEnum('%s', [%s]);\n\n", varName, pgName, joined)
+			pgEnums[pgName] = pgEnumReg{varName: varName, variants: joined}
+			inlineFieldEnumVar[key] = varName
 		}
-	}
-	// Generate pgEnum declarations for inline enums
-	for _, ie := range inlineEnums {
-		enumName := strings.ReplaceAll(ie.varName, "Enum", "")
-		fmt.Fprintf(&b, "export const %s = pgEnum('%s', [%s]);\n\n",
-			ie.varName, strings.ToLower(enumName), strings.Join(ie.variants, ", "))
 	}
 
 	// Emit each model as a pgTable
@@ -173,10 +189,10 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 				}
 			}
 
-			// Check for inline enum — use the generated pgEnum
+			// Check for inline enum — reference the resolved pgEnum (deduped
+			// against declared enums above).
 			if _, ok := f.Type.(*ast.EnumInline); ok {
-				inlineEnumVar := toCamelCase(m.Name) + toPascalCase(f.Name) + "Enum"
-				// Use the generated pgEnum instead of text
+				inlineEnumVar := inlineFieldEnumVar[m.Name+"_"+f.Name]
 				fmt.Fprintf(&b, "  %s: %s('%s')", colName, inlineEnumVar, f.Name)
 				g.writeFieldConstraints(&b, f)
 				b.WriteString(",\n")

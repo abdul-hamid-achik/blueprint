@@ -6,7 +6,7 @@ titleTemplate: A declarative language for web services
 hero:
   name: Blueprint
   text: A declarative language for web services
-  tagline: Describe what your service does. Blueprint compiles it to typed TypeScript services.
+  tagline: Describe what your service does. Blueprint compiles it to typed services -- TypeScript by default, Python with --target python.
   image:
     src: /logo.svg
     alt: Blueprint
@@ -25,7 +25,7 @@ features:
   - title: Intent-First Design
     details: Every block starts with what it should do. Arrows show data flow at a glance -- inputs, steps, outputs.
   - title: Zero Runtime Lock-In
-    details: Generated code uses Hono, Drizzle ORM, and Zod -- standard libraries you already know. No Blueprint runtime dependency.
+    details: Generated code uses standard libraries you already know -- Hono, Drizzle, and Zod by default, or FastAPI, SQLAlchemy, and Pydantic with --target python. No Blueprint runtime dependency.
   - title: LLM-Native
     details: Intent blocks and generation slots make the codebase navigable by AI. Use bp generate to fill in implementation details.
   - title: One Way to Do Things
@@ -61,6 +61,8 @@ todosRoutes.post('/api/todos',
   }
 );
 ```
+
+That's the default `node` target. Run `bp build --target python` for FastAPI + SQLAlchemy + Alembic, or `--target effect` for the early Effect-TS scaffold -- see the [Multi-Target Codegen guide](/multi-target-codegen).
 
 ## The Arrow System
 

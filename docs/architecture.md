@@ -4,38 +4,51 @@ Toolchain internals for contributors.
 
 ## Overview
 
-Blueprint is a Go program. Given a `.bp` source file, it runs five passes in sequence:
+Blueprint is a Go program. Given a `.bp` source file, it runs these passes in sequence:
 
 ```
 source text
     ↓ Lexer        tokens
     ↓ Parser       AST
     ↓ Checker      validated AST
+    ↓ resolve      semantic facts (typed-IR)
     ↓ Codegen      []OutputFile
     ↓ Writer       files on disk
 ```
 
-Each pass is a separate package under `internal/`. They communicate through shared types in `internal/ast/`.
+Each pass is a separate package under `internal/`. They communicate through shared types in `internal/ast/`. The `resolve` pass produces semantic facts (the target model and cardinality of each bound variable, and similar ground truth) that code generators consume instead of re-deriving heuristically at emit time — see [`internal/resolve`](#internal-resolve).
 
 ---
 
 ## Package Map
 
 ```
-cmd/bp/             CLI entry point (check, build, fmt, lint, docs, dev, run, test, migrate, generate, init)
+cmd/bp/             CLI entry point (check, build, frontend, diff, run, dev, test,
+                    migrate, generate, docs, fmt, lint, init, eject, deploy,
+                    completion, stats, explain, context, llms, doctor, lsp, version)
 internal/
   lexer/            Tokenizer (~95 token kinds)
   parser/           Recursive-descent parser with Pratt expressions
   ast/              AST node types + printer (bp fmt)
   checker/          Semantic validation (scopes, naming, refs)
+  resolve/          Semantic facts (typed-IR): per-binding model + cardinality, FK access, async-ness
+  diag/             Shared diagnostic surface (source line + caret, error codes L/P/C/R/G###)
   codegen/
-    js/             JavaScript/TypeScript code generator
+    common/         Path + string helpers shared across targets
+    js/             JavaScript/TypeScript target (Hono + Drizzle + Zod) — the default
+    python/         Python target (FastAPI + SQLAlchemy + Alembic), via --target python
+    effect/         Effect (TypeScript) target — early scaffold, via --target effect
   linter/           Style linter (intent annotations, block ordering, empty endpoints)
   docs/             OpenAPI 3.1 JSON generator
   generate/         LLM code generation (@> slots via Anthropic API)
+  lsp/              Language Server Protocol server (bp lsp)
+  agentctx/         Agent-facing context surface (bp context / bp llms)
+  registry/         Package sharing/reuse system
 packages/
   runtime/          npm package for Blueprint runtime helpers
 ```
+
+`internal/codegen/codegen.go` defines the `Generator` interface and `OutputFile` type shared by all targets; `writer.go` defines `WriteOutputFiles`. See [Multi-Target Code Generation](./multi-target-codegen.md) for the authoritative target contract.
 
 ---
 
@@ -223,27 +236,60 @@ The checker maintains a scope map populated in a first pass over top-level decla
 
 ---
 
+## `internal/resolve`
+
+The first slice of the resolver / typed-IR work. It produces **semantic facts** about a checked `*ast.File` that code generators consume as ground truth instead of re-deriving heuristically at emit time.
+
+Today it records, for each `ArrowStmt` that binds a variable from a data operation (or `map`), the target model and the result's **cardinality**:
+
+- `SingleCard` — one record, produced by `fetch`
+- `CollectionCard` — an unordered list, produced by `query` without `paginate()` and by `map(...)`
+- `PaginatedCard` — the `{ items, total, page, per_page }` shape produced by `query ... paginate(page, per_page)`
+
+Subsequent slices move FK access, async-ness, and `let`/`const` decisions out of the codegen heuristics into this package.
+
+Design constraint: `resolve` must **not** import `internal/codegen` — it has to be importable by every code generator (JS, Python, Effect, and future targets).
+
+---
+
+## `internal/codegen` — the target contract
+
+`internal/codegen/codegen.go` defines the interface every target implements:
+
+```go
+type Generator interface {
+    // Files returns the generated output files for a parsed+checked AST.
+    // It must not write to disk.
+    Files(file *ast.File) ([]OutputFile, error)
+    // Generate builds Files and persists them to outDir via WriteOutputFiles.
+    Generate(file *ast.File, outDir string) error
+}
+
+type OutputFile struct {
+    Path      string // relative path within the output directory
+    Content   []byte
+    UserOwned bool // scaffold if missing, then leave untouched on later builds
+}
+```
+
+`Files` is the target-agnostic contract: turn an AST into in-memory `[]OutputFile` without touching disk (so emit logic stays pure and unit-testable). Persistence — manifest tracking, `UserOwned` scaffolding, and stale-file cleanup — is the shared responsibility of `codegen.WriteOutputFiles`, so every target gets identical on-disk behavior. `Generate` is the convenience that wires the two together.
+
+See **[Multi-Target Code Generation](./multi-target-codegen.md)** for the authoritative, full description of the target contract.
+
+---
+
 ## `internal/codegen/js`
 
-The JavaScript/TypeScript code generator. Converts a checked `*ast.File` into `[]codegen.OutputFile`.
+The JavaScript/TypeScript target (Hono + Drizzle + Zod) — the default. Converts a checked `*ast.File` into `[]codegen.OutputFile`.
 
 ### Entry point
 
 ```go
-g := js.NewGenerator()
-files, err := g.Generate(file)
+g := js.New()
+files, err := g.Files(file)     // in-memory
+// or
+err := g.Generate(file, outDir) // build + persist via WriteOutputFiles
 ```
-
-`OutputFile` is:
-
-```go
-type OutputFile struct {
-    Path    string
-    Content string
-}
-```
-
-The caller (CLI) writes these to disk.
 
 ### Key functions
 
@@ -255,13 +301,13 @@ The caller (CLI) writes these to disk.
 | `genSchema` | `src/models/schema.ts` |
 | `genValidation` | `src/validation/schemas.ts` |
 | `genTypes` | `src/types.ts` |
-| `genLib` | All `src/lib/*.ts` files |
+| `genDB`, `genErrors`, `genCache`, `genEnv`, ... | The `src/lib/*.ts` files (one generator per lib file: `db.ts`, `errors.ts`, `cache.ts`, `env.ts`, `storage.ts`, ...) |
 | `genRoute` | One `src/routes/<resource>.ts` |
 | `genMiddleware` | One `src/middleware/<name>.ts` |
 | `genWorker` | One `src/workers/<name>.ts` |
 | `genSchedule` | One `src/schedules/<name>.ts` |
 | `genPipe` | One `src/pipes/<name>.ts` |
-| `genFn` | One `src/functions/<name>.ts` |
+| `genFunction` | One `src/functions/<name>.ts` |
 | `genTest` | One `test/<name>.test.ts` |
 | `genEnvExample` | `.env.example` |
 | `genDockerfile` | `Dockerfile` |
@@ -455,17 +501,30 @@ The CLI entry point. Parses `os.Args` and dispatches to the appropriate pipeline
 | Command | Pipeline |
 |---------|----------|
 | `bp check` | lex → parse → check |
-| `bp build` | lex → parse → check → codegen → write files |
+| `bp build` | lex → parse → check → resolve → codegen → write files |
+| `bp frontend` | build the standalone frontend SDK package |
+| `bp diff` | build, but show changes without overwriting |
 | `bp run` | build + `bun install && bun run start` |
 | `bp dev` | build + watch loop |
-| `bp test` | build + `bun run test` |
-| `bp migrate` | build + `bunx drizzle-kit <subcommand>` |
+| `bp test` | build + run vitest |
+| `bp migrate` | build + `drizzle-kit <subcommand>` (node) or `alembic` (`--target python`) |
 | `bp generate` | parse + find `@>` slots + call Anthropic API |
 | `bp docs` | lex → parse → check → OpenAPI generation |
 | `bp fmt` | lex → parse → pretty-print AST |
 | `bp lint` | lex → parse → check → lint rules |
 | `bp init` | scaffold new project |
+| `bp eject` | strip Blueprint markers from generated code |
+| `bp deploy` | build + smoke-run Docker image (`--target docker`; `fly` reserved) |
+| `bp stats` | parse + report code statistics |
+| `bp explain` | print docs for a structured error code (`Cxxx`/`Lxxx`/`Pxxx`) |
+| `bp context` | print the agent-facing language + CLI surface |
+| `bp llms` | print the complete agent/LLM guide |
+| `bp doctor` | check environment dependencies |
+| `bp lsp` | start the Language Server Protocol server |
+| `bp completion` | generate a shell completion script |
 | `bp version` | print version string |
+
+`--target` (`node` default, `python`, `effect`) is accepted by `build`, `diff`, `migrate`, and `deploy` — but **not** by `bp test`.
 
 ---
 
@@ -516,8 +575,8 @@ func TestGen_MyFeature(t *testing.T) {
         }
     `
     file := mustParse(t, src)
-    g := js.NewGenerator()
-    files, err := g.Generate(file)
+    g := js.New()
+    files, err := g.Files(file)
     require.NoError(t, err)
     out := findFile(files, "src/routes/things.ts")
     require.Contains(t, out, "expected substring")
@@ -554,20 +613,23 @@ func TestGen_MyFeature(t *testing.T) {
 
 ### Adding a new code generation target
 
-The current `internal/codegen/js` package is one concrete implementation of:
+`internal/codegen/js` is the default target. Two more already exist: `internal/codegen/python` (FastAPI + SQLAlchemy + Alembic, via `--target python`) and `internal/codegen/effect` (an early Effect/TypeScript scaffold, via `--target effect`). Each is a concrete implementation of the `codegen.Generator` interface (see [`internal/codegen`](#internal-codegen-the-target-contract)):
 
 ```go
 type Generator interface {
-    Generate(file *ast.File) ([]OutputFile, error)
+    Files(file *ast.File) ([]OutputFile, error)
+    Generate(file *ast.File, outDir string) error
 }
 ```
 
-To add a new target (e.g., Python/FastAPI):
+To add a target (e.g., Go or Ruby):
 
-1. Create `internal/codegen/python/` with a `Generator` struct
-2. Implement the `Generate` method
-3. Add a `--target` flag to `bp build` in `cmd/bp/main.go`
-4. Dispatch to the correct generator based on the flag
+1. Create `internal/codegen/<target>/` with a `Generator` struct and a `New()` constructor
+2. Implement `Files` (pure, in-memory) and `Generate` (which calls `WriteOutputFiles`) — reuse helpers from `internal/codegen/common`
+3. Register the new value in the `--target` parsing in `cmd/bp/main.go` and dispatch to the constructor
+4. Consume `internal/resolve` facts rather than re-deriving them per target
+
+See **[Multi-Target Code Generation](./multi-target-codegen.md)** for the authoritative contract and the patterns the existing targets follow.
 
 ---
 

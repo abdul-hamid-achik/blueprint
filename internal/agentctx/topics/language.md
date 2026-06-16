@@ -73,7 +73,7 @@ Every endpoint body, middleware `before`/`after`, and fn `logic` is a pipeline o
 | `delete <var-or-model>` | Delete row(s). |
 | `guard <expr> -> <status> "<msg>"` | Short-circuit with HTTP error. |
 | `when <cond> { ... }` / `when <cond>: <stmt>` | Conditional block / inline. |
-| `try { ... } recover { ... }` | Exception handling. Recover sees `error`. |
+| `try { ... } recover { ... }` | Exception handling; `recover` sees `error`. In the node target, a `try` body with multiple writes runs in a DB transaction (partial writes roll back); external side effects are not rolled back — compensate in `recover`. |
 | `map <coll>: <op>` | For-each over a collection. |
 | `<var> = <op>` | Bind step result. |
 | `log "msg" [level(error\|info\|warning)]` | Structured log. |

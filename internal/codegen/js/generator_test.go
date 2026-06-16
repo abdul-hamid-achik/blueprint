@@ -111,6 +111,167 @@ func TestGenerateMinimal(t *testing.T) {
 	}
 }
 
+// TestFilesNoDisk exercises the codegen.Generator.Files contract: a target
+// returns its output as in-memory OutputFiles without touching disk, so emit
+// logic is unit-testable without a temp dir. This is the pattern new targets
+// (Effect/Go/Ruby) should follow — assert on returned files directly.
+func TestFilesNoDisk(t *testing.T) {
+	src := `blueprint "test-app" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	files, err := New().Files(file)
+	if err != nil {
+		t.Fatalf("Files() error: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("Files() returned no output files")
+	}
+
+	byPath := make(map[string]string, len(files))
+	for _, f := range files {
+		byPath[f.Path] = string(f.Content)
+	}
+	if _, ok := byPath["src/index.ts"]; !ok {
+		t.Error("Files() should include src/index.ts")
+	}
+	if !strings.Contains(byPath["src/index.ts"], "test-app") {
+		t.Error("src/index.ts should contain app name without any disk write")
+	}
+	// Generate must agree with Files (same paths), proving Generate is just
+	// Files + WriteOutputFiles and not a divergent code path.
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("Generate() error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "src/index.ts")); err != nil {
+		t.Errorf("Generate() should write the same src/index.ts Files() returned: %v", err)
+	}
+}
+
+func schemaTS(t *testing.T, src string) string {
+	t.Helper()
+	file, errs := parser.ParseFile("x.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	files, err := New().Files(file)
+	if err != nil {
+		t.Fatalf("Files() error: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == "src/models/schema.ts" {
+			return string(f.Content)
+		}
+	}
+	t.Fatal("no src/models/schema.ts generated")
+	return ""
+}
+
+// A declared enum and an inline enum with identical variants must collapse to a
+// single pgEnum (one CREATE TYPE) — two declarations of the same pg type name
+// collide in a drizzle-kit migration.
+func TestGen_InlineEnumDedupesWithDeclaredEnum(t *testing.T) {
+	schema := schemaTS(t, `blueprint "x" { version "1.0.0" port 8080 runtime node database postgres }
+secret DATABASE_URL required
+enum OrderStatus { pending paid shipped }
+model order {
+  id     uuid primary
+  status enum(pending, paid, shipped) default(pending)
+}`)
+	if n := strings.Count(schema, "pgEnum('orderstatus'"); n != 1 {
+		t.Errorf("expected exactly 1 pgEnum('orderstatus'), got %d:\n%s", n, schema)
+	}
+	if !strings.Contains(schema, "status: OrderStatusEnum('status')") {
+		t.Errorf("inline-enum column should reference the declared OrderStatusEnum:\n%s", schema)
+	}
+}
+
+// A declared enum and an inline enum that lower to the same type name but have
+// DIFFERENT variants must be disambiguated, not merged.
+func TestGen_InlineEnumDistinctFromDeclaredEnum(t *testing.T) {
+	schema := schemaTS(t, `blueprint "x" { version "1.0.0" port 8080 runtime node database postgres }
+secret DATABASE_URL required
+enum OrderStatus { pending paid }
+model order {
+  id     uuid primary
+  status enum(open, closed) default(open)
+}`)
+	if n := strings.Count(schema, "pgEnum('orderstatus'"); n != 1 {
+		t.Errorf("expected 1 pgEnum('orderstatus') (the declared enum), got %d:\n%s", n, schema)
+	}
+	if !strings.Contains(schema, "pgEnum('order_status'") {
+		t.Errorf("inline enum with differing variants should disambiguate to 'order_status':\n%s", schema)
+	}
+}
+
+func routesTS(t *testing.T, src string) string {
+	t.Helper()
+	file, errs := parser.ParseFile("x.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	files, err := New().Files(file)
+	if err != nil {
+		t.Fatalf("Files() error: %v", err)
+	}
+	var all strings.Builder
+	for _, f := range files {
+		if strings.HasPrefix(f.Path, "src/routes/") {
+			all.Write(f.Content)
+		}
+	}
+	return all.String()
+}
+
+const trModels = `blueprint "x" { version "1.0.0" port 8080 runtime node database postgres }
+secret DATABASE_URL required
+model a { id uuid primary name string required }
+model b { id uuid primary a_id uuid ref(a) required }
+`
+
+// A try block with multiple writes and no in-body return must roll back
+// partial commits via a db.transaction.
+func TestGen_TryRecoverWrapsMultiWriteInTransaction(t *testing.T) {
+	routes := routesTS(t, trModels+`@ "create"
+POST /api/things {
+  <- name string required
+  |> try {
+    |> x = save a { name: name }
+    |> y = save b { a_id: x.id }
+  } recover {
+    -> 500 { error: "failed" }
+  }
+  -> 201 { id: x.id }
+}`)
+	if !strings.Contains(routes, "db.transaction(async (tx) =>") {
+		t.Errorf("multi-write try should be wrapped in db.transaction:\n%s", routes)
+	}
+}
+
+// A single write is already atomic; no transaction wrapper should be emitted.
+func TestGen_TryRecoverSingleWriteNotWrapped(t *testing.T) {
+	routes := routesTS(t, trModels+`@ "create"
+POST /api/things {
+  <- name string required
+  |> try {
+    |> x = save a { name: name }
+  } recover {
+    -> 500 { error: "failed" }
+  }
+  -> 201 { id: x.id }
+}`)
+	if strings.Contains(routes, "db.transaction") {
+		t.Errorf("single-write try should NOT be wrapped in a transaction:\n%s", routes)
+	}
+}
+
 func TestGenerateWithModel(t *testing.T) {
 	src := `blueprint "test" {
   version "1.0.0"

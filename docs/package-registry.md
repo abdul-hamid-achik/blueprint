@@ -1,6 +1,8 @@
 # Blueprint Package Registry
 
-This document describes the Blueprint Package Registry design.
+> **Status: DESIGN / NOT YET IMPLEMENTED** — none of these commands ship in the current `bp` binary (v0.10.0). `bp add`, `bp list`, `bp search`, `bp update`, `bp info`, `bp remove`, and `bp package …` are **not** real commands — running them prints `Unknown command`. The `pkg:` include resolution, `blueprint.json`/`blueprint.lock` files, and the registry HTTP API described below are a proposed design (an RFC), not a working feature. Run `bp help` to see what actually exists today. This page is kept to document the intended design; treat every command and file format here as a sketch, not a tutorial.
+
+This document describes the **proposed** Blueprint Package Registry design. It is a design document (RFC) for a feature that has not been built — see the status banner above.
 
 ## Overview
 
@@ -55,7 +57,9 @@ The `blueprint.json` manifest file:
 }
 ```
 
-## Using Packages
+## Using Packages (planned)
+
+> None of the commands or `pkg:` includes in this section work yet — they describe the intended design.
 
 ### Installing Packages
 
@@ -72,9 +76,9 @@ bp add github.com/user/blueprint-auth
 
 ### Using Installed Packages
 
-In your `.bp` file:
+The `include` keyword is real today, but only for local file paths (e.g. `include "models.bp"`). The `pkg:` scheme below is part of the proposed design and is not yet resolved by the compiler, so the following is illustrative pseudocode (it will not pass `bp check`), not a runnable snippet. In your `.bp` file it would look like:
 
-```bp
+```text
 blueprint "my-api" { ... }
 
 # Include the entire package
@@ -90,9 +94,9 @@ POST /api/protected {
 }
 ```
 
-## Local Installation
+## Local Installation (planned)
 
-Packages are installed to `blueprint_packages/` in your project:
+Under the proposed design, packages would be installed to `blueprint_packages/` in your project:
 
 ```
 my-project/
@@ -107,9 +111,9 @@ my-project/
         └── index.bp
 ```
 
-## Lock File
+## Lock File (planned)
 
-The `blueprint.lock` file pins exact versions:
+Under the proposed design, a `blueprint.lock` file would pin exact versions:
 
 ```json
 {
@@ -128,7 +132,9 @@ The `blueprint.lock` file pins exact versions:
 }
 ```
 
-## Registry Commands
+## Planned CLI
+
+None of the commands below exist in the current `bp` binary — they are the proposed surface for this feature. Running any of them today prints `Unknown command`. Run `bp help` for the commands that actually ship.
 
 ```bash
 # Install a package
@@ -150,9 +156,7 @@ bp update
 bp info <package>
 ```
 
-## Publishing Packages
-
-(Planned for future)
+### Publishing Packages (planned)
 
 ```bash
 # Initialize a new package
@@ -181,9 +185,9 @@ Follow [Semantic Versioning](https://semver.org/):
 - New features → bump MINOR
 - Bug fixes → bump PATCH
 
-## Registry API
+## Registry API (planned)
 
-The registry exposes a simple HTTP API:
+No registry is hosted yet; there is no live endpoint at `registry.blueprint-lang.dev`. The proposed design would expose a simple HTTP API:
 
 ### Search Packages
 

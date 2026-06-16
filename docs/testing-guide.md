@@ -365,6 +365,61 @@ test bad_email {
 
 ---
 
+## Auto-Generated Contract Tests
+
+You don't have to write a single `test` block to get coverage. Blueprint can
+emit a self-contained contract test suite directly from your endpoint
+definitions — one Vitest case per endpoint, grouped by resource.
+
+`bp test` always generates and runs this suite, and `bp build --gen-tests`
+writes it to disk so you can read or commit it.
+
+```bash
+# Generate the suite (and the rest of the project) without running it
+bp build my-service.bp --gen-tests
+
+# Generate + run everything (this is what `bp test` does under the hood)
+bp test my-service.bp
+```
+
+The generated files are:
+
+```
+generated/
+  vitest.config.ts                  # registers the harness setup file
+  test/
+    _harness/
+      ddl.ts                        # CREATE TABLE DDL mirroring your models
+      db.ts                         # PGlite-backed drizzle db + resetDb()
+      setup.ts                      # dummy env so the app imports cleanly
+    generated/
+      <resource>.test.ts            # one describe block per route group
+```
+
+Each generated case:
+
+1. Mocks `src/lib/db` with an **in-memory Postgres (PGlite)** — no external
+   database, no Docker, nothing to start. `resetDb()` truncates every table
+   before each test for isolation.
+2. Seeds any rows a path param needs (e.g. it inserts a `todo` before hitting
+   `GET /api/todos/:id`), seeding `ref()` parents first.
+3. Sends the request with `app.request()` and asserts the response status is
+   **one of the statuses the endpoint and its middleware can declare** — its
+   outputs, guards, `400`/`500` fallbacks, and `401` when the route requires
+   auth.
+4. For `2xx` object responses, checks the body has every key your output block
+   declares.
+
+Assertions are deliberately lenient — a contract suite that never flakes is
+worth more than one that asserts business logic it can't predict. Use it as a
+safety net (every route boots, routes, validates, and returns a declared shape),
+and add hand-written `test` blocks for the behavior that matters.
+
+> The `--gen-tests` flag is available on `bp build` and `bp diff`. `bp test`
+> turns it on automatically, so you never pass it there.
+
+---
+
 ## Running Tests
 
 ### Run All Tests
@@ -373,9 +428,15 @@ test bad_email {
 bp test my-service.bp
 ```
 
+`bp test` builds the project (with the auto-generated contract suite enabled),
+runs `bun install` if needed, then runs `bun run test`. That executes **both**
+your authored `test` blocks and the generated contract suite. Because the whole
+harness runs on in-memory PGlite, `bp test` needs **no `DATABASE_URL` and no
+running Postgres**.
+
 ### Run from Generated Directory
 
-If you've already built:
+If you've already built **with the test harness** (`bp build --gen-tests`):
 
 ```bash
 cd generated
@@ -443,19 +504,35 @@ cd generated
 bun install
 ```
 
+### Do my tests need a real Postgres?
+
+No. Under `bp test`, every test — both your authored `test` blocks and the
+auto-generated contract suite — runs against an **in-memory PGlite database**.
+Their `setup`, `seed`, `cleanup`, and `model ... exists` queries are routed to
+PGlite by mocking `src/lib/db`, so you don't need `DATABASE_URL` set or a
+Postgres server running.
+
+A real `DATABASE_URL` only matters when you run the *application* (`bun run
+dev`, `bun run start`) or run migrations against an actual database — not when
+you run tests.
+
 ### Database tests fail with connection errors
 
-Ensure `DATABASE_URL` is set in a `.env` file inside the generated directory:
+If you're running Vitest directly (`bunx vitest`) rather than through `bp test`,
+make sure you built **with the test harness**, otherwise the generated tests are
+absent and any DB import points at the real `src/lib/db`:
 
 ```bash
+bp build my-service.bp --gen-tests
 cd generated
-cp .env.example .env
-# Edit .env with your database credentials
+bun run test
 ```
 
 ### Seeded data persists between tests
 
-Add `cleanup` blocks to remove seeded data. Alternatively, run tests against a test database that gets reset between runs.
+The PGlite harness truncates every table before each test, so the generated
+suite is always isolated. For your authored `test` blocks, add `cleanup` blocks
+to remove anything you seeded that another test might observe.
 
 ### Fixture files not found
 
@@ -477,7 +554,7 @@ Each `test` block in your `.bp` file becomes a separate Vitest file in `test/<na
 1. Imports the Hono app from `src/index.ts`
 2. Uses `app.request()` to send HTTP requests (no real server needed)
 3. Asserts on the response using Vitest's `expect()`
-4. Runs setup/cleanup queries against the database
+4. Runs setup/cleanup and `model ... exists` queries against the database — under `bp test` that database is the in-memory PGlite harness, because the suite mocks `src/lib/db` (see [Auto-Generated Contract Tests](#auto-generated-contract-tests))
 
 Example generated output:
 

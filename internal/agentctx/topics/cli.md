@@ -20,7 +20,8 @@
 | `bp init [name]` | Scaffold a new project. |
 | `bp eject <dir>` | Strip Blueprint markers from a generated project (you take over). |
 | `bp explain <code>` | Print docs for an error code (e.g. `bp explain C001`). |
-| `bp context [topic] [--format md\|json]` | This command. Agent-facing language + CLI surface. |
+| `bp context [topic] [--format md\|json]` | This command. Agent-facing language + CLI surface, by topic. |
+| `bp llms [--out <file>]` | The complete agent/LLM guide — every topic in one document (the `llms.txt` for bp). |
 | `bp doctor` | Check toolchain deps. |
 | `bp lsp` | Start the language server (stdin/stdout, JSON-RPC). |
 | `bp stats <file.bp>` | Code stats. |
@@ -29,7 +30,7 @@
 ## Common flags
 
 - `--out <dir>` — where to write generated project (default `./generated`).
-- `--target {node,python}` — codegen target. Default `node`. Used by `build`, `diff`, `migrate`, `deploy`.
+- `--target {node,python,effect}` — codegen target. Default `node`. `build` + `diff` accept all three; `migrate`/`deploy` are node/python only. `effect` is an experimental scaffold.
 - `--gen-tests` — emit auto-generated contract test suite (`build` and `test` only).
 - `--exit-code` — make `diff` return 1 if anything would change (CI gate).
 - `--no-color` — disable ANSI color (`diff`, error rendering). Also honors `NO_COLOR=1`.

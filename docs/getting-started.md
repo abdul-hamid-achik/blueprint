@@ -4,6 +4,7 @@
 
 - Go 1.22+ (for building from source)
 - Node.js 20+ (for running generated output)
+- [Bun 1.x](https://bun.sh) — `bp run`, `bp dev`, and the generated tooling use Bun by default (the Docker image is `oven/bun`). The generated `start` script is `tsx src/index.ts`, so you can also run it with `npm install && npm start` if you prefer Node.
 - PostgreSQL (for services with a database)
 
 ## Installation
@@ -41,7 +42,7 @@ sudo mv bin/bp /usr/local/bin/
 
 ```bash
 bp version
-# bp version 0.1.0
+# bp version 0.10.0
 ```
 
 ## Your First Service
@@ -109,13 +110,43 @@ bp check my-service.bp
 bp build my-service.bp
 ```
 
-### 4. Run the generated service
+### 4. Set up the database
+
+The scaffold declares `secret DATABASE_URL required` and queries an `item` table, so
+the service needs a database connection and a created table before it will start.
+Run these from the project root (alongside `my-service.bp`):
+
+```bash
+cp generated/.env.example generated/.env
+# Edit generated/.env and set DATABASE_URL=postgresql://user:pass@localhost/mydb
+```
+
+Create the tables from your models:
+
+```bash
+bp migrate my-service.bp push
+```
+
+> `bp migrate … push` builds the service and applies the schema (Drizzle Kit on the
+> default `node` target, Alembic on `--target python`).
+
+### 5. Run the generated service
+
+The quickest way is the one-command runner, which builds and starts the server
+(running `bun install` if needed):
+
+```bash
+bp run my-service.bp
+# my-service listening on port 8080
+```
+
+Or do it manually from the generated output:
 
 ```bash
 cd generated
 bun install
 bun run start
-# Listening on port 8080
+# my-service listening on port 8080
 ```
 
 ```bash
@@ -183,22 +214,20 @@ DELETE /api/todos/:id {
 ```bash
 bp build todo-api.bp
 
-cd generated
-cp .env.example .env
-# Edit .env and set DATABASE_URL=postgresql://user:pass@localhost/mydb
+cp generated/.env.example generated/.env
+# Edit generated/.env and set DATABASE_URL=postgresql://user:pass@localhost/mydb
 ```
 
 ### 3. Apply the database schema
 
 ```bash
-bun install
-bunx drizzle-kit push    # create tables from Drizzle schema
+bp migrate todo-api.bp push    # create tables from your models (Drizzle Kit on the node target)
 ```
 
 ### 4. Start the server
 
 ```bash
-bun run start
+bp run todo-api.bp
 # todo-api listening on port 3000
 ```
 

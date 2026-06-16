@@ -246,6 +246,12 @@ func TestGen_MyFeature(t *testing.T) {
 - **Test fixtures**: valid fixtures in `testdata/valid/`, invalid in `testdata/invalid/`
 - **Error format**: `filename:line:col\n\n  source_line\n  ^^^^^pointer\n\n  message\n  hint`
 - **Generated TS naming**: `snake_case` bp names → `camelCase` TS, models are pluralized for table names, `PascalCase` for types
+- **`docs/` is the published website.** `docs/.vitepress/` builds the site at
+  **blueprint-lang.dev**, and every `.md` under `docs/` becomes a public page.
+  Do **not** put internal working notes, reviews, experiments, or design spikes
+  in `docs/` — they would ship as public pages. Those live in the maintainer's
+  **Obsidian vault** (outside this repo), not in `docs/`. User-facing reference
+  docs belong in `docs/`; internal/process notes do not.
 
 ## The Reference Example
 

@@ -185,7 +185,9 @@ POST /api/orders {
     |> delete items
 
   } recover {
-    |> update order { status: "cancelled" }
+    # The DB writes in the try block roll back automatically (the block compiles
+    # to a single transaction). Compensate here only for external effects — e.g.
+    # refunding the charge above — since those are not part of the transaction.
     |> log "Checkout failed: {error.message}" level(error)
     -> 500 { error: "Checkout failed", detail: error.message }
   }

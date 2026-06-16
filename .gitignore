@@ -40,3 +40,6 @@ Thumbs.db
 docs/node_modules/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+
+# Claude Code working dir (worktrees, session state)
+.claude/

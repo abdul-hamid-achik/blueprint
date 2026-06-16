@@ -107,16 +107,22 @@ func (g *Generator) models() []*ast.Model {
 // New creates a new Python generator.
 func New() *Generator { return &Generator{} }
 
-// Generate writes the Python project to outDir. Returns an error explaining
-// which features are not yet supported when the spec uses any of them.
-func (g *Generator) Generate(file *ast.File, outDir string) error {
+// Files implements codegen.Generator: it returns the generated Python project
+// as in-memory OutputFiles without touching disk. It returns an error
+// explaining which features are not yet supported when the spec uses any.
+func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
 	g.file = file
 	g.sourceFile = file.Loc.File
 	if g.sourceFile == "" {
 		g.sourceFile = "main.bp"
 	}
+	return g.generateAll()
+}
 
-	files, err := g.generateAll()
+// Generate writes the Python project to outDir. Returns an error explaining
+// which features are not yet supported when the spec uses any of them.
+func (g *Generator) Generate(file *ast.File, outDir string) error {
+	files, err := g.Files(file)
 	if err != nil {
 		return err
 	}

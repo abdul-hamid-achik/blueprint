@@ -67,11 +67,53 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
 - [ ] `--target` flag scaffolding on `bp build`/`test`/`diff` (default `node`; no new
   generator yet, just plumbing) so the Python work next session can slot in cleanly.
 
-- [ ] Reconcile roadmap P0 vs CHANGELOG drift (rate-limit store, etc.) — verify each P0 against code.
-- [ ] Inline enum codegen emits `pgEnum` instead of falling back to `text` (roadmap P0).
-- [ ] `version` should be `var` not `const` so GoReleaser ldflags inject it (roadmap P0).
+- [~] Reconcile roadmap P0 vs CHANGELOG drift (rate-limit store, etc.) — verify each P0 against code.
+  _(2026-06-16 audit: several P0s below were already shipped; corrected here.)_
+- [x] Inline enum codegen emits `pgEnum` instead of falling back to `text` (roadmap P0).
+  _Verified 2026-06-16: `internal/codegen/js/schema.go` emits `pgEnum` for inline
+  `enum(...)` model fields and the column uses it (`orderStatusEnum('status')`),
+  no `text()` fallback._
+- [x] `version` should be `var` not `const` so GoReleaser ldflags inject it (roadmap P0).
+  _Verified 2026-06-16: `cmd/bp/main.go:33` is already `var version = ...` and
+  `.goreleaser.yaml` injects `-X main.version`._
 - [ ] Wire generated workers into `src/index.ts` startup (roadmap P0).
 - [ ] Harden STREAM/WS transport codegen out of preview (roadmap P0).
+
+### Found in the 2026-06-16 deep review
+
+_(detailed working notes live in the maintainer's Obsidian vault under
+`projects/blueprint/`, not in this repo — `docs/` is the published website.)_
+
+- [x] **Codegen `Generator` interface exposes `[]OutputFile`.** Added
+  `Files(*ast.File) ([]OutputFile, error)` to the interface and both targets;
+  `Generate` is now a thin `Files` + `WriteOutputFiles` wrapper. Emit logic is
+  unit-testable without a temp dir (`TestFilesNoDisk`). De-risks Effect/Go/Ruby.
+  Contract written up in `docs/multi-target-codegen.md`. _(shipped 2026-06-16)_
+- [x] **`try/recover` DB transaction (JS, Option A).** JS now wraps a `try`
+  body in `db.transaction(...)` when it has ≥2 mutations and no in-body
+  `guard`/output, so partial writes roll back. `examples/ecommerce-api.bp`
+  recover updated; generated TS `tsc`-passes; 2 new tests. **Python still
+  open** (savepoint wrapper — see Python "Phase 3d"). _(shipped 2026-06-16)_
+- [x] **Duplicate `pgEnum` name dedupe.** `internal/codegen/js/schema.go` now
+  registers pgEnums by pg type name; an inline `enum(...)` matching a declared
+  enum's variants reuses it (no colliding `CREATE TYPE`), and differing variants
+  disambiguate to `<model>_<field>`. Inline-enum emit is now deterministic. 2
+  new tests. _(shipped 2026-06-16)_
+- [x] **`--target effect` scaffold.** New `internal/codegen/effect/` Generator
+  (emits project shell + `Config`-based secrets; gates models/endpoints with a
+  clear message), wired into `build`/`diff` dispatch. Proves the `Files()`
+  contract accepts a 3rd target. Hand-written reference + go/no-go captured in
+  the maintainer's review notes (Obsidian). **Verdict: opt-in/experimental,
+  ~6-8wk MVP, not default.**
+  _(shipped 2026-06-16)_
+- [ ] **`bp import` — scaffolder only, with loud TODO stubs (decision).** The
+  2026-06-16 empirical experiment (captured in the Obsidian review notes) ported
+  real handler archetypes: logic survival 25-55%, and **every** port passed
+  `bp check` while silently diverging (data leaks, accepting revoked tokens,
+  wrong totals, mishandled card declines). Conclusion: a faithful importer is
+  not viable; if built, it must be a scaffolder that emits `@ "TODO"` stubs
+  loudly and never claims the dropped logic was preserved. `bp check` is NOT a
+  sufficient import-validity gate. _(experiment done 2026-06-16)_
 
 ## Python target (decisions locked, work pending)
 

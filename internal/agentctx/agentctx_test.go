@@ -234,3 +234,53 @@ func TestEveryTopicReferencesOnlyExistingTopics(t *testing.T) {
 		}
 	}
 }
+
+// FullGuide (behind `bp llms`) must be self-contained — the framing preamble,
+// the live CLI + target surface, and EVERY topic — and current.
+func TestFullGuideIsSelfContainedAndCurrent(t *testing.T) {
+	g := FullGuide("0.10.0")
+	for _, want := range []string{
+		"# Blueprint — agent & LLM guide (v0.10.0)",
+		"## CLI quick reference",
+		"## Codegen targets",
+		"bp llms",        // the new command advertises itself
+		"--target effect", // currency: the third target is present
+	} {
+		if !strings.Contains(g, want) {
+			t.Errorf("FullGuide missing %q", want)
+		}
+	}
+	for _, n := range Topics() {
+		tp, err := Get(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(g, "# "+tp.Title) {
+			t.Errorf("FullGuide missing topic heading for %q (# %s)", n, tp.Title)
+		}
+	}
+}
+
+func TestTargetRegistryIncludesAllThreeTargets(t *testing.T) {
+	got := map[string]bool{}
+	for _, tg := range FullSurface("0.10.0").Targets {
+		got[tg.Name] = true
+	}
+	for _, want := range []string{"node", "python", "effect"} {
+		if !got[want] {
+			t.Errorf("target registry missing %q (got %v)", want, got)
+		}
+	}
+}
+
+func TestCommandRegistryListsLlms(t *testing.T) {
+	var found bool
+	for _, c := range commandRegistry() {
+		if c.Name == "llms" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("commandRegistry must list the llms command")
+	}
+}

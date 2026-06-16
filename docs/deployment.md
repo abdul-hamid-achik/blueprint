@@ -27,6 +27,26 @@ bun run start
 
 ---
 
+## One-Command Deploy (`bp deploy`)
+
+Blueprint ships its own deploy command that builds a Docker image and smoke-runs it for you:
+
+```bash
+bp deploy my-service.bp --target docker
+```
+
+This builds the project, builds the Docker image (default tag `blueprint-app:latest`, override with `--tag`), then runs the image and probes `GET /health` to confirm the container starts. The container is torn down once the probe finishes, so it's a smoke test, not a long-running deployment.
+
+To build the image without the smoke run (for example in CI):
+
+```bash
+bp deploy my-service.bp --no-run
+```
+
+`--target docker` is the only target available today. `--target fly` is reserved for v0.11 — until then, use the manual [Fly.io](#fly-io) steps below.
+
+---
+
 ## Docker
 
 Every `bp build` generates a `Dockerfile` alongside your project.
@@ -143,6 +163,20 @@ bp migrate my-service.bp studio
 ```
 
 Opens Drizzle Studio at `https://local.drizzle.studio`.
+
+### Python Target: Alembic
+
+The commands above drive Drizzle Kit, which is the node target's migration tool. For the Python target (FastAPI + SQLAlchemy), `bp migrate` drives Alembic via `uv` instead:
+
+```bash
+# Generate an Alembic revision from schema changes
+bp migrate my-service.bp generate --target python
+
+# Apply pending migrations
+bp migrate my-service.bp push --target python
+```
+
+Same subcommands, different engine: `generate` writes a new Alembic revision and `push` applies pending migrations. (`studio` is node-only.)
 
 ---
 

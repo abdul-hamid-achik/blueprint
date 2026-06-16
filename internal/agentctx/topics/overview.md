@@ -1,6 +1,6 @@
 # Blueprint Overview
 
-Blueprint is a Go-based compiler. Source files use the `.bp` DSL — a declarative description of a web service: data models, business pipelines, HTTP endpoints, middleware, and (optionally) streaming/WebSocket handlers. The compiler emits a runnable project in TypeScript (Hono + Drizzle + Zod + Pino, default) or Python (FastAPI + SQLAlchemy + Pydantic v2 + Alembic, via `--target python`).
+Blueprint is a Go-based compiler. Source files use the `.bp` DSL — a declarative description of a web service: data models, business pipelines, HTTP endpoints, middleware, and (optionally) streaming/WebSocket handlers. The compiler emits a runnable project in TypeScript (Hono + Drizzle + Zod + Pino, default), Python (FastAPI + SQLAlchemy + Pydantic v2 + Alembic, via `--target python`), or an early Effect-TS scaffold (`--target effect`, experimental).
 
 ## The compile loop
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-Blueprint has a usable core: lexer, parser, semantic checker, JS/TS codegen, DX tools, testing/migrations, LLM integration, and release automation. This page separates stable surfaces from preview work and outlines what comes next.
+Blueprint has a usable core: lexer, parser, semantic checker, multi-target codegen (node default, plus python and an effect scaffold), DX tools, testing/migrations, an LSP server, Docker deploy, LLM integration, and release automation. This page separates stable surfaces from preview work and outlines what comes next.
 
 ---
 
@@ -11,12 +11,19 @@ Blueprint has a usable core: lexer, parser, semantic checker, JS/TS codegen, DX 
 | M1 | Lexer + Parser + AST | Done |
 | M2 | Semantic Checker | Stable core |
 | M3 | JS/TS Codegen (Hono + Drizzle + Zod) | Stable REST core, preview realtime/worker surfaces |
-| M4 | Developer Experience (`init`, `fmt`, `lint`, `docs`, `dev`, `run`) | Stable core |
+| M4 | Developer Experience (`init`, `fmt`, `lint`, `docs`, `dev`, `run`, `diff`, `eject`) | Stable core |
 | M5 | Testing + Migrations (`bp test`, `bp migrate`) | Stable core |
 | M6 | LLM Integration (`bp generate` via Anthropic API) | Preview |
 | M7 | Polish + Launch (GoReleaser, GitHub Actions, runtime packages) | In progress |
 
-REST services, models, middleware, pipes, functions, schedules, external calls, and generated Vitest tests are the most mature path. STREAM, WebSocket, workers, subscriptions, deployment automation, and LSP are available but should be treated as preview until the gaps below are closed.
+Also shipped beyond the original milestones:
+
+- **`bp deploy`** — builds and smoke-runs a Docker image (`--target docker` default; `fly` reserved for v0.11).
+- **LSP server** (`bp lsp`, `internal/lsp/`) — diagnostics, go-to-definition, and context-aware hover. Autocomplete, intent-hover, and a bundled VS Code extension are still open (see Quick Wins).
+- **Multi-target codegen** — three `--target`s on `bp build`/`diff`/`migrate`/`deploy`: **node** (default), **python** (FastAPI + SQLAlchemy + Alembic), and **effect** (early scaffold).
+- **`bp diff`** and **`bp eject`** — preview generated changes (with `--apply`/`--exit-code`) and strip Blueprint markers for a clean standalone project.
+
+REST services, models, middleware, pipes, functions, schedules, external calls, and generated Vitest tests are the most mature path. The Docker deploy path and the LSP server are usable today; STREAM, WebSocket, workers, and subscriptions are available but should be treated as preview until the gaps below are closed.
 
 ---
 
@@ -24,27 +31,15 @@ REST services, models, middleware, pipes, functions, schedules, external calls, 
 
 Issues identified during the codebase audit that should be fixed immediately.
 
-### Rate Limit Store Per-Request (Security Bug)
-
-The generated rate limiting code creates a `new Map()` **inside** the request handler. This means the store resets on every request, making rate limiting completely non-functional. The store must be hoisted to module scope with TTL-based cleanup.
-
-**Location:** `internal/codegen/js/generator.go` (rate limit emission in route codegen)
-
-### STREAM/WS Codegen Gaps
-
-STREAM and WS endpoints are fully parsed into the AST and collected during codegen, but the actual SSE/WebSocket handler code is incomplete. These endpoints are generated as route files but the real-time transport logic (EventSource streaming, WebSocket upgrade) needs hardening.
+> **Fixed (2026-06-16 audit):** three previously-listed P0s have shipped and were removed — the rate-limit store is now hoisted to module scope with TTL-based cleanup (was reset per request), inline `enum(...)` fields now emit a proper `pgEnum` (was falling back to `text`), and `version` is now a `var` so GoReleaser ldflags inject the build-time value (was a `const`).
 
 ### Workers Not Wired in index.ts
 
 Worker files are generated in `src/workers/` but never imported or started in `src/index.ts`. The BullMQ worker registration is present in individual files but the main entry point doesn't start them.
 
-### Inline Enum Codegen Falls Back to Text
+### STREAM/WS Codegen Gaps
 
-Model fields with `enum(a, b, c)` inline enums fall back to `text` column type instead of generating proper `pgEnum`. The code has a dead `_ = inlineEnumVar` assignment.
-
-### `version` Constant vs Variable
-
-`cmd/bp/main.go` declares `version` as a `const "0.1.0"` but GoReleaser uses ldflags to inject the version at build time, which requires a `var` not a `const`. The version flag is silently ignored.
+STREAM and WS endpoints are fully parsed into the AST and collected during codegen, but the actual SSE/WebSocket handler code is incomplete. These endpoints are generated as route files but the real-time transport logic (EventSource streaming, WebSocket upgrade) needs hardening.
 
 ---
 
@@ -52,27 +47,25 @@ Model fields with `enum(a, b, c)` inline enums fall back to `text` column type i
 
 High-impact improvements that can be done in days, not weeks.
 
-### Language Server Protocol (LSP)
+> The LSP server, `bp deploy`, `bp diff`, and `bp eject` shipped — see Completed below. The remaining items here are open.
 
-**Why:** Editor support is the #1 DX improvement. Currently only TextMate grammar (syntax highlighting) exists.
+### Language Server Protocol (LSP) — feature depth
 
-**What to build:**
-- Diagnostics (show errors inline as you type)
-- Go-to-definition for model, middleware, function references
+**Status:** Shipped. `internal/lsp/` provides diagnostics, go-to-definition, and context-aware hover today.
+
+**What's still open:**
 - Autocomplete for keywords, model names, field names
 - Hover documentation from `@` intent annotations
-- Workspace symbol search
+- Workspace symbol search depth
+- Publish as a VS Code extension with the server bundled
 
-**Approach:** `internal/lsp/` package using `gopls`-style architecture. Reuse existing lexer/parser/checker. Publish as a VS Code extension.
+### `bp deploy` — more targets
 
-### `bp deploy` Command
+**Status:** Shipped for Docker. `bp deploy <file.bp>` builds and smoke-runs a Docker image (`--target docker` is the default; `fly` is reserved for v0.11).
 
-**Why:** Getting from `.bp` to running in production should be one command.
-
-**What to build:**
-- `bp deploy <file.bp> --target fly` — build + push Docker image + deploy
-- `bp deploy <file.bp> --target docker` — build + run Docker locally
-- Start with Fly.io and Docker, add Railway/Render later
+**What's still open:**
+- Wire up the reserved `--target fly` (build + push image + deploy)
+- Add Railway/Render later
 
 ### Error Message Improvements
 
@@ -84,40 +77,21 @@ High-impact improvements that can be done in days, not weeks.
 - Structured error format: `file:line:col: error[E001]: message`
 - Error codes that link to documentation
 
-### `bp eject` Command
-
-**Why:** Users need confidence that Blueprint isn't a dead end. An escape hatch builds trust and drives adoption.
-
-**What to build:**
-- Strip generated file headers (`// Generated by Blueprint`)
-- Remove Blueprint references from package.json
-- Produce a clean standalone Node.js project ready for manual maintenance
-
-### `bp diff` Command
-
-**Why:** Preview what changes `bp build` will make before overwriting output.
-
-**What to build:**
-- Compare current generated output against what a fresh build would produce
-- Show unified diff output
-- Useful for CI and code review workflows
-
 ---
 
 ## Priority 2: Ecosystem
 
 Medium-effort features that expand Blueprint's reach.
 
-### Multi-Target Codegen
+### Multi-Target Codegen — more targets
 
-**Why:** The architecture already supports this (`Generator` interface in `internal/codegen/`), but only JS/TS is implemented.
+**Status:** Three targets ship today via the `Generator` interface in `internal/codegen/` (`--target` on `bp build`/`diff`/`migrate`/`deploy`): **node** (default — Hono + Drizzle + Zod), **python** (`--target python` — FastAPI + SQLAlchemy + Alembic, via `internal/codegen/python/`), and **effect** (`--target effect` — an early TypeScript-on-Effect scaffold). See [Multi-Target Codegen](/multi-target-codegen) for the contract every generator satisfies.
 
-**Targets to consider:**
-- **Python/FastAPI** — popular for ML/AI services
+**Targets still to consider:**
 - **Go/Chi or Gin** — for teams that want Go output
 - **Deno** — native TypeScript without Node.js
 
-**Approach:** Create `internal/codegen/python/` implementing the same `Generator` interface. Add `--target python` flag to `bp build`.
+**Approach:** Add a package under `internal/codegen/<target>/` implementing the same `Generator` interface and register it in the `--target` dispatch.
 
 ### Plugin System
 
@@ -317,13 +291,9 @@ Internal improvements for maintainability and performance.
 
 ### Documentation Site
 
-**Status:** VitePress docs site exists with 7 pages.
+**Status:** VitePress docs site exists with ~17 pages, including deployment, testing, LLM generation, multi-target codegen, production-readiness, error-codes, and FAQ guides.
 
 **What to add:**
-- Deployment guide (done)
-- Testing guide (done)
-- LLM generation guide (done)
-- Troubleshooting / FAQ page
 - Comparison with alternatives (Prisma, Supabase, tRPC)
 - Interactive examples (link to playground)
 - API reference auto-generated from Go source

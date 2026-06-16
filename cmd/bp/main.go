@@ -18,6 +18,7 @@ import (
 	"github.com/abdul-hamid-achik/blueprint/internal/agentctx"
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/checker"
+	effectgen "github.com/abdul-hamid-achik/blueprint/internal/codegen/effect"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen/js"
 	pythongen "github.com/abdul-hamid-achik/blueprint/internal/codegen/python"
 	"github.com/abdul-hamid-achik/blueprint/internal/diag"
@@ -30,7 +31,7 @@ import (
 // version is set by goreleaser ldflags at build time. Between releases this
 // stays at the next planned version with a `-dev` suffix so `bp version`
 // makes it obvious the binary was built from source rather than a release.
-var version = "0.10.0"
+var version = "0.11.0"
 
 // Supported codegen targets. New targets register here and add a case to
 // dispatchTarget below. The flag default is targetNode, so existing usage is
@@ -38,6 +39,7 @@ var version = "0.10.0"
 const (
 	targetNode   = "node"
 	targetPython = "python"
+	targetEffect = "effect"
 )
 
 // resolveTarget validates a --target flag value and returns the canonical name.
@@ -49,8 +51,10 @@ func resolveTarget(t string) (string, error) {
 		return targetNode, nil
 	case targetPython:
 		return targetPython, nil
+	case targetEffect:
+		return targetEffect, nil
 	default:
-		return "", fmt.Errorf("unknown --target %q (supported: %s, %s)", t, targetNode, targetPython)
+		return "", fmt.Errorf("unknown --target %q (supported: %s, %s, %s)", t, targetNode, targetPython, targetEffect)
 	}
 }
 
@@ -87,7 +91,7 @@ func main() {
 				"Compile a .bp file to a runnable project.",
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
-					{"--target <name>", "Codegen target: node (default) or python (FastAPI + SQLAlchemy + Alembic)"},
+					{"--target <name>", "Codegen target: node (default), python (FastAPI + SQLAlchemy + Alembic), or effect (TypeScript on Effect — scaffold)"},
 					{"--react-query", "Generate React Query hooks and add frontend deps (node target)"},
 					{"--frontend-only", "Emit only the standalone frontend package (node target)"},
 					{"--gen-tests", "Generate contract tests. node: PGlite-backed Vitest. python: testcontainers-backed pytest (Docker required)"},
@@ -549,6 +553,32 @@ func main() {
 			}
 		}
 		os.Exit(cmdContext(topic, format))
+	case "llms":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("llms", "llms [--out <file>]",
+				"Print the complete agent/LLM guide — every `bp context` topic plus the live CLI and target surface in one self-contained document (the `llms.txt` for bp). With --out, write it to a file.",
+				[][2]string{
+					{"--out <file>", "Write the guide to a file (e.g. llms.txt) instead of stdout"},
+				})
+			os.Exit(0)
+		}
+		llmsOut := ""
+		llmsArgs := os.Args[2:]
+		for i := 0; i < len(llmsArgs); i++ {
+			switch llmsArgs[i] {
+			case "--out":
+				if i+1 >= len(llmsArgs) {
+					fmt.Fprintln(os.Stderr, "Error: --out needs a file path")
+					os.Exit(1)
+				}
+				llmsOut = llmsArgs[i+1]
+				i++
+			default:
+				fmt.Fprintf(os.Stderr, "Error: unknown argument %s\n", llmsArgs[i])
+				os.Exit(1)
+			}
+		}
+		os.Exit(cmdLlms(llmsOut))
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -683,6 +713,15 @@ func cmdBuildWithOptions(filename, outDir, target string, reactQuery, frontendOn
 			return 2
 		}
 		if err := pythongen.New().WithGenTests(genTests).Generate(file, outDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
+			return 4
+		}
+	case targetEffect:
+		if reactQuery || frontendOnly {
+			fmt.Fprintf(os.Stderr, "Error: --react-query and --frontend-only are Node-only\n")
+			return 2
+		}
+		if err := effectgen.New().Generate(file, outDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
 			return 4
 		}
@@ -1401,6 +1440,11 @@ func cmdDiff(filename, outDir, target string, reactQuery, frontendOnly, genTests
 			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
 			return 4
 		}
+	case targetEffect:
+		if err := effectgen.New().Generate(file, tmpDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
+			return 4
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Error: target %q has no generator\n", target)
 		return 2
@@ -1983,6 +2027,7 @@ func printUsage() {
 	fmt.Println("  stats      <file.bp> [--json]              Show code statistics")
 	fmt.Println("  explain    <code>                          Print docs for a structured error code (Cxxx/Lxxx/Pxxx)")
 	fmt.Println("  context    [topic] [--format md|json]      Agent-facing language + CLI surface")
+	fmt.Println("  llms       [--out <file>]                  Print the complete agent/LLM guide (every topic in one doc)")
 	fmt.Println("  doctor                                     Check environment dependencies")
 	fmt.Println("  lsp                                        Start LSP server")
 	fmt.Println("  version                                    Print version")
@@ -1993,7 +2038,7 @@ func printUsage() {
 func suggestCommand(input string) string {
 	commands := []string{"check", "build", "frontend", "diff", "run", "dev", "test", "migrate",
 		"generate", "docs", "fmt", "lint", "init", "eject", "deploy",
-		"completion", "explain", "context", "doctor", "lsp", "stats",
+		"completion", "explain", "context", "llms", "doctor", "lsp", "stats",
 		"version", "help"}
 
 	// Common typos mapping
@@ -2311,6 +2356,23 @@ func cmdContext(topic, format string) int {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
+	return 0
+}
+
+// cmdLlms prints (or writes) the complete agent/LLM guide assembled by
+// agentctx.FullGuide — every context topic plus the live CLI/target surface in
+// one self-contained document. With outFile set, it writes an llms.txt-style file.
+func cmdLlms(outFile string) int {
+	guide := agentctx.FullGuide(version)
+	if outFile == "" {
+		fmt.Print(guide)
+		return 0
+	}
+	if err := os.WriteFile(outFile, []byte(guide), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 2
+	}
+	fmt.Printf("Wrote agent/LLM guide to %s (%d bytes)\n", outFile, len(guide))
 	return 0
 }
 

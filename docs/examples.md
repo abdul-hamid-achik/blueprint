@@ -2,6 +2,31 @@
 
 Worked examples from minimal to more complete service shapes.
 
+## Calling your own code (`fn`)
+
+Most steps in these examples use Blueprint **builtins** — `query`, `save`, `fetch`,
+`update`, `delete`, `emit`, `log`, plus storage operations like `upload` and
+`delete_s3_object` (available once you declare `storage s3`). Blueprint knows these
+out of the box.
+
+Anything else you call — `hash(...)`, `process_input(...)`, `authenticate(...)` — is
+**your own code**. You must declare it with `fn` so Blueprint knows the signature and
+where to import it from. Skip the declaration and `bp check` reports
+`error[C006]: unknown function`.
+
+```bp
+fn process_input {
+  <- input string   # parameters, one `<-` per argument
+  -> string         # return type
+  impl node { module: "./internal/processing", func: "run" }
+}
+```
+
+You then write the function body yourself in `./internal/processing.ts` (the `func`
+key picks the export). The same `fn` block targets the Python backend with
+`impl python { module: "...", func: "..." }`. Watch for this pattern in the examples
+below.
+
 ## Hello World
 
 The simplest possible Blueprint service.
@@ -147,6 +172,20 @@ model api_key {
 enum Plan {
   free { rate_limit: 10/min, monthly_ops: 100  }
   pro  { rate_limit: 60/min, monthly_ops: 10000 }
+}
+
+# hash() and process_input() are your own code. Declare each one with `fn`
+# so Blueprint knows its signature and where to import it from.
+fn hash {
+  <- value string
+  -> string
+  impl node { module: "./internal/crypto", func: "sha256" }
+}
+
+fn process_input {
+  <- input string
+  -> string
+  impl node { module: "./internal/processing", func: "run" }
 }
 
 @ "Authenticate via API key and enforce quota"
@@ -327,6 +366,13 @@ model job {
   created    timestamp default(now)
 }
 
+# process_input() is your own code — declare its signature and import path.
+fn process_input {
+  <- input string
+  -> string
+  impl node { module: "./internal/processing", func: "run" }
+}
+
 @ "Enqueue a processing job"
 POST /api/jobs {
   <- input string required
@@ -361,7 +407,7 @@ worker process_job_worker {
   <- job_id uuid
 
   |> job = fetch job(job_id)
-  |> guard job.status == "pending" -> skip "Already processed"
+  |> guard job.status == "pending" -> 200 "Already processed"
 
   |> update job { status: "processing" }
 
