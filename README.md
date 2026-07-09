@@ -185,6 +185,18 @@ Access enum data: `Plan[user.plan].monthly_ops`, `Plan[auth.plan].rate_limit`
 ### Middleware with inject
 
 ```bp
+fn hash {
+  <- value string
+  -> string
+  impl node { module: "./internal/auth", func: "hash" }
+}
+
+fn check_quota {
+  <- key json
+  -> bool
+  impl node { module: "./internal/auth", func: "checkQuota" }
+}
+
 middleware require_auth {
   before {
     |> guard header.X-API-Key                -> 401 "Missing API key"

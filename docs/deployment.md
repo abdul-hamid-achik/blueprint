@@ -43,7 +43,7 @@ To build the image without the smoke run (for example in CI):
 bp deploy my-service.bp --no-run
 ```
 
-`--target docker` is the only target available today. `--target fly` is reserved for v0.11 — until then, use the manual [Fly.io](#fly-io) steps below.
+`--target docker` is the only target available today. `--target fly` is not yet implemented — until then, use the manual [Fly.io](#fly-io) steps below.
 
 ---
 

@@ -76,8 +76,24 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
 - [x] `version` should be `var` not `const` so GoReleaser ldflags inject it (roadmap P0).
   _Verified 2026-06-16: `cmd/bp/main.go:33` is already `var version = ...` and
   `.goreleaser.yaml` injects `-X main.version`._
-- [ ] Wire generated workers into `src/index.ts` startup (roadmap P0).
-- [ ] Harden STREAM/WS transport codegen out of preview (roadmap P0).
+- [x] Wire generated workers into `src/index.ts` startup (roadmap P0). _(shipped 2026-07-09:
+  worker bodies compile — inputs bound, async fns awaited, guard semantics, on_fail scope;
+  scheduler consumer Worker added so cron handlers actually run; REDIS_URL/DATABASE_URL
+  auto-added to env schema; startup moved inside the VITEST guard; backoff quoting fixed;
+  compile gate via all_features.bp worker + worker_basic.bp tests. See CHANGELOG [Unreleased].)_
+- [ ] **Worker producer path (SPEC decision).** Nothing in the language can enqueue a job:
+  `emit` dispatches to the in-process events registry, never BullMQ, so a worker's queue has
+  no in-language producer and the checker never validates emitted event names against worker
+  triggers. Decide: emit dual-dispatch when the event name matches a worker trigger, or an
+  explicit `enqueue` builtin. _(found 2026-07-09 audit)_
+- [x] Harden STREAM/WS transport codegen out of preview (roadmap P0). _(shipped 2026-07-09:
+  WS handler crash isolation — a failing guard/bad client JSON no longer kills the process;
+  SSE subscriptions unsubscribed on abort; STREAM guards run before the 200 is sent; dead-socket
+  eviction + broadcast readyState guard; STREAM auth/limit/use meta enforced, WS bare-auth gets
+  linter warning `unenforceable-ws-auth`. See CHANGELOG [Unreleased].)_
+- [ ] **STREAM/WS remaining tail:** process-local event bus/rooms break with >1 instance
+  (needs Redis pub/sub backbone); no backpressure on emit fan-out; add STREAM/WS endpoints to
+  all_features.bp so the tsc gate covers them; WS path-param validation. _(found 2026-07-09 audit)_
 
 ### Found in the 2026-06-16 deep review
 
@@ -115,6 +131,35 @@ _(detailed working notes live in the maintainer's Obsidian vault under
   loudly and never claims the dropped logic was preserved. `bp check` is NOT a
   sufficient import-validity gate. _(experiment done 2026-06-16)_
 
+### Found in the 2026-07-09 audit (not yet fixed)
+
+- [ ] **`bp migrate --target effect` silently falls through to the node/drizzle path** —
+  resolveTarget accepts `effect` but cmdMigrate's dispatch has no effect case; fails with a
+  confusing drizzle.config.ts error. Reject it explicitly.
+- [ ] **JS string-interpolation identifiers not camelCased** — `exprToJSWithCtx`'s StringLit
+  path embeds `{expr}` bodies as raw source, so snake_case identifiers interpolated in
+  log/error messages reference undeclared names. (internal/codegen/js/helpers.go)
+- [ ] **Stale "fly reserved for v0.11" strings inside the binary** — printCommandHelp (~:532)
+  and printUsage (~:2233) in cmd/bp/main.go, plus internal/agentctx/topics/targets.md
+  (embedded in `bp context`/`bp llms`). The runtime error string is already version-neutral.
+- [ ] **SPEC.md staleness** — Appendix C targets table lists Python/Go as "🚧 Planned" and
+  omits Effect; the where-predicate grammar (ComparisonOp) omits `in` (parsed, JS-translated)
+  and `like` (JS-translated only); AGENTS.md cites "SPEC §24.2" for exit codes but SPEC.md has
+  no §24 — fix the citation or add the section.
+- [ ] **Parser: dedicated if/else diagnostic** — the #1 beginner error (`if/else` in a step)
+  yields a generic "Expected '}'" plus a misleading panic-mode cascade ("game-save" hint).
+  Special-case if/else/for/while in statement position; suppress cascade errors during recovery.
+- [ ] **`bp eject` has zero tests and its worst failure mode is real** — the next `bp build`
+  silently clobbers ejected files (no manifest awareness after eject). Also
+  `internal/generate` (Apply/GenerateAll/callAnthropicAPI) is at 0% coverage.
+- [ ] **docs/roadmap.md stale line counts** (cites cmd/bp/main.go at 770 lines / generator.go
+  at 3,169 — both wrong post-refactors); docs/production-readiness.md Pillar 5 still frames
+  multi-target as post-1.0-only in places.
+- [ ] **LSP didChange applies ContentChanges[0] only** — multi-change notifications drop edits
+  (internal/lsp at 49%; every JSON-RPC document handler untested).
+- [ ] **`bp fmt` printer 0% coverage for worker/schedule/stream/ws/try-recover/test/fixture
+  blocks** — round-trip (parse → print → parse) property test would pin these.
+
 ## Python target (decisions locked, work pending)
 
 Stack: **FastAPI + Pydantic v2 + SQLAlchemy + Alembic**. Package manager: **uv**
@@ -131,7 +176,10 @@ Prep work (must precede the Python generator):
 - [x] IR Slice 4 (let/const decisions) _(shipped)_
 - [x] `internal/codegen/common` — pure-string helpers extracted _(shipped)_
 - [x] `--target` flag scaffolding on `bp build`/`bp diff`, default `node`, with python returning "in progress" _(shipped)_
-- [ ] `docs/codegen-targets.md` — contract every generator must satisfy.
+- [x] `docs/codegen-targets.md` — contract every generator must satisfy. _(resolved 2026-07-09:
+  the contract shipped as `docs/multi-target-codegen.md` in v0.11.0; that doc now also covers
+  the `--gen-tests` builder convention, the exit-code contract, and the per-command target
+  dispatch table. No separate file needed.)_
 - [~] `internal/codegen/python/` — `Generator` impl:
   - [x] Phase 1 (shipped): FastAPI routes for static endpoints, Pydantic Settings env,
     `pyproject.toml` for `uv`, README with run instructions. End-to-end verified
@@ -166,9 +214,12 @@ Prep work (must precede the Python generator):
     - [ ] Bare-expression step bindings of pure block literals
       (`|> filters = { ... }`)
     - [ ] `pipe` declarations (vs `fn`) under Python `impl python` mode
-    - [ ] Partial-commit handling in `try`/`recover`: today `db.commit()` calls
-      inside the try body survive the recover branch; a savepoint wrapper
-      would make rollback automatic. Mirror Drizzle's transaction semantics.
+    - [x] Partial-commit handling in `try`/`recover` — shipped 2026-07-09: multi-write
+      try bodies wrap in `with db.begin_nested():` + per-mutation `db.flush()` + single
+      `db.commit()` (same wrap predicate as JS Option A); `db.rollback()` leads every
+      DB-touching recover branch; guards re-raise `HTTPException` past the generic except;
+      `error.message` → `str(error)`. Also fixed the critical wrong-target `update`/`delete`
+      binding resolution (nondeterministic wrong-row writes). See CHANGELOG [Unreleased].
     - [ ] Structured `log` (`level(error)`, JSON output) — Phase 3c keeps deps
       minimal with `print(f"...")`.
   - [~] Phase 4: middleware, fn/pipe (Python `impl python` mode), `bp test`

@@ -106,7 +106,7 @@ table and the CHANGELOG together.
 | 4 | Self-contained `bp test` | ✅ shipped | 2026-05-29 |
 | 4 | `bp migrate generate` on every example | ✅ CI runs `drizzle-kit generate` against all 5 examples on every push; `bp migrate --target python` shells to `uv run alembic ...` | 2026-05-29 |
 | 5 | `bp deploy --target docker` smoke | 🟡 `--target` parsing + post-build `docker run` + `/health` probe + teardown wired in `cmdDeploy`; `--no-run` opt-out for CI image builds. Smoke happy path verified manually; not yet exercised in CI (would need Docker on the runner) | 2026-05-29 |
-| 5 | `bp deploy --target fly` smoke | 🔴 explicit "not implemented; v0.11" error from `--target fly` parsing; spec-wide Fly support still pending | 2026-05-29 |
+| 5 | `bp deploy --target fly` smoke | 🔴 explicit "not yet implemented; see the roadmap for status" error from `--target fly` parsing; spec-wide Fly support still pending | 2026-05-29 |
 
 Legend: ✅ meets gate · 🟡 partial · 🔴 not started · ⏳ implemented, gate not yet enforced in CI.
 

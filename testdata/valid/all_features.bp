@@ -92,6 +92,16 @@ fn check_quota {
   }
 }
 
+@ "Generate a thumbnail preview for a completed job"
+fn generate_thumbnail {
+  <- job job
+  -> thumbnail_url string
+
+  impl node {
+    module: "./internal/generate-thumbnail"
+  }
+}
+
 # --- Pipes ---
 
 @ "Standard image validation"
@@ -259,6 +269,27 @@ POST /webhooks/stripe {
   }
 
   -> 200 "ok"
+}
+
+# --- Workers ---
+
+@ "Generate a thumbnail once a watermark job finishes"
+worker generate_job_thumbnail {
+  trigger queue("thumbnails")
+  retry   3 backoff(exponential, base: 1s, max: 30s)
+  timeout 2min
+
+  <- job_id uuid
+
+  |> job = fetch job(job_id)
+  |> guard job.status == "done"       -> 200 "Job not finished yet"
+  |> thumbnail_url = generate_thumbnail(job)
+  |> update job { params: { thumbnail: thumbnail_url } }
+
+  on_fail {
+    |> update job { status: "failed" }
+    |> log "Thumbnail generation failed" level(error)
+  }
 }
 
 # --- Schedules ---

@@ -1,13 +1,37 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
+
+// syncBuffer is a concurrency-safe io.Writer/String() pair, for tests that
+// poll a long-running subprocess's output while it's still writing to it
+// (plain strings.Builder/bytes.Buffer aren't safe for that under -race).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 var bpBinary string
 
@@ -990,8 +1014,8 @@ func TestDeployTargetFlyRejected(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for --target fly, got 0\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
-	if !strings.Contains(stderr, "fly is not implemented") {
-		t.Errorf("expected 'fly is not implemented' in stderr, got: %q", stderr)
+	if !strings.Contains(stderr, "not yet implemented") {
+		t.Errorf("expected 'not yet implemented' in stderr, got: %q", stderr)
 	}
 	if !strings.Contains(stderr, "production-readiness.md") {
 		t.Errorf("expected pointer to production-readiness.md, got: %q", stderr)
@@ -1188,5 +1212,437 @@ func TestMigrateHelpMentionsTarget(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "alembic") {
 		t.Errorf("migrate help should mention alembic, got: %q", stderr)
+	}
+}
+
+// --- flag parsing: equals-form, typos, missing values ---
+//
+// These pin the three empirically-observed bugs: `--target=python` silently
+// built node (equals form ignored), `--gentests` (typo) exited 0 (unknown
+// flags silently dropped), and `--out` with no following value exited 0
+// (missing value silently kept the default).
+
+func TestBuildEqualsFormTarget(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	stdout, stderr, code := runBP(t, "build", bp, "--out="+outDir, "--target=python")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "target=python") {
+		t.Errorf("expected python target in output, got: %q", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "pyproject.toml")); err != nil {
+		t.Errorf("expected pyproject.toml to exist (equals-form --target must be honored): %v", err)
+	}
+}
+
+func TestBuildUnknownFlagTypoSuggestion(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	_, stderr, code := runBP(t, "build", bp, "--out", t.TempDir(), "--gentests")
+	if code != 1 {
+		t.Errorf("expected exit 1 for typo flag, got %d (stderr=%q)", code, stderr)
+	}
+	if !strings.Contains(stderr, "unknown flag") {
+		t.Errorf("expected 'unknown flag' in stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "--gen-tests") {
+		t.Errorf("expected a 'did you mean --gen-tests' hint, got: %q", stderr)
+	}
+}
+
+func TestBuildMissingFlagValue(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	_, stderr, code := runBP(t, "build", bp, "--out")
+	if code != 1 {
+		t.Errorf("expected exit 1 for --out with no value, got %d", code)
+	}
+	if !strings.Contains(stderr, "needs a value") {
+		t.Errorf("expected 'needs a value' message, got: %q", stderr)
+	}
+}
+
+func TestBuildMissingTargetValueBeforeAnotherFlag(t *testing.T) {
+	// `--target` immediately followed by another recognized flag must not
+	// silently swallow that flag's name as the target value.
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	_, stderr, code := runBP(t, "build", bp, "--out", t.TempDir(), "--target", "--gen-tests")
+	if code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr, "needs a value") {
+		t.Errorf("expected 'needs a value' message, got: %q", stderr)
+	}
+}
+
+func TestCheckUnknownFlagRejected(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	_, stderr, code := runBP(t, "check", bp, "--jsonn")
+	if code != 1 {
+		t.Errorf("expected exit 1 for unknown flag, got %d", code)
+	}
+	if !strings.Contains(stderr, "unknown flag") {
+		t.Errorf("expected 'unknown flag' message, got: %q", stderr)
+	}
+}
+
+func TestMigrateUnknownSubcommandRejected(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	_, stderr, code := runBP(t, "migrate", bp, "genereate", "--out", t.TempDir())
+	if code != 1 {
+		t.Errorf("expected exit 1 for unknown migrate subcommand, got %d", code)
+	}
+	if !strings.Contains(stderr, "unknown migrate subcommand") {
+		t.Errorf("expected 'unknown migrate subcommand' message, got: %q", stderr)
+	}
+}
+
+// --- bp build --out foreign-directory safety ---
+
+// TestBuildRefusesForeignOutDirWithoutForce pins the "silently clobbers
+// foreign files" bug: building into a non-empty directory with no Blueprint
+// manifest must refuse and leave the foreign content untouched.
+func TestBuildRefusesForeignOutDirWithoutForce(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	foreignPath := filepath.Join(outDir, "package.json")
+	foreignContent := `{"name":"someone-elses-project"}`
+	if err := os.WriteFile(foreignPath, []byte(foreignContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, code := runBP(t, "build", bp, "--out", outDir)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit when out dir has foreign files, got 0")
+	}
+	if !strings.Contains(stderr, "--force") {
+		t.Errorf("expected stderr to mention --force, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "package.json") {
+		t.Errorf("expected stderr to list the colliding file, got: %q", stderr)
+	}
+
+	got, err := os.ReadFile(foreignPath)
+	if err != nil || string(got) != foreignContent {
+		t.Errorf("foreign package.json was modified: got=%q err=%v", string(got), err)
+	}
+}
+
+// TestBuildForceOverwritesForeignOutDir verifies --force proceeds anyway.
+func TestBuildForceOverwritesForeignOutDir(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	foreignPath := filepath.Join(outDir, "package.json")
+	foreignContent := `{"name":"someone-elses-project"}`
+	if err := os.WriteFile(foreignPath, []byte(foreignContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runBP(t, "build", bp, "--out", outDir, "--force")
+	if code != 0 {
+		t.Fatalf("expected exit 0 with --force, got %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	got, err := os.ReadFile(foreignPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) == foreignContent {
+		t.Error("expected --force to overwrite the foreign package.json with generated content")
+	}
+	if _, err := os.Stat(filepath.Join(outDir, ".blueprint", "manifest.json")); err != nil {
+		t.Errorf("expected manifest.json to exist after a forced build: %v", err)
+	}
+}
+
+// TestBuildRebuildIntoManifestDirWithoutForce verifies commands that build
+// internally (run/dev/test/migrate/deploy) keep working against their own
+// prior output — a dir bp already built into (has a manifest) never needs
+// --force, even though it's non-empty.
+func TestBuildRebuildIntoManifestDirWithoutForce(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	if _, stderr, code := runBP(t, "build", bp, "--out", outDir); code != 0 {
+		t.Fatalf("initial build failed: %s", stderr)
+	}
+	_, stderr, code := runBP(t, "build", bp, "--out", outDir)
+	if code != 0 {
+		t.Fatalf("expected rebuild into manifest-bearing dir to succeed without --force, got %d\nstderr: %s", code, stderr)
+	}
+}
+
+// TestBuildIntoEmptyOrFreshOutDirNeverRefuses covers the two other safe
+// cases: a directory that doesn't exist yet, and one that exists but is
+// empty.
+func TestBuildIntoEmptyOrFreshOutDirNeverRefuses(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+
+	t.Run("missing", func(t *testing.T) {
+		outDir := filepath.Join(t.TempDir(), "does-not-exist-yet")
+		if _, stderr, code := runBP(t, "build", bp, "--out", outDir); code != 0 {
+			t.Errorf("expected exit 0 for a fresh --out dir, got non-zero. stderr: %s", stderr)
+		}
+	})
+	t.Run("empty", func(t *testing.T) {
+		outDir := t.TempDir()
+		if _, stderr, code := runBP(t, "build", bp, "--out", outDir); code != 0 {
+			t.Errorf("expected exit 0 for an empty --out dir, got non-zero. stderr: %s", stderr)
+		}
+	})
+}
+
+// --- bp test / bp run install decision logic (needsInstall) ---
+//
+// cmdTest used to only check node_modules existence, so a node_modules
+// installed before --gen-tests was requested (e.g. by an earlier `bp run`)
+// would be considered "up to date" even though --gen-tests's package.json
+// now needs @electric-sql/pglite that install never fetched. needsInstall
+// tracks a package.json content hash to catch that case.
+
+func TestNeedsInstallMissingNodeModules(t *testing.T) {
+	dir := t.TempDir()
+	if !needsInstall(dir) {
+		t.Error("expected needsInstall=true when node_modules is absent")
+	}
+}
+
+func TestNeedsInstallSkipsWhenHashMatches(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkgPath := filepath.Join(dir, "package.json")
+	if err := os.WriteFile(pkgPath, []byte(`{"name":"x","dependencies":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !needsInstall(dir) {
+		t.Fatal("expected needsInstall=true before any hash has been recorded")
+	}
+	recordInstallHash(dir)
+	if needsInstall(dir) {
+		t.Error("expected needsInstall=false once the recorded hash matches package.json")
+	}
+}
+
+func TestNeedsInstallDetectsPackageJSONChange(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkgPath := filepath.Join(dir, "package.json")
+	if err := os.WriteFile(pkgPath, []byte(`{"name":"x","dependencies":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recordInstallHash(dir)
+	if needsInstall(dir) {
+		t.Fatal("expected needsInstall=false right after recording")
+	}
+	// Simulate --gen-tests adding a new dependency to package.json.
+	if err := os.WriteFile(pkgPath, []byte(`{"name":"x","dependencies":{"@electric-sql/pglite":"^0.2.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !needsInstall(dir) {
+		t.Error("expected needsInstall=true after package.json changed since the recorded install")
+	}
+}
+
+// TestTestCommandReinstallsWhenPackageJSONChanges is the end-to-end
+// regression: a `bp run` (no --gen-tests) installs deps into an outDir, then
+// `bp test` on the same outDir adds @electric-sql/pglite to package.json.
+// node_modules already exists from the run above, so the old "install only
+// if node_modules is absent" logic would skip install here — this is
+// exactly the cryptic pglite failure the fix addresses.
+func TestTestCommandReinstallsWhenPackageJSONChanges(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := t.TempDir()
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "bun.log")
+	bunStub := filepath.Join(binDir, "bun")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_BUN_LOG\"\n" +
+		"if [ \"$1\" = \"install\" ]; then mkdir -p node_modules; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bunStub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_BUN_LOG=" + logFile,
+	}
+
+	if _, stderr, code := runBPEnv(t, env, "run", bp, "--out", outDir); code != 0 {
+		t.Fatalf("initial run failed: %d\nstderr: %s", code, stderr)
+	}
+	if err := os.WriteFile(logFile, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runBPEnv(t, env, "test", bp, "--out", outDir)
+	if code != 0 {
+		t.Fatalf("test command failed: %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logBytes), "install") {
+		t.Errorf("expected bp test to re-run bun install after package.json changed, log: %q", string(logBytes))
+	}
+}
+
+// --- bp dev: install-if-needed + crash reporting ---
+
+// TestDevInstallsDependencies pins the "bp dev never installs dependencies"
+// bug: the initial build in a fresh outDir must trigger a bun install before
+// trying to start the server.
+func TestDevInstallsDependencies(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "todo.bp")
+	if err := os.WriteFile(src, []byte(makeTodoSource("")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "out")
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "bun.log")
+	bunStub := filepath.Join(binDir, "bun")
+	// `bun run start` exits immediately (0) so cmdDev's startNodeProcess
+	// returns promptly instead of hanging the test; we only assert install
+	// happened before the watch loop settles, then send SIGTERM to stop it.
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_BUN_LOG\"\n" +
+		"if [ \"$1\" = \"install\" ]; then mkdir -p node_modules; exit 0; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bunStub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_BUN_LOG=" + logFile,
+	}
+
+	cmd := exec.Command(bpBinary, "dev", src, "--out", outDir)
+	cmd.Env = append(os.Environ(), env...)
+	var outBuf, errBuf strings.Builder
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start bp dev: %v", err)
+	}
+	// Give it a moment to build, install, and attempt to start the server.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(logFile); err == nil && strings.Contains(string(data), "install") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	_ = cmd.Wait()
+
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("bun stub was never invoked: %v (stdout=%s stderr=%s)", err, outBuf.String(), errBuf.String())
+	}
+	if !strings.Contains(string(logBytes), "install") {
+		t.Errorf("expected bp dev to run bun install, log: %q", string(logBytes))
+	}
+}
+
+// TestDevReportsCrashedServer pins the other half of the "keeps watching
+// after the server fails to start, as if healthy" bug: when the started
+// process exits non-zero on its own (not because bp dev stopped it for a
+// rebuild), bp dev must report that explicitly instead of staying silent.
+func TestDevReportsCrashedServer(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "todo.bp")
+	if err := os.WriteFile(src, []byte(makeTodoSource("")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "out")
+	binDir := t.TempDir()
+	bunStub := filepath.Join(binDir, "bun")
+	// install succeeds, but `bun run start` crashes immediately (exit 7) —
+	// simulates a server that dies on its own right after cmd.Start() returns.
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"install\" ]; then mkdir -p node_modules; exit 0; fi\n" +
+		"if [ \"$1\" = \"run\" ] && [ \"$2\" = \"start\" ]; then exit 7; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bunStub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+
+	cmd := exec.Command(bpBinary, "dev", src, "--out", outDir)
+	cmd.Env = append(os.Environ(), env...)
+	var errBuf syncBuffer
+	cmd.Stdout = &syncBuffer{}
+	cmd.Stderr = &errBuf
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start bp dev: %v", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(errBuf.String(), "Server exited unexpectedly") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	_ = cmd.Wait()
+
+	if !strings.Contains(errBuf.String(), "Server exited unexpectedly") {
+		t.Errorf("expected bp dev to report the crashed server explicitly, stderr: %q", errBuf.String())
+	}
+}
+
+// --- bp init next-steps output ---
+
+func TestInitPrintsNextSteps(t *testing.T) {
+	tmpDir := t.TempDir()
+	cmd := exec.Command(bpBinary, "init", "steps-test")
+	cmd.Dir = tmpDir
+	var outBuf strings.Builder
+	cmd.Stdout = &outBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("bp init failed: %v", err)
+	}
+	stdout := outBuf.String()
+	for _, want := range []string{"cd steps-test", "bp check steps-test.bp", "bp run steps-test.bp", "DATABASE_URL"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected init output to mention %q, got: %q", want, stdout)
+		}
+	}
+}
+
+// --- shell completion command table coverage ---
+
+// TestCompletionScriptsIncludeAllCommands guards against the bash/zsh/fish
+// completion lists drifting out of sync with the actual command set again —
+// each script must mention every command in cliCommands, including the ones
+// that were previously missing (stats, doctor, explain, context, llms).
+func TestCompletionScriptsIncludeAllCommands(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			stdout, stderr, code := runBP(t, "completion", shell)
+			if code != 0 {
+				t.Fatalf("completion %s failed: %d\nstderr: %s", shell, code, stderr)
+			}
+			for _, cmdName := range []string{"stats", "doctor", "explain", "context", "llms", "lsp"} {
+				if !strings.Contains(stdout, cmdName) {
+					t.Errorf("%s completion missing command %q", shell, cmdName)
+				}
+			}
+		})
 	}
 }

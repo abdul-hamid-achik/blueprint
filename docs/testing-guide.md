@@ -420,6 +420,66 @@ and add hand-written `test` blocks for the behavior that matters.
 
 ---
 
+## Testing the Python Target
+
+`bp build --target python --gen-tests` emits a separate, runnable pytest suite
+backed by a real Postgres container (`testcontainers[postgresql]`) instead of
+the node target's in-memory PGlite harness — SQLite/PGlite's dialect drifts too
+far from Postgres FK/JSON/enum semantics to trust for contract-test signal, so
+the Python suite uses the real thing.
+
+```bash
+bp build my-service.bp --target python --gen-tests
+```
+
+### Suite layout
+
+```
+generated/
+  tests/
+    __init__.py
+    _harness/
+      __init__.py
+    conftest.py                # pg_container / engine / db / client fixtures
+    test_<resource>.py         # one contract test per endpoint, grouped by resource
+```
+
+`tests/conftest.py` provides four fixtures, each depending on the last:
+
+| Fixture | Scope | Purpose |
+|---------|-------|---------|
+| `pg_container` | session | Starts one `PostgresContainer("postgres:16-alpine")` for the whole run |
+| `engine` | session | A SQLAlchemy engine pointed at the container, with `Base.metadata.create_all` run once (bypasses Alembic so the suite is hermetic) |
+| `db` | function | A `Session` that `TRUNCATE`s every table before each test, for isolation |
+| `client` | function | A FastAPI `TestClient` with `get_db` overridden via `app.dependency_overrides` so every route uses the test session |
+
+Each generated `test_<resource>.py` case follows the same contract as the node
+suite: it seeds any FK parents a path param needs, sends the request, and
+asserts the response status is one of the statuses the endpoint (and its
+guards) can declare — deliberately lenient, the same "route stopped responding
+entirely" safety net described above.
+
+### Requirements and running it
+
+- **Docker is required** — `pg_container` needs a running Docker daemon to
+  start the Postgres container.
+- Run with:
+
+  ```bash
+  cd generated
+  uv sync && uv run pytest
+  ```
+
+### `bp test` is node-only
+
+Unlike `bp build`, which accepts `--target` for both `--gen-tests` paths,
+**`bp test` has no `--target` flag at all** — it always builds and runs the
+node/Vitest path. To run the Python suite, use `bp build --target python
+--gen-tests` followed by `uv run pytest` directly as shown above; there is no
+`bp test --target python` shortcut today.
+
+---
+
 ## Running Tests
 
 ### Run All Tests

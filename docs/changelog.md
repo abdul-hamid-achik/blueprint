@@ -4,9 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-16
+
+Adds a third codegen target (an Effect-TS scaffold), a one-shot agent/LLM guide command (`bp llms`), two codegen correctness fixes (duplicate `pgEnum`, transactional `try/recover`), a generator-interface refactor that exposes `Files()`, and a full documentation accuracy + learnability pass (the VitePress site builds with every `.bp` snippet `bp check`-clean and zero dead links).
+
 ### Added
 
-- **`bp context [topic] [--format md|json]`** — agent-facing language + CLI surface, embedded into the binary. With no topic, prints a synthesized full surface (version, command index, codegen target list, topic catalogue) modeled on `cairntrace`'s `cairn explain`. With a topic, prints focused docs for one of eight curated topics: `overview`, `language`, `cli`, `codegen`, `targets`, `errors`, `workflow`, `examples`. Each topic is a hand-written Markdown file under `internal/agentctx/topics/` (embedded via `go:embed`), kept short and scannable so agents can bootstrap on Blueprint in one or two reads. JSON output is structured under the URN `urn:blueprint.dev:context:v1` with parsed sections + fenced-code examples for tooling consumers. Self-contained — works offline, no network access required. Mirrors the pattern of `bp explain <code>` (which prints one error code's docs) but covers language + CLI rather than diagnostics.
+- **`bp llms [--out <file>]`** — prints the complete agent/LLM onboarding guide in one self-contained document: a framing preamble, the live CLI command surface, the codegen target list, and every `bp context` topic concatenated in reading order. `--out` writes an `llms.txt`. Assembled from `internal/agentctx`, so it always reflects the real binary. Complements `bp context <topic>` (one slice) and `bp explain <code>` (one error code).
+
+- **`--target effect` (experimental scaffold)** — a new `internal/codegen/effect/` generator emitting an Effect-TS (`@effect/platform` HttpApi + `Schema` + `@effect/sql`) project shell and a `Config`-based secrets module, wired into `bp build` and `bp diff`. Model/endpoint emit is in design; unsupported constructs are rejected with a clear, actionable message (the Python-target staging pattern). Opt-in, not the default — `node` stays default. The generator contract every target satisfies is now documented in `docs/multi-target-codegen.md`.
+
+- **`docs/multi-target-codegen.md` rewritten as the authoritative generator contract** — the `Files()` interface, `OutputFile`/`UserOwned`, the manifest writer, the `resolve` IR surface, `common` helpers, the `unsupportedFeatures` degradation pattern, and an add-a-target checklist. New `CLAUDE.md` + an `AGENTS.md` convention note record that `docs/` is the published website (blueprint-lang.dev) and internal notes belong outside it.
+
+- **`bp context [topic] [--format md|json]`** — agent-facing language + CLI surface, embedded into the binary. With no topic, prints a synthesized full surface (version, command index, codegen target list, topic catalogue) modeled on `cairntrace`'s `cairn explain`. With a topic, prints focused docs for one of eight curated topics: `overview`, `language`, `cli`, `codegen`, `targets`, `errors`, `workflow`, `examples`. Each topic is a hand-written Markdown file under `internal/agentctx/topics/` (embedded via `go:embed`), kept short and scannable so agents can bootstrap on Blueprint in one or two reads. JSON output is structured under the URN `urn:blueprint.dev:context:v1` with parsed sections + fenced-code examples for tooling consumers. Self-contained — works offline, no network access required. Mirrors the pattern of `bp explain <code>` (which prints one error code's docs) but covers language + CLI rather than diagnostics. The `effect` target and the `try/recover` transaction behavior are now reflected in the embedded topics.
+
+### Changed
+
+- **Codegen `Generator` interface exposes `Files(*ast.File) ([]OutputFile, error)`** alongside `Generate(file, outDir) error`. Emit logic is now pure and unit-testable without a temp dir (`TestFilesNoDisk`); `Generate` is a thin `Files` + `WriteOutputFiles` wrapper in every target. This de-risks adding the Effect/Go/Ruby targets. JS and Python generators both updated.
+
+- **`try/recover` (node target) wraps multi-write bodies in a DB transaction.** A `try` body with ≥2 data mutations and no in-body `guard`/output now emits `await db.transaction(async (tx) => { … })`, so partial writes roll back if a later step throws. Single-write bodies and bodies that return mid-block are unchanged (a `return` inside a transaction callback would commit partial state). `examples/ecommerce-api.bp` updated so `recover` compensates only for external effects (the DB rolls back on its own); generated TS still `tsc`-passes. External side effects inside a `try` body are not transactional.
+
+- **`bp version` displays `0.11.0`** (was `0.10.0`).
+
+- **Documentation accuracy + learnability pass** across the VitePress site, driven by a multi-agent audit that ran the real CLI. Getting Started no longer crashes a new user (it now does DB setup + lists Bun as a prerequisite + leads with the `bp run`/`bp migrate` happy path); example snippets that failed `bp check` are fixed (undeclared `fn`s, an invalid `-> skip` guard target) and a "Calling your own code (`fn`)" section draws the builtin-vs-user-function line; the package registry page is flagged design-only (its commands don't ship yet); `roadmap.md`/`changelog.md` are reconciled with shipped reality; and the three-target story is threaded through `index`/`faq`/`deployment`/`testing-guide`/`architecture`/`generated-output`. Every `.bp` snippet in the docs is now `bp check`-clean and the site builds with zero dead links.
+
+### Fixed
+
+- **Duplicate `pgEnum` name collision (node target).** A declared `enum` plus an inline `enum(...)` with identical variants previously emitted two `pgEnum` consts sharing one Postgres type name → a duplicate `CREATE TYPE` that collides in a drizzle-kit migration. pgEnums are now registered by type name: an inline enum matching a declared enum reuses it, differing variants disambiguate to `<model>_<field>`, and inline-enum emission is now deterministic (was map-iteration order).
 
 ## [0.10.0] - 2026-05-29
 

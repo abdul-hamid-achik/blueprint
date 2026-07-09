@@ -290,16 +290,18 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			}
 			return "/* leave room: missing argument */"
 		case "broadcast":
-			// WS built-in: broadcast room(id) { data } — send data to all connections in room
+			// WS built-in: broadcast room(id) { data } — send data to all connections in room.
+			// Guard on readyState === 1 (OPEN): dead sockets linger in _rooms until their
+			// onClose fires, and writing to a closing/closed socket throws.
 			if len(v.Args) >= 2 {
 				arg := resolveWsRoomArg(v.Args[0], ctx)
 				data := exprToJSWithCtx(v.Args[1], ctx)
 				// Iterate over all ws connections in the room and send the data
-				return fmt.Sprintf("(async () => { for (const _ws of _rooms.get(%s) ?? []) { _ws.send(JSON.stringify(%s)); } })()", arg, data)
+				return fmt.Sprintf("(async () => { for (const _ws of _rooms.get(%s) ?? []) { if (_ws.readyState === 1) _ws.send(JSON.stringify(%s)); } })()", arg, data)
 			}
 			if len(v.Args) >= 1 {
 				arg := resolveWsRoomArg(v.Args[0], ctx)
-				return fmt.Sprintf("(async () => { for (const _ws of _rooms.get(%s) ?? []) { _ws.send('{}'); } })()", arg)
+				return fmt.Sprintf("(async () => { for (const _ws of _rooms.get(%s) ?? []) { if (_ws.readyState === 1) _ws.send('{}'); } })()", arg)
 			}
 			return "/* broadcast: missing arguments */"
 		case "emit":

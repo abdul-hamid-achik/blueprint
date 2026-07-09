@@ -21,6 +21,15 @@ export function on(event: string, handler: EventHandler) {
   if (!subscriptions[event]) subscriptions[event] = [];
   subscriptions[event].push(handler);
 }
+// off() removes a previously registered handler — callers that subscribe
+// per-connection (e.g. STREAM/SSE routes) must unsubscribe on disconnect or
+// the handler list grows without bound for the lifetime of the process.
+export function off(event: string, handler: EventHandler) {
+  const handlers = subscriptions[event];
+  if (!handlers) return;
+  const idx = handlers.indexOf(handler);
+  if (idx !== -1) handlers.splice(idx, 1);
+}
 export async function emit(event: string, data: unknown) {
   for (const handler of subscriptions[event] ?? []) {
     await handler(data);

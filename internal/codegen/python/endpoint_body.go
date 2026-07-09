@@ -27,6 +27,33 @@ type bodyCtx struct {
 	fkAliases   map[string]string // "var.field" -> Python alias (e.g. "_product")
 	models      []*ast.Model      // for FK resolution
 	userFns     map[string]bool   // declared fn/pipe names (for step-call dispatch)
+
+	// orderedBindings lists every binding->model fact in source declaration
+	// order (middleware-injected aliases first, then facts.DataOps). Used by
+	// emitUpdate/emitDelete to resolve an `update <model>`/`delete <model>`
+	// reference (the target is a model name, not a binding) to the last
+	// binding declared for that model — deterministically, instead of
+	// picking an arbitrary same-model binding via Go map iteration.
+	orderedBindings []resolve.StepFact
+
+	// touchesDB mirrors endpointTouchesDB(ep) — computed once so
+	// emitTryRecover can decide whether an unwrapped except branch still
+	// needs a defensive db.rollback() (a failed flush/commit anywhere in the
+	// handler leaves the SQLAlchemy session unusable until rolled back).
+	touchesDB bool
+
+	// inTxn is set while emitting statements inside a try body that
+	// emitTryRecover wrapped in `with db.begin_nested():`. save/update/
+	// delete/map emit db.flush() instead of db.commit() so the nested
+	// transaction isn't ended early (flush still populates PKs for the
+	// following db.refresh()).
+	inTxn bool
+
+	// inRecover is set while emitting a recover body's statements. Python
+	// exceptions have no `.message` attribute, so exprToPyWithCtx and the
+	// f-string interpolation path rewrite `error.message` to `str(error)`
+	// only within this scope.
+	inRecover bool
 }
 
 func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
@@ -38,6 +65,7 @@ func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
 		fkAliases:   map[string]string{},
 		models:      g.models(),
 		userFns:     g.userFnNames(),
+		touchesDB:   endpointTouchesDB(ep),
 	}
 	for _, s := range ep.Stmts {
 		if in, ok := s.(*ast.InputStmt); ok {
@@ -59,6 +87,7 @@ func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
 		model := findInjectedModel(mw)
 		if alias != "" && model != "" {
 			c.varModel[alias] = model
+			c.orderedBindings = append(c.orderedBindings, resolve.StepFact{Name: alias, Model: model})
 		}
 	}
 	facts := resolve.ResolveBlock(ep.Stmts)
@@ -66,11 +95,27 @@ func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
 		c.varModel[f.Name] = f.Model
 		c.cardinality[f.Name] = f.Cardinality
 	}
+	c.orderedBindings = append(c.orderedBindings, facts.DataOps...)
 	for _, f := range facts.MapResults {
 		c.varModel[f.Name] = f.Model
 		c.cardinality[f.Name] = f.Cardinality
 	}
 	return c
+}
+
+// lastBindingForModel returns the most recently declared (in source order)
+// binding name for the given model, per ctx.orderedBindings. Returns
+// ok=false when no binding for that model was ever declared.
+func lastBindingForModel(ctx *bodyCtx, model string) (string, bool) {
+	name := ""
+	found := false
+	for _, f := range ctx.orderedBindings {
+		if f.Model == model {
+			name = f.Name
+			found = true
+		}
+	}
+	return name, found
 }
 
 // emitBody writes the body of an endpoint handler — every statement after
@@ -301,8 +346,21 @@ func emitSave(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx, 
 	v := bindingOrPlaceholder(binding, "_saved")
 	fmt.Fprintf(b, "%s%s = schema.%s(%s)\n", indent, v, className, kwargs)
 	fmt.Fprintf(b, "%sdb.add(%s)\n", indent, v)
-	fmt.Fprintf(b, "%sdb.commit()\n", indent)
+	emitCommitOrFlush(b, ctx, indent)
 	fmt.Fprintf(b, "%sdb.refresh(%s)\n", indent, v)
+}
+
+// emitCommitOrFlush writes `db.commit()`, or `db.flush()` when the caller is
+// emitting inside a try body that emitTryRecover wrapped in
+// `with db.begin_nested():` (ctx.inTxn) — flush keeps db.refresh() working
+// (it populates PKs against the open transaction) without ending the nested
+// transaction early; the wrapper commits once after the whole body succeeds.
+func emitCommitOrFlush(b *strings.Builder, ctx *bodyCtx, indent string) {
+	if ctx.inTxn {
+		fmt.Fprintf(b, "%sdb.flush()\n", indent)
+		return
+	}
+	fmt.Fprintf(b, "%sdb.commit()\n", indent)
 }
 
 // emitFetch: `binding = fetch M(id)` → binding = db.get(schema.M, id)
@@ -453,13 +511,13 @@ func emitUpdate(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx
 		return
 	}
 	target := identName(fn.Args[0])
-	if v, ok := ctx.varModel[target]; ok {
-		// `update foo {...}` where foo is a known model — find the var bound to it.
-		for varName, m := range ctx.varModel {
-			if m == v {
-				target = varName
-				break
-			}
+	if _, isBinding := ctx.varModel[target]; !isBinding {
+		// `target` isn't itself a bound variable — it's a model name
+		// (`update account { ... }`). Resolve to the last binding declared
+		// for that model, in source order (deterministic; see
+		// bodyCtx.orderedBindings).
+		if resolved, ok := lastBindingForModel(ctx, target); ok {
+			target = resolved
 		}
 	}
 	// If the caller bound the result to a new name, alias it to the same
@@ -475,7 +533,7 @@ func emitUpdate(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx
 			}
 		}
 	}
-	fmt.Fprintf(b, "%sdb.commit()\n", indent)
+	emitCommitOrFlush(b, ctx, indent)
 	fmt.Fprintf(b, "%sdb.refresh(%s)\n", indent, target)
 }
 
@@ -486,13 +544,11 @@ func emitDelete(b *strings.Builder, fn *ast.FnCall, ctx *bodyCtx, indent string)
 		return
 	}
 	target := identName(fn.Args[0])
-	if _, isModel := ctx.varModel[target]; !isModel {
-		// `target` is a model name; look up the bound var.
-		for varName, m := range ctx.varModel {
-			if m == target {
-				target = varName
-				break
-			}
+	if _, isBinding := ctx.varModel[target]; !isBinding {
+		// `target` is a model name; look up the last-declared binding for it,
+		// in source order (deterministic; see bodyCtx.orderedBindings).
+		if resolved, ok := lastBindingForModel(ctx, target); ok {
+			target = resolved
 		}
 	}
 	// SQLAlchemy's db.delete() only accepts a mapped instance, not a list,
@@ -504,7 +560,7 @@ func emitDelete(b *strings.Builder, fn *ast.FnCall, ctx *bodyCtx, indent string)
 	} else {
 		fmt.Fprintf(b, "%sdb.delete(%s)\n", indent, target)
 	}
-	fmt.Fprintf(b, "%sdb.commit()\n", indent)
+	emitCommitOrFlush(b, ctx, indent)
 }
 
 // emitMap translates `|> result = map coll: save M { ... }` (bound) or
@@ -603,7 +659,7 @@ func emitMap(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx, i
 		fmt.Fprintf(b, "%s_row = schema.%s(%s)\n", inner, className, kwargs)
 		fmt.Fprintf(b, "%sdb.add(_row)\n", inner)
 		fmt.Fprintf(b, "%s%s.append(_row)\n", inner, result)
-		fmt.Fprintf(b, "%sdb.commit()\n", indent)
+		emitCommitOrFlush(b, ctx, indent)
 		fmt.Fprintf(b, "%sfor _row in %s:\n", indent, result)
 		fmt.Fprintf(b, "%sdb.refresh(_row)\n", inner)
 		// Track the result name's model + cardinality so subsequent steps
@@ -703,7 +759,7 @@ func emitMap(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx, i
 				}
 			}
 		}
-		fmt.Fprintf(b, "%sdb.commit()\n", indent)
+		emitCommitOrFlush(b, ctx, indent)
 
 	default:
 		fmt.Fprintf(b, "%s# TODO(python): unsupported map body op %q\n", indent, bodyFn.Name)
@@ -771,27 +827,142 @@ func inlineWhenStatement(e ast.Expr, ctx *bodyCtx) string {
 
 // emitTryRecover translates the block form `try { ... } recover { ... }` into
 // a Python try/except. The recover body can reference `error` (bound by the
-// `as error` clause). SQLAlchemy doesn't auto-rollback on exceptions when the
-// try body already committed a partial state — see BACKLOG Phase 3d for the
-// partial-commit caveat.
+// `as error` clause; Python exceptions have no `.message`, so `error.message`
+// is rewritten to `str(error)` — see exprToPyWithCtx/pyStringLiteralWithCtx).
+//
+// A try body with >=2 mutations and no guard/output (mirrors js/generator.go's
+// tryBodyNeedsTransaction) is wrapped in `with db.begin_nested():` so a later
+// failure rolls back the partial writes instead of leaving them committed:
+//
+//	try:
+//	    with db.begin_nested():
+//	        <body with db.flush() instead of db.commit()>
+//	    db.commit()
+//	except HTTPException:            # only when the try body has guards
+//	    raise
+//	except Exception as error:
+//	    db.rollback()
+//	    <recover body>
+//
+// A failed commit/flush leaves the SQLAlchemy session unusable until rolled
+// back, so db.rollback() also leads the except branch for unwrapped
+// try/recover whenever the endpoint touches the DB at all.
 func emitTryRecover(b *strings.Builder, s *ast.TryRecover, ctx *bodyCtx, indent string) {
 	inner := indent + "    "
+	wrap := tryBodyNeedsTransaction(s.Try)
 	fmt.Fprintf(b, "%stry:\n", indent)
-	if len(s.Try) == 0 {
+	switch {
+	case len(s.Try) == 0:
 		fmt.Fprintf(b, "%spass\n", inner)
-	} else {
+	case wrap:
+		fmt.Fprintf(b, "%swith db.begin_nested():\n", inner)
+		txnCtx := *ctx
+		txnCtx.inTxn = true
+		nested := inner + "    "
+		for _, stmt := range s.Try {
+			emitBodyStmt(b, stmt, &txnCtx, nested)
+		}
+		fmt.Fprintf(b, "%sdb.commit()\n", inner)
+	default:
 		for _, stmt := range s.Try {
 			emitBodyStmt(b, stmt, ctx, inner)
 		}
 	}
+
+	// A guard inside the try body raises HTTPException; without this clause
+	// the generic `except Exception` below would swallow it and turn a
+	// declared status (e.g. 402) into the recover branch's response.
+	if stmtsHaveGuards(s.Try) {
+		fmt.Fprintf(b, "%sexcept HTTPException:\n", indent)
+		fmt.Fprintf(b, "%sraise\n", inner)
+	}
+
 	fmt.Fprintf(b, "%sexcept Exception as error:\n", indent)
+	emittedInExcept := false
+	if ctx.touchesDB {
+		fmt.Fprintf(b, "%sdb.rollback()\n", inner)
+		emittedInExcept = true
+	}
 	if len(s.Recover) == 0 {
-		fmt.Fprintf(b, "%spass\n", inner)
+		if !emittedInExcept {
+			fmt.Fprintf(b, "%spass\n", inner)
+		}
 		return
 	}
+	recoverCtx := *ctx
+	recoverCtx.inRecover = true
 	for _, stmt := range s.Recover {
-		emitBodyStmt(b, stmt, ctx, inner)
+		emitBodyStmt(b, stmt, &recoverCtx, inner)
 	}
+}
+
+// tryBodyNeedsTransaction reports whether a `try` body should be wrapped in a
+// `with db.begin_nested():` block so that partial writes roll back if a later
+// step in the body fails. Mirrors js/generator.go's Option A wrap: wrap only
+// when the body performs >=2 mutations (a single write is already atomic)
+// and contains no guard/output statement — a guard raises and an output
+// returns before the wrapping `db.commit()` would run, so those bodies are
+// left as a bare try/except instead.
+func tryBodyNeedsTransaction(stmts []ast.ArrowStmt) bool {
+	return countMutations(stmts) >= 2 && !stmtsReturnOrGuard(stmts)
+}
+
+// countMutations counts save/update/delete data ops (including those inside a
+// `map` body or a `when` block) within stmts. Mirrors js/generator.go.
+func countMutations(stmts []ast.ArrowStmt) int {
+	n := 0
+	for _, s := range stmts {
+		switch v := s.(type) {
+		case *ast.StepStmt:
+			if isMutationExpr(v.Expr) {
+				n++
+			}
+		case *ast.WhenStmt:
+			n += countMutations(v.Body)
+		case *ast.TryRecover:
+			n += countMutations(v.Try) + countMutations(v.Recover)
+		}
+	}
+	return n
+}
+
+func isMutationExpr(e ast.Expr) bool {
+	fn, ok := e.(*ast.FnCall)
+	if !ok {
+		return false
+	}
+	switch fn.Name {
+	case "save", "update", "delete":
+		return true
+	case "map":
+		if len(fn.Args) >= 2 {
+			return isMutationExpr(fn.Args[1])
+		}
+	}
+	return false
+}
+
+// stmtsReturnOrGuard reports whether stmts contains a statement that would
+// exit the wrapped block early (an output `->` or a `guard`), recursing into
+// `when` blocks. Mirrors js/generator.go's stmtsReturn.
+func stmtsReturnOrGuard(stmts []ast.ArrowStmt) bool {
+	for _, s := range stmts {
+		switch v := s.(type) {
+		case *ast.OutputStmt:
+			return true
+		case *ast.GuardStmt:
+			return true
+		case *ast.WhenStmt:
+			if stmtsReturnOrGuard(v.Body) {
+				return true
+			}
+		case *ast.TryRecover:
+			if stmtsReturnOrGuard(v.Try) || stmtsReturnOrGuard(v.Recover) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // emitGuard: `guard <cond> -> NNN "msg"` → `if not (<cond>): raise HTTPException(...)`
@@ -856,6 +1027,14 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 	case *ast.Ident:
 		return v.Name
 	case *ast.FieldAccess:
+		// Python exceptions have no `.message` attribute (unlike JS Error);
+		// `str(error)` is the portable equivalent. Only rewrite inside a
+		// recover scope — `error` isn't bound anywhere else.
+		if ctx.inRecover && v.Field == "message" {
+			if baseIdent, ok := v.Base.(*ast.Ident); ok && baseIdent.Name == "error" {
+				return "str(error)"
+			}
+		}
 		// `header.X` in middleware context maps to the snake-cased FastAPI
 		// Header parameter (e.g. `header.Authorization` → `authorization`).
 		// We don't gate this on a middleware-only flag because endpoint
@@ -900,12 +1079,19 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 // pyStringLiteralWithCtx is pyStringLiteral with FK-alias rewriting applied
 // to `{var.field.x}` interpolations. e.g. `"Stock {product.stock}"` is left
 // alone, but `"Bought {item.product.name}"` becomes `f"Bought {_product.name}"`
-// when `_product` is an active FK alias.
+// when `_product` is an active FK alias. Inside a recover scope, `{error.message}`
+// is rewritten to `{str(error)}` — Python exceptions have no `.message`.
 func pyStringLiteralWithCtx(s string, ctx *bodyCtx) string {
-	if !strings.Contains(s, "{") || ctx == nil || len(ctx.fkAliases) == 0 {
+	if !strings.Contains(s, "{") || ctx == nil {
 		return pyStringLiteral(s)
 	}
 	out := s
+	if ctx.inRecover {
+		out = strings.ReplaceAll(out, "{error.message}", "{str(error)}")
+	}
+	if len(ctx.fkAliases) == 0 {
+		return pyStringLiteral(out)
+	}
 	// Apply rewrites in a deterministic order so two builds emit the same
 	// text — map iteration would break idempotency.
 	keys := make([]string, 0, len(ctx.fkAliases))

@@ -23,10 +23,36 @@ lean on instead of re-deriving.
 | Ruby | `--target ruby` | 🗺️ Planned | TBD (Rails API / Roda) |
 | TypeScript on Effect | `--target effect` | 🧱 Scaffold (emits the project shell + a `Config` secrets module; endpoint/model emit is the long tail) | `@effect/platform` HttpApi + `@effect/schema` + `@effect/sql` |
 
-Target selection is the **`--target` flag** on `bp build` / `bp diff` /
-`bp migrate` / `bp deploy` (default `node`). Note `bp test` has no `--target` —
-it runs the node Vitest suite. It is distinct from the `runtime` entry inside the `blueprint`
-block, which is a *node-target* concern (e.g. `node` vs other JS runtimes).
+Target selection is the **`--target` flag**, but not every command accepts the
+same set of values — see [Per-command target dispatch](#per-command-target-dispatch)
+below. In short: `bp build` and `bp diff` accept `node` (default), `python`, or
+`effect`; `bp migrate` accepts `node` (default) or `python` only; `bp test` has
+no `--target` at all — it always runs the node Vitest suite; and `bp deploy`'s
+`--target` flag is a *different* concept entirely — a deploy target (`docker`,
+with `fly` not yet implemented) — `bp deploy` always builds the node codegen
+target internally. `--target` is also distinct from the `runtime` entry inside
+the `blueprint` block, which is a *node-target* concern (e.g. `node` vs other
+JS runtimes).
+
+## Per-command target dispatch
+
+Verified against `resolveTarget` and each command's dispatch switch in
+`cmd/bp/main.go`:
+
+| Command | `node` | `python` | `effect` | Notes |
+|---------|--------|----------|----------|-------|
+| `bp build` | ✅ default | ✅ | ✅ (scaffold) | `--react-query`/`--frontend-only` are node-only |
+| `bp diff` | ✅ default | ✅ | ✅ (scaffold) | must match the target the `--out` dir was built with |
+| `bp migrate` | ✅ default (`drizzle-kit`) | ✅ (`alembic` via `uv`) | ⚠️ accepted by flag parsing but **not dispatched** — silently falls through to the drizzle-kit path and fails with a confusing `drizzle.config.json` error. Don't pass `--target effect` here; this is a known gap, not a supported combination | |
+| `bp deploy` | always builds node internally | n/a | n/a | `--target` here means something else entirely — see below |
+| `bp test` | always (hardcoded) | n/a | n/a | no `--target` flag exists on this command |
+| `bp check` / `bp lint` / `bp fmt` / `bp docs` | target-agnostic | target-agnostic | target-agnostic | these operate on the parsed/checked AST only; no codegen involved |
+
+**`bp deploy --target` is not a codegen target.** It selects a *deploy* target
+(`docker` today; `fly` is parsed but exits with "not yet implemented").
+`bp deploy` always builds the node codegen target internally before handing
+off to Docker — there is currently no way to deploy a python- or
+effect-generated project through `bp deploy`.
 
 ## The interface
 
@@ -63,6 +89,26 @@ Assert the implementation at the bottom of your generator:
 ```go
 var _ codegen.Generator = (*Generator)(nil)
 ```
+
+### The `--gen-tests` builder convention
+
+Options that change what a target emits (not what AST it reads) are chainable
+`With*` methods on the `New()`-constructed `*Generator`, mutating a private
+field and returning `g` so callers can compose them fluently:
+
+```go
+gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly).WithGenTests(genTests)
+gen := pythongen.New().WithGenTests(genTests)
+```
+
+`WithGenTests(true)` is the one every target is expected to support — it's how
+`bp build --gen-tests` (and `bp test`, which always enables it) turns on the
+auto-generated contract-test suite for that target: an in-memory PGlite-backed
+Vitest suite for node, a `testcontainers[postgresql]`-backed pytest suite for
+python. `WithReactQuery`/`WithFrontendOnly` are node-only today — a new target
+only needs to add the options it actually has a behavior for; there's no
+required interface beyond `Generator` itself, so an option with no effect for
+your target simply shouldn't exist rather than being a silent no-op.
 
 ## OutputFile and what the writer does for you
 
@@ -205,6 +251,22 @@ is wrong even if it compiles:
 - **Intent (`@ "..."`)** is an AST node, not a comment — surface it as a doc
   comment in generated output where natural.
 
+## Exit-code contract
+
+`cmd/bp/main.go` uses the same four exit codes across every command, and a new
+target's wiring must keep respecting them (`resolveTarget` + each command's
+dispatch `switch` follow this already — match it for any new case you add):
+
+| Code | Meaning | Where it comes from for codegen |
+|------|---------|----------------------------------|
+| `0` | Success | `Generate`/`Files` returned no error and `WriteOutputFiles` succeeded |
+| `1` | Validation error | Parse or `checker.Check` errors — never reaches your generator |
+| `2` | Environment/file error | Unknown/malformed `--target`, unreadable input file, output-directory safety check failed |
+| `4` | Codegen error | Your target's `Files`/`Generate` returned a non-nil error (e.g. `unsupportedFeatures()` rejected a construct) |
+
+A target should never need a different code: an AST that fails to check never
+reaches `Files`, and everything your generator itself rejects is a `4`.
+
 ## Adding a new target — checklist
 
 1. Create `internal/codegen/<target>/` with a `Generator` struct and `New()`.
@@ -214,8 +276,11 @@ is wrong even if it compiles:
    `internal/codegen/common` for naming. Do not re-derive.
 4. Mark developer-editable scaffolds `UserOwned: true`.
 5. Add an `unsupportedFeatures()` gate for the long tail you don't cover yet.
-6. Wire the target into the `--target` dispatch in `cmd/bp/main.go` (build,
-   diff, migrate, deploy — `bp test` has no `--target`).
+6. Wire the target into the `--target` dispatch in `cmd/bp/main.go` for `bp
+   build` and `bp diff` (and `bp migrate` if your target has a migration
+   story). `bp deploy`'s `--target` is a separate deploy-target concept, not
+   a codegen target, and `bp test` has no `--target` at all — see
+   [Per-command target dispatch](#per-command-target-dispatch).
 7. Add a generator test that asserts on `Files()` output (no temp dir) plus an
    end-to-end build of an example; gate it in CI like the existing targets.
 8. Update this table and the BACKLOG.

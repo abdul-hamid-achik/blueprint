@@ -18,9 +18,9 @@ Blueprint has a usable core: lexer, parser, semantic checker, multi-target codeg
 
 Also shipped beyond the original milestones:
 
-- **`bp deploy`** — builds and smoke-runs a Docker image (`--target docker` default; `fly` reserved for v0.11).
+- **`bp deploy`** — builds and smoke-runs a Docker image (`--target docker` default; `fly` not yet implemented).
 - **LSP server** (`bp lsp`, `internal/lsp/`) — diagnostics, go-to-definition, and context-aware hover. Autocomplete, intent-hover, and a bundled VS Code extension are still open (see Quick Wins).
-- **Multi-target codegen** — three `--target`s on `bp build`/`diff`/`migrate`/`deploy`: **node** (default), **python** (FastAPI + SQLAlchemy + Alembic), and **effect** (early scaffold).
+- **Multi-target codegen** — three `--target`s on `bp build`/`diff` (`bp migrate` supports `node`/`python` only): **node** (default), **python** (FastAPI + SQLAlchemy + Alembic), and **effect** (early scaffold). `bp deploy` has its own, unrelated `--target` (a deploy target: `docker`, with `fly` not yet implemented) and always builds the node codegen target internally.
 - **`bp diff`** and **`bp eject`** — preview generated changes (with `--apply`/`--exit-code`) and strip Blueprint markers for a clean standalone project.
 
 REST services, models, middleware, pipes, functions, schedules, external calls, and generated Vitest tests are the most mature path. The Docker deploy path and the LSP server are usable today; STREAM, WebSocket, workers, and subscriptions are available but should be treated as preview until the gaps below are closed.
@@ -61,7 +61,7 @@ High-impact improvements that can be done in days, not weeks.
 
 ### `bp deploy` — more targets
 
-**Status:** Shipped for Docker. `bp deploy <file.bp>` builds and smoke-runs a Docker image (`--target docker` is the default; `fly` is reserved for v0.11).
+**Status:** Shipped for Docker. `bp deploy <file.bp>` builds and smoke-runs a Docker image (`--target docker` is the default; `fly` is not yet implemented).
 
 **What's still open:**
 - Wire up the reserved `--target fly` (build + push image + deploy)
@@ -85,7 +85,7 @@ Medium-effort features that expand Blueprint's reach.
 
 ### Multi-Target Codegen — more targets
 
-**Status:** Three targets ship today via the `Generator` interface in `internal/codegen/` (`--target` on `bp build`/`diff`/`migrate`/`deploy`): **node** (default — Hono + Drizzle + Zod), **python** (`--target python` — FastAPI + SQLAlchemy + Alembic, via `internal/codegen/python/`), and **effect** (`--target effect` — an early TypeScript-on-Effect scaffold). See [Multi-Target Codegen](/multi-target-codegen) for the contract every generator satisfies.
+**Status:** Three targets ship today via the `Generator` interface in `internal/codegen/` (`--target` on `bp build`/`diff`; `bp migrate` accepts `node`/`python` only; `bp deploy`'s `--target` is a separate deploy-target concept and always builds node internally): **node** (default — Hono + Drizzle + Zod), **python** (`--target python` — FastAPI + SQLAlchemy + Alembic, via `internal/codegen/python/`), and **effect** (`--target effect` — an early TypeScript-on-Effect scaffold). See [Multi-Target Codegen](/multi-target-codegen) for the contract every generator satisfies.
 
 **Targets still to consider:**
 - **Go/Chi or Gin** — for teams that want Go output

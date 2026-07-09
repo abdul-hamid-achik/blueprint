@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+A correctness-and-hardening batch driven by a 7-dimension audit (2026-07-09): two silent data-corruption bugs in the Python target, workers/schedules made functional end-to-end on the node target, WS/STREAM transport hardening, strict CLI flag parsing with output-directory safety, and a docs accuracy pass.
+
+### Fixed
+
+- **Python target: `update`/`delete` resolved the wrong target variable.** An inverted condition in `emitUpdate` remapped an already-bound variable to an *arbitrary* same-model binding via nondeterministic map iteration — a two-account transfer endpoint wrote the credit to the wrong account in ~11/12 builds and broke build idempotency; `update <model>` with a differently-named binding emitted a Python `NameError`. Target resolution now uses the binding directly when bound and otherwise picks the last preceding binding for the model from the ordered resolve facts (deterministic). Regression tests run the generator 20× to pin determinism.
+
+- **Python target: `try/recover` now compiles to a real transaction.** Multi-write try bodies (≥2 mutations, no in-body guard/output — same predicate as the node target) wrap in `with db.begin_nested():` with `db.flush()` per mutation and a single `db.commit()` after the block, so partial writes roll back on failure. `db.rollback()` now leads every recover branch that touches the DB (previously a failed commit left the session invalidated and any recover-body data op raised `PendingRollbackError`), `get_db()` rolls back on exception as defense in depth, guards inside `try` re-raise `HTTPException` instead of being swallowed into the recover branch (a declared 402 no longer becomes a 500), and `error.message` in recover bodies emits `str(error)` (Python exceptions have no `.message`).
+
+- **Node target: generated workers now compile and run correctly.** Worker inputs are destructured from the BullMQ job payload in both the handler and `on_fail`, async `impl` functions are awaited (jobs were previously marked done before the work ran, and failures never reached `on_fail`/retry), worker guards compile to log-and-return (no more unimported `BpError` throw), and `on_fail` bodies resolve their bindings. Backoff strategy is emitted as a quoted string (was a bare identifier that failed `tsc`), and `on_fail` fires only on the final retry attempt.
+
+- **Node target: schedules actually execute.** `bp build` previously enqueued repeatable BullMQ jobs that nothing consumed — cron handlers were dead code at runtime. `src/index.ts` now emits a `new Worker('scheduler', …)` consumer dispatching each schedule by job name.
+
+- **Node target: `REDIS_URL`/`DATABASE_URL` are auto-added to the generated env schema** when workers/schedules/queue (or the database) require them — worker and schedule projects previously failed `tsc` unless the user hand-declared infra secrets. `.env.example` documents them. Worker/scheduler startup also moved inside the `!process.env.VITEST` guard so generated test suites no longer open real Redis connections.
+
+- **Node target: WS/STREAM transport hardening.** A thrown error in a generated WS handler (a failing guard, malformed client JSON, a DB error) previously crashed the whole server via an unhandled rejection — handler bodies and the client-controlled `JSON.parse` are now wrapped, sending an error frame (and `1008` close on failed `onOpen` guards) instead of dying. SSE `on event` subscriptions are unsubscribed on stream abort (was a permanent per-connection leak); STREAM setup/guards run *before* the SSE response starts so a failing guard returns its declared status instead of an empty 200 stream; dead sockets are evicted from `_rooms` on close and `broadcast` skips non-open sockets; STREAM endpoints now enforce their `auth`/`limit`/`use` meta like REST routes, and unenforceable bare WS `auth` declarations get a linter warning (`unenforceable-ws-auth`).
+
+- **`bp build` refuses to write into a non-empty directory it doesn't own** (no `.blueprint/manifest.json`) unless `--force` is passed — it previously overwrote foreign files silently. Rebuilds that would clobber hand-edited generated files now warn per file (manifest hash comparison). Unknown or malformed flags now error with a suggestion instead of being silently ignored, `--flag=value` form is accepted everywhere, and `bp test`/`bp run`/`bp dev` re-install dependencies when `package.json` changed (fixes the cryptic PGlite failure after `--gen-tests`). `bp dev` installs dependencies before starting and reports a dead server instead of silently "watching".
+
+### Added
+
+- **Worker coverage in the compile gate**: `testdata/valid/all_features.bp` now declares a realistic worker (input binding, fetch/update, guard, `impl node` fn call, `on_fail`), and generator tests build `testdata/valid/worker_basic.bp` end-to-end, so worker codegen is permanently covered by the `tsc` CI gate.
+
+- **`bp init` prints next steps**; shell completions (bash/zsh/fish) are generated from one shared command table and now include `stats`/`doctor`/`explain`/`llms`/`context`; `.env` discovery is consistent across `run`/`dev`/`test`/`migrate` (project-root `.env` is used when the output dir has none).
+
+### Changed
+
+- **Docs accuracy pass**: `docs/cli-reference.md` reflects the real Python-target coverage (all 5 examples compile), documents `bp explain`, `bp llms`, `bp check --json`, the `effect` target, `--force`, strict flag parsing, and the full exit-code table; `docs/changelog.md` is caught up to v0.11.0; `--target`-per-command claims corrected (deploy's `--target` is a deploy target, not codegen); `docs/testing-guide.md` gains the Python (pytest + testcontainers) testing story; version-anchored "fly reserved for v0.11" claims made version-neutral; `docs/multi-target-codegen.md` now covers the `--gen-tests` builder convention, exit-code contract, and per-command target dispatch; the README middleware example is `bp check`-clean.
+
 ## [0.11.0] - 2026-06-16
 
 Adds a third codegen target (an Effect-TS scaffold), a one-shot agent/LLM guide command (`bp llms`), two codegen correctness fixes (duplicate `pgEnum`, transactional `try/recover`), a generator-interface refactor that exposes `Files()`, and a full documentation accuracy + learnability pass (the VitePress site builds with every `.bp` snippet `bp check`-clean and zero dead links).

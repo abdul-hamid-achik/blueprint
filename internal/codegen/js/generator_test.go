@@ -1105,9 +1105,12 @@ func TestGenerateAllFeatures(t *testing.T) {
 		"src/functions/watermark.ts",
 		"src/impl/functions/internal/watermark.ts",
 		"src/functions/check-quota.ts",
+		"src/functions/generate-thumbnail.ts",
+		"src/impl/functions/internal/generate-thumbnail.ts",
 		"src/pipes/validate-image.ts",
 		"src/middleware/require-auth.ts",
 		"src/middleware/request-logger.ts",
+		"src/workers/generate-job-thumbnail.ts",
 		"src/schedules/cleanup.ts",
 		"src/schedules/reset-quotas.ts",
 		"test/watermark-success.test.ts",
@@ -1161,6 +1164,11 @@ func TestGenerateAllFeatures(t *testing.T) {
 		t.Errorf("expected at least 36 generated files, got %d", count)
 	}
 	t.Logf("Generated %d files from all_features.bp", count)
+
+	// CI compile gate: all_features.bp includes a worker block (see
+	// generate_job_thumbnail) so genWorker's TypeScript output stays covered
+	// by tsc permanently, not just in the one-off worker_basic.bp fixture.
+	requireTypeScriptCompile(t, outDir)
 }
 
 func TestNativeImplScaffoldIsUserOwned(t *testing.T) {
@@ -1781,9 +1789,13 @@ WS /ws/chat {
 		t.Error("ws route should have typed onClose handler")
 	}
 
-	// Check message binding with JSON parse
-	if !strings.Contains(routeStr, "const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data") {
+	// Check message binding with JSON parse, guarded separately from the
+	// handler body so malformed client input can't crash the process.
+	if !strings.Contains(routeStr, "message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data") {
 		t.Error("ws route onMessage should parse event.data as JSON")
+	}
+	if !strings.Contains(routeStr, "ws.send(JSON.stringify({ error: 'Invalid JSON' }))") {
+		t.Error("ws route onMessage should send an error frame on invalid JSON instead of throwing")
 	}
 
 	// Check index.ts imports node-ws adapter
@@ -1928,6 +1940,364 @@ STREAM /api/rooms/:id/live {
 	// Check streamSSE is still used
 	if !strings.Contains(routeStr, "streamSSE(c, async (stream) =>") {
 		t.Error("stream route should use streamSSE")
+	}
+}
+
+// TestGenerateWsHandlerCrashSafety asserts that onOpen/onMessage/onClose bodies
+// are wrapped in try/catch so a thrown BpError (or any other error) can never
+// escape as an unhandled promise rejection — @hono/node-ws invokes these async
+// handlers without awaiting them, so an uncaught throw previously crashed the
+// whole Node process on the first bad message.
+func TestGenerateWsHandlerCrashSafety(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+WS /ws/chat {
+  on_connect {
+    |> guard true -> 401 "nope"
+    |> log "connected"
+  }
+  on_message {
+    |> guard message.body -> 400 "Empty message"
+    |> log "received message"
+  }
+  on_disconnect {
+    |> log "disconnected"
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/ws.ts"))
+	if err != nil {
+		t.Fatal("src/routes/ws.ts should exist")
+	}
+	routeStr := string(routeContent)
+
+	// onOpen: try/catch, BpError -> error frame + close(1008, ...), otherwise console.error
+	onOpenIdx := strings.Index(routeStr, "async onOpen(")
+	onMessageIdx := strings.Index(routeStr, "async onMessage(")
+	onCloseIdx := strings.Index(routeStr, "async onClose(")
+	if onOpenIdx == -1 || onMessageIdx == -1 || onCloseIdx == -1 {
+		t.Fatalf("expected onOpen/onMessage/onClose handlers, got:\n%s", routeStr)
+	}
+	onOpenBody := routeStr[onOpenIdx:onMessageIdx]
+	onMessageBody := routeStr[onMessageIdx:onCloseIdx]
+	onCloseBody := routeStr[onCloseIdx:]
+
+	if !strings.Contains(onOpenBody, "try {") || !strings.Contains(onOpenBody, "} catch (err) {") {
+		t.Errorf("onOpen should wrap its body in try/catch, got:\n%s", onOpenBody)
+	}
+	if !strings.Contains(onOpenBody, "if (err instanceof BpError) { ws.send(JSON.stringify({ error: err.message })); ws.close(1008, err.message); return; }") {
+		t.Errorf("onOpen catch should send an error frame and close(1008, ...) for BpError, got:\n%s", onOpenBody)
+	}
+	if !strings.Contains(onOpenBody, "console.error(err);") {
+		t.Errorf("onOpen catch should console.error non-BpError failures, got:\n%s", onOpenBody)
+	}
+
+	if !strings.Contains(onMessageBody, "try {\n        message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;\n      } catch {") {
+		t.Errorf("onMessage should guard JSON.parse separately from the handler body, got:\n%s", onMessageBody)
+	}
+	if !strings.Contains(onMessageBody, "ws.send(JSON.stringify({ error: 'Invalid JSON' }));") {
+		t.Errorf("onMessage should send an 'Invalid JSON' error frame on parse failure, got:\n%s", onMessageBody)
+	}
+	if !strings.Contains(onMessageBody, "ws.send(JSON.stringify({ error: err instanceof BpError ? err.message : 'Internal error' }));") {
+		t.Errorf("onMessage catch should send an error frame for handler-body failures, got:\n%s", onMessageBody)
+	}
+	if strings.Contains(onMessageBody, "ws.close(") {
+		t.Errorf("onMessage catch should keep the socket open (no ws.close), got:\n%s", onMessageBody)
+	}
+
+	if !strings.Contains(onCloseBody, "try {") || !strings.Contains(onCloseBody, "} catch (err) {\n        console.error(err);") {
+		t.Errorf("onClose should wrap its body in try/catch and console.error on failure, got:\n%s", onCloseBody)
+	}
+}
+
+// TestGenerateWsRoomEviction asserts that onClose auto-evicts the closed socket
+// from every room (not just one a user `leave` targets) and that broadcast()
+// only writes to sockets whose readyState is OPEN — otherwise dead sockets
+// linger in _rooms forever and broadcast writes throw on closed connections.
+func TestGenerateWsRoomEviction(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+WS /ws/rooms/:id {
+  on_connect {
+    |> join room(id)
+  }
+  on_message {
+    |> broadcast room(id) { body: message.body }
+  }
+  on_disconnect {
+    |> leave room(id)
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/ws.ts"))
+	if err != nil {
+		t.Fatal("src/routes/ws.ts should exist")
+	}
+	routeStr := string(routeContent)
+
+	onCloseIdx := strings.Index(routeStr, "async onClose(")
+	if onCloseIdx == -1 {
+		t.Fatalf("expected an onClose handler, got:\n%s", routeStr)
+	}
+	onCloseBody := routeStr[onCloseIdx:]
+	if !strings.Contains(onCloseBody, "for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) _rooms.delete(k); }") {
+		t.Errorf("onClose should auto-evict the socket from every room, got:\n%s", onCloseBody)
+	}
+	// Eviction must run before the try block wrapping the user's own on_disconnect statements.
+	evictIdx := strings.Index(onCloseBody, "_rooms.delete(k)")
+	tryIdx := strings.Index(onCloseBody, "try {")
+	if evictIdx == -1 || tryIdx == -1 || evictIdx > tryIdx {
+		t.Errorf("eviction should run before the try block, got:\n%s", onCloseBody)
+	}
+
+	if !strings.Contains(routeStr, "if (_ws.readyState === 1) _ws.send(") {
+		t.Errorf("broadcast should guard sends with a readyState === 1 (OPEN) check, got:\n%s", routeStr)
+	}
+}
+
+// TestGenerateStreamEventUnsubscribe asserts that each `on event(...)` handler
+// in a STREAM route is bound to a named const and unsubscribed via off() on
+// stream.onAbort — otherwise the handler stays registered against the shared
+// event bus forever after the client disconnects (unbounded memory leak).
+func TestGenerateStreamEventUnsubscribe(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+STREAM /api/updates {
+  stream {
+    |> on event(update) {
+      |> log "sending update"
+    }
+    |> on event(error) {
+      |> log "sending error"
+    }
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/updates.ts"))
+	if err != nil {
+		t.Fatal("src/routes/updates.ts should exist")
+	}
+	routeStr := string(routeContent)
+
+	if !strings.Contains(routeStr, "import { on, off } from '../lib/events.js';") {
+		t.Errorf("stream route should import off() alongside on(), got:\n%s", routeStr)
+	}
+	for _, expected := range []string{
+		"const _streamHandler0 = async (eventData: any) => {",
+		"on('update', _streamHandler0);",
+		"stream.onAbort(() => off('update', _streamHandler0));",
+		"const _streamHandler1 = async (eventData: any) => {",
+		"on('error', _streamHandler1);",
+		"stream.onAbort(() => off('error', _streamHandler1));",
+	} {
+		if !strings.Contains(routeStr, expected) {
+			t.Errorf("expected %q in generated stream route, got:\n%s", expected, routeStr)
+		}
+	}
+}
+
+// TestGenerateStreamGuardBeforeStreamSSE asserts that STREAM setup statements
+// (fetch/guard) are emitted BEFORE the `streamSSE(...)` call, wrapped in the
+// same BpError try/catch shape REST handlers use — otherwise a failing guard
+// throws inside the detached streamSSE callback after the 200 has already
+// been sent, and the declared status code never reaches the client.
+func TestGenerateStreamGuardBeforeStreamSSE(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model room {
+  id   uuid   primary
+  name string required
+}
+
+STREAM /api/rooms/:id/live {
+  <- id uuid required
+
+  |> room = fetch room(id)
+  |> guard room -> 404 "Room not found"
+
+  stream {
+    |> on event(update) {
+      |> log "sending update"
+    }
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/rooms.ts"))
+	if err != nil {
+		t.Fatal("src/routes/rooms.ts should exist")
+	}
+	routeStr := string(routeContent)
+
+	guardIdx := strings.Index(routeStr, `throw new BpError(404, "Room not found")`)
+	streamSSEIdx := strings.Index(routeStr, "return streamSSE(c, async (stream) =>")
+	if guardIdx == -1 || streamSSEIdx == -1 || guardIdx > streamSSEIdx {
+		t.Errorf("expected the guard to be emitted before streamSSE is entered, got:\n%s", routeStr)
+	}
+
+	if !strings.Contains(routeStr, "if (err instanceof BpError) return c.json({ error: err.message }, err.statusCode);") {
+		t.Errorf("expected the declared guard status to be produced via the BpError catch, got:\n%s", routeStr)
+	}
+
+	// The whole handler (setup + streamSSE call) must be inside a single try block.
+	tryIdx := strings.Index(routeStr, "try {")
+	catchIdx := strings.Index(routeStr, "} catch (err) {")
+	if tryIdx == -1 || catchIdx == -1 || !(tryIdx < guardIdx && guardIdx < streamSSEIdx && streamSSEIdx < catchIdx) {
+		t.Errorf("expected try { ... guard ... streamSSE ... } catch ordering, got:\n%s", routeStr)
+	}
+}
+
+// TestGenerateStreamAndWsMetaEnforcement asserts that `use`, `limit`, and
+// webhook `auth` meta on STREAM/WS endpoints are actually wired into the
+// generated code instead of being silently dropped (contrast with genRoute,
+// which already wires this meta for plain REST endpoints).
+func TestGenerateStreamAndWsMetaEnforcement(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+secret WEBHOOK_KEY required
+
+middleware require_auth {
+  before {
+    |> log "checking auth"
+  }
+}
+
+STREAM /api/updates {
+  use require_auth
+  limit 5/min
+  auth webhook_sig using(secret.WEBHOOK_KEY)
+
+  stream {
+    |> on event(update) {
+      |> log "sending update"
+    }
+  }
+}
+
+WS /ws/chat {
+  use require_auth
+  limit 5/min
+
+  on_connect {
+    |> log "connected"
+  }
+  on_message {
+    |> log "received"
+  }
+  on_disconnect {
+    |> log "disconnected"
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	streamContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/updates.ts"))
+	if err != nil {
+		t.Fatal("src/routes/updates.ts should exist")
+	}
+	streamStr := string(streamContent)
+	for _, expected := range []string{
+		"import { requireAuth } from '../middleware/require-auth.js';",
+		"import { createHmac, timingSafeEqual } from 'node:crypto';",
+		"updatesRoutes.get('/api/updates', requireAuth, async (c) => {",
+		"const _rateLimitStore = new Map<string, { count: number, resetAt: number }>();",
+		"// rate limit: \"5/min\"",
+		"return c.json({ error: 'Rate limit exceeded' }, 429 as const);",
+		"createHmac('sha256', env.WEBHOOK_KEY)",
+	} {
+		if !strings.Contains(streamStr, expected) {
+			t.Errorf("expected STREAM route to contain %q, got:\n%s", expected, streamStr)
+		}
+	}
+
+	wsContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/ws.ts"))
+	if err != nil {
+		// extractResource("/ws/chat") -> "ws" (first non-"api" segment)
+		t.Fatal("src/routes/ws.ts should exist")
+	}
+	wsStr := string(wsContent)
+	for _, expected := range []string{
+		"import { requireAuth } from '../middleware/require-auth.js';",
+		"const _rateLimitStore = new Map<string, { count: number, resetAt: number }>();",
+		"wsRoutes.get('/ws/chat', requireAuth, async (c, next) => {",
+		"// rate limit: \"5/min\"",
+		"return c.json({ error: 'Rate limit exceeded' }, 429 as const);",
+		"return next();",
+		"}, upgradeWebSocket((c) => {",
+	} {
+		if !strings.Contains(wsStr, expected) {
+			t.Errorf("expected WS route to contain %q, got:\n%s", expected, wsStr)
+		}
 	}
 }
 
@@ -2169,7 +2539,7 @@ worker process_job {
 		`export const processJobQueueName = "process_jobs";`,
 		`export const processJobTimeoutMs = 300000;`,
 		`export const processJobRetryCount = 3;`,
-		`export const processJobBackoff = { strategy: exponential, base: 1 * 1000, max: 30 * 1000 };`,
+		`export const processJobBackoff = { strategy: "exponential", base: 1 * 1000, max: 30 * 1000 };`,
 		`export async function processJobOnFail(data: any, error: Error): Promise<void> {`,
 	} {
 		if !strings.Contains(workerStr, expected) {
@@ -2192,6 +2562,132 @@ worker process_job {
 			t.Fatalf("expected worker runtime wiring %q\n%s", expected, indexStr)
 		}
 	}
+}
+
+// TestGenWorkerBasicFixture builds testdata/valid/worker_basic.bp end to end
+// and asserts the fixes to genWorker: input bindings destructured from the
+// BullMQ job payload in both the handler and on_fail, an awaited call to the
+// async impl-backed fn, guards translated away from the unimported BpError,
+// worker/schedule startup wired inside the VITEST guard, and REDIS_URL
+// present in the env schema even though the fixture never declares it as a
+// secret.
+func TestGenWorkerBasicFixture(t *testing.T) {
+	src, err := os.ReadFile("../../../testdata/valid/worker_basic.bp")
+	if err != nil {
+		t.Skip("worker_basic.bp not found")
+	}
+	file, errs := parser.ParseFile("worker_basic.bp", src)
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker errors: %v", checkErrs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	workerContent, err := os.ReadFile(filepath.Join(outDir, "src/workers/process-job.ts"))
+	if err != nil {
+		t.Fatal("src/workers/process-job.ts should exist")
+	}
+	workerStr := string(workerContent)
+
+	// The `<- job_id uuid` input must be destructured from `data` in BOTH the
+	// handler and on_fail — on_fail receives the same raw job payload, not
+	// any record the handler fetched.
+	if got := strings.Count(workerStr, "const jobId = data.job_id;"); got != 2 {
+		t.Errorf("expected 'const jobId = data.job_id;' once in the handler and once in on_fail (got %d), full output:\n%s", got, workerStr)
+	}
+
+	// The impl-backed fn call must be awaited (missing await previously meant
+	// jobs were marked done before the work actually ran).
+	if !strings.Contains(workerStr, "const result = await doWork(job);") {
+		t.Errorf("expected an awaited doWork() call, got:\n%s", workerStr)
+	}
+
+	// Workers have no HTTP response and no BpError import — guards must
+	// translate to an early return, never a bare throw.
+	if strings.Contains(workerStr, "BpError") {
+		t.Errorf("worker body should never reference BpError (no import in worker files), got:\n%s", workerStr)
+	}
+	if !strings.Contains(workerStr, `if (!((job.status === "pending"))) { console.error("Already processed"); return; }`) {
+		t.Errorf("expected the guard to translate to a console.error + early return, got:\n%s", workerStr)
+	}
+
+	indexContent, err := os.ReadFile(filepath.Join(outDir, "src/index.ts"))
+	if err != nil {
+		t.Fatal("src/index.ts should exist")
+	}
+	indexStr := string(indexContent)
+
+	guardIdx := strings.Index(indexStr, "if (!process.env.VITEST)")
+	workerStartIdx := strings.Index(indexStr, "new Worker(")
+	if guardIdx == -1 || workerStartIdx == -1 || workerStartIdx < guardIdx {
+		t.Errorf("expected 'new Worker(' to appear after the VITEST guard so generated tests importing src/index.ts don't open real Redis connections, got:\n%s", indexStr)
+	}
+
+	envContent, err := os.ReadFile(filepath.Join(outDir, "src/lib/env.ts"))
+	if err != nil {
+		t.Fatal("src/lib/env.ts should exist")
+	}
+	if !strings.Contains(string(envContent), "REDIS_URL: z.string(),") {
+		t.Errorf("expected REDIS_URL in the env schema even without a declared secret, got:\n%s", string(envContent))
+	}
+
+	requireTypeScriptCompile(t, outDir)
+}
+
+// TestGenScheduleBasicFixtureRunsScheduledJobs builds testdata/valid/schedule_basic.bp
+// and asserts that schedules are actually executed at runtime: a Worker
+// consumes the shared 'scheduler' queue with a switch case per schedule,
+// wired inside the VITEST guard alongside the producer-side schedulerQueue.add().
+func TestGenScheduleBasicFixtureRunsScheduledJobs(t *testing.T) {
+	src, err := os.ReadFile("../../../testdata/valid/schedule_basic.bp")
+	if err != nil {
+		t.Skip("schedule_basic.bp not found")
+	}
+	file, errs := parser.ParseFile("schedule_basic.bp", src)
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker errors: %v", checkErrs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	indexContent, err := os.ReadFile(filepath.Join(outDir, "src/index.ts"))
+	if err != nil {
+		t.Fatal("src/index.ts should exist")
+	}
+	indexStr := string(indexContent)
+
+	for _, expected := range []string{
+		"new Worker('scheduler', async (job) => {",
+		"case 'cleanup':",
+		"return cleanup();",
+		"Unknown scheduled job",
+	} {
+		if !strings.Contains(indexStr, expected) {
+			t.Errorf("expected scheduler consumer wiring %q, got:\n%s", expected, indexStr)
+		}
+	}
+
+	guardIdx := strings.Index(indexStr, "if (!process.env.VITEST)")
+	schedulerWorkerIdx := strings.Index(indexStr, "new Worker('scheduler'")
+	if guardIdx == -1 || schedulerWorkerIdx == -1 || schedulerWorkerIdx < guardIdx {
+		t.Errorf("expected the scheduler Worker to appear after the VITEST guard, got:\n%s", indexStr)
+	}
+
+	requireTypeScriptCompile(t, outDir)
 }
 
 func TestGenerateLocalizationMetadata(t *testing.T) {

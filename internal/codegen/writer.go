@@ -64,6 +64,7 @@ func WriteOutputFiles(outDir string, files []OutputFile) error {
 
 	for _, rel := range sortedOutputPaths(generated) {
 		f := generated[rel]
+		warnIfDrifted(outDir, rel, f.Content, manifest.Generated[rel])
 		if err := writeFile(outDir, rel, f.Content); err != nil {
 			return err
 		}
@@ -132,6 +133,32 @@ func normalizeOutputPath(path string) (string, error) {
 		return "", fmt.Errorf("invalid output path %q: must stay within output directory", path)
 	}
 	return filepath.ToSlash(clean), nil
+}
+
+// warnIfDrifted prints a stderr warning when the on-disk copy of a
+// previously-generated file was hand-edited since the last build and this
+// build is about to silently overwrite it. Rebuilds never refuse — this is a
+// warning, not a gate — but it makes the clobber visible instead of losing
+// hand edits without a trace. Silent when there's nothing to compare (first
+// build for this path, prevHash == ""), when the on-disk file still matches
+// the last recorded build (a clean rebuild), or when it already matches the
+// new content (nothing would change).
+func warnIfDrifted(outDir, rel string, newContent []byte, prevHash string) {
+	if prevHash == "" {
+		return // not tracked by a previous build — nothing to drift from
+	}
+	onDisk, err := os.ReadFile(filepath.Join(outDir, filepath.FromSlash(rel)))
+	if err != nil {
+		return // nothing readable on disk yet — nothing to warn about
+	}
+	onDiskHash := "sha256:" + hashContent(onDisk)
+	if onDiskHash == prevHash {
+		return // matches the last build exactly — untouched
+	}
+	if newHash := "sha256:" + hashContent(newContent); onDiskHash == newHash {
+		return // already matches the new content — nothing to warn about
+	}
+	fmt.Fprintf(os.Stderr, "%s was modified since last build; overwriting — put custom code in src/impl/ (UserOwned) or run `bp diff` first\n", rel)
 }
 
 func writeFile(outDir, rel string, content []byte) error {

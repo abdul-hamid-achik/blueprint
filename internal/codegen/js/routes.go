@@ -111,20 +111,21 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		}
 	}
 
-	// Import worker handlers
-	if len(workers) > 0 {
+	// Import worker + schedule handlers. Both need `Worker` from bullmq:
+	// workers consume their own queue, and schedules consume the shared
+	// 'scheduler' queue (see below) — without a consumer there, the cron
+	// entries added via schedulerQueue.add() would be enqueued but never run.
+	if len(workers) > 0 || len(schedules) > 0 {
 		b.WriteString("import { Worker } from 'bullmq';\n")
-		for _, w := range workers {
-			name := toCamelCase(w.Name)
-			onFailName := name + "OnFail"
-			queueName := name + "QueueName"
-			timeoutName := name + "TimeoutMs"
-			fmt.Fprintf(&b, "import { %s, %s, %s, %s } from './workers/%s.js';\n",
-				name, onFailName, queueName, timeoutName, toKebabCase(w.Name))
-		}
 	}
-
-	// Import schedule handlers
+	for _, w := range workers {
+		name := toCamelCase(w.Name)
+		onFailName := name + "OnFail"
+		queueName := name + "QueueName"
+		timeoutName := name + "TimeoutMs"
+		fmt.Fprintf(&b, "import { %s, %s, %s, %s } from './workers/%s.js';\n",
+			name, onFailName, queueName, timeoutName, toKebabCase(w.Name))
+	}
 	if len(schedules) > 0 {
 		b.WriteString("import { Queue } from 'bullmq';\n")
 		for _, s := range schedules {
@@ -210,43 +211,6 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		b.WriteString("\n")
 	}
 
-	// Start workers
-	if len(workers) > 0 {
-		b.WriteString("// Start workers\n")
-		for _, w := range workers {
-			name := toCamelCase(w.Name)
-			queueName := name + "QueueName"
-			timeoutName := name + "TimeoutMs"
-			fmt.Fprintf(&b, "new Worker(%s, async (job) => {\n", queueName)
-			b.WriteString("  try {\n")
-			fmt.Fprintf(&b, "    if (%s > 0) {\n", timeoutName)
-			fmt.Fprintf(&b, "      await Promise.race([%s(job.data), new Promise((_, reject) => setTimeout(() => reject(new Error('Worker timeout')), %s))]);\n", name, timeoutName)
-			b.WriteString("    } else {\n")
-			fmt.Fprintf(&b, "      await %s(job.data);\n", name)
-			b.WriteString("    }\n")
-			b.WriteString("  } catch (error) {\n")
-			fmt.Fprintf(&b, "    await %sOnFail(job.data, error instanceof Error ? error : new Error(String(error)));\n", name)
-			b.WriteString("    throw error;\n")
-			b.WriteString("  }\n")
-			b.WriteString("}, {\n")
-			b.WriteString("  connection: { url: env.REDIS_URL }\n")
-			b.WriteString("});\n")
-		}
-		b.WriteString("\n")
-	}
-
-	// Register scheduled jobs
-	if len(schedules) > 0 {
-		b.WriteString("// Register scheduled jobs\n")
-		b.WriteString("const schedulerQueue = new Queue('scheduler', { connection: { url: env.REDIS_URL } });\n")
-		for _, s := range schedules {
-			name := toCamelCase(s.Name)
-			cronName := name + "Cron"
-			fmt.Fprintf(&b, "schedulerQueue.add('%s', {}, { repeat: { pattern: %s } });\n", s.Name, cronName)
-		}
-		b.WriteString("\n")
-	}
-
 	// Health check endpoint
 	b.WriteString("app.get('/health', (c) => c.json({ status: 'ok', uptime: process.uptime() }));\n\n")
 
@@ -256,9 +220,67 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	b.WriteString("  return c.json({ error: 'Internal server error' }, 500 as const);\n")
 	b.WriteString("});\n\n")
 
-	// Start the server and register shutdown handlers — skipped under test runners
-	// (Vitest) so importing the app for `app.request(...)` never binds a port.
+	// Start the server, workers/schedules, and register shutdown handlers —
+	// skipped under test runners (Vitest) so importing the app for
+	// `app.request(...)` never binds a port or opens real Redis connections
+	// for background workers/schedules.
 	b.WriteString("if (!process.env.VITEST) {\n")
+
+	// Start workers
+	if len(workers) > 0 {
+		b.WriteString("  // Start workers\n")
+		for _, w := range workers {
+			name := toCamelCase(w.Name)
+			queueName := name + "QueueName"
+			timeoutName := name + "TimeoutMs"
+			fmt.Fprintf(&b, "  new Worker(%s, async (job) => {\n", queueName)
+			b.WriteString("    try {\n")
+			fmt.Fprintf(&b, "      if (%s > 0) {\n", timeoutName)
+			fmt.Fprintf(&b, "        await Promise.race([%s(job.data), new Promise((_, reject) => setTimeout(() => reject(new Error('Worker timeout')), %s))]);\n", name, timeoutName)
+			b.WriteString("      } else {\n")
+			fmt.Fprintf(&b, "        await %s(job.data);\n", name)
+			b.WriteString("      }\n")
+			b.WriteString("    } catch (error) {\n")
+			b.WriteString("      // Only compensate on the final attempt — BullMQ retries earlier failures.\n")
+			b.WriteString("      if (job.attemptsMade + 1 >= (job.opts.attempts ?? 1)) {\n")
+			fmt.Fprintf(&b, "        await %sOnFail(job.data, error instanceof Error ? error : new Error(String(error)));\n", name)
+			b.WriteString("      }\n")
+			b.WriteString("      throw error;\n")
+			b.WriteString("    }\n")
+			b.WriteString("  }, {\n")
+			b.WriteString("    connection: { url: env.REDIS_URL }\n")
+			b.WriteString("  });\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Register scheduled jobs and the consumer that actually runs them —
+	// without this Worker, jobs added to the 'scheduler' queue below would
+	// sit there forever (cron handlers would be dead code at runtime).
+	if len(schedules) > 0 {
+		b.WriteString("  // Register scheduled jobs\n")
+		b.WriteString("  const schedulerQueue = new Queue('scheduler', { connection: { url: env.REDIS_URL } });\n")
+		for _, s := range schedules {
+			name := toCamelCase(s.Name)
+			cronName := name + "Cron"
+			fmt.Fprintf(&b, "  schedulerQueue.add('%s', {}, { repeat: { pattern: %s }, attempts: 3, backoff: { type: 'exponential', delay: 1000 } });\n", s.Name, cronName)
+		}
+		b.WriteString("  new Worker('scheduler', async (job) => {\n")
+		b.WriteString("    switch (job.name) {\n")
+		for _, s := range schedules {
+			name := toCamelCase(s.Name)
+			fmt.Fprintf(&b, "      case '%s':\n", s.Name)
+			fmt.Fprintf(&b, "        return %s();\n", name)
+		}
+		b.WriteString("      default:\n")
+		b.WriteString("        throw new Error(`Unknown scheduled job: ${job.name}`);\n")
+		b.WriteString("    }\n")
+		b.WriteString("  }, {\n")
+		b.WriteString("    connection: { url: env.REDIS_URL }\n")
+		b.WriteString("  });\n")
+		b.WriteString("\n")
+	}
+
 	fmt.Fprintf(&b, "  console.log('%%s listening on port %%d', %q, %d);\n", bp.Name, port)
 
 	// If WS: use injectWebSocket(serve(...)), otherwise capture server ref for graceful shutdown
@@ -624,7 +646,33 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 		writeDataImports(&b)
 	}
 
+	// Collect middleware, webhook-auth, and rate-limit meta the same way genRoute
+	// does — STREAM endpoints previously parsed but silently dropped this meta.
+	middlewareNames := make(map[string]bool)
+	needsWebhookAuth := false
+	needsRateLimit := false
+	for _, ep := range endpoints {
+		for _, meta := range ep.Meta {
+			if meta.Kind == "use" && meta.Use != nil {
+				middlewareNames[meta.Use.Name] = true
+			}
+			if meta.Kind == "auth" && webhookAuthSecretKey(meta.Value) != "" {
+				needsWebhookAuth = true
+			}
+			if meta.Kind == "limit" {
+				needsRateLimit = true
+			}
+		}
+	}
+	for _, mwName := range sortedKeys2(middlewareNames) {
+		fmt.Fprintf(&b, "import { %s } from '../middleware/%s.js';\n",
+			toCamelCase(mwName), toKebabCase(mwName))
+	}
+
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
+	if needsWebhookAuth {
+		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
+	}
 
 	// Check if any handler uses event subscriptions (needs events lib)
 	hasEventHandlers := false
@@ -637,7 +685,14 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 		}
 	}
 	if hasEventHandlers {
-		b.WriteString("import { on } from '../lib/events.js';\n")
+		// off() unsubscribes a handler on stream.onAbort — per-connection
+		// subscriptions that are never removed accumulate for the lifetime
+		// of the process (unbounded memory leak, silent because hono
+		// swallows writes to an already-closed stream).
+		b.WriteString("import { on, off } from '../lib/events.js';\n")
+	}
+	if needsWebhookAuth {
+		ic.needsEnv = true
 	}
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
@@ -645,13 +700,27 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 	routeVar := toCamelCase(fileKey) + "Routes"
 	fmt.Fprintf(&b, "export const %s = new Hono();\n\n", routeVar)
 
+	// Module-level rate limit store (shared across all handlers in this file)
+	if needsRateLimit {
+		b.WriteString("// Module-level rate limit store with periodic cleanup\n")
+		b.WriteString("const _rateLimitStore = new Map<string, { count: number, resetAt: number }>();\n")
+		b.WriteString("setInterval(() => { const now = Date.now(); for (const [k, v] of _rateLimitStore) { if (v.resetAt <= now) _rateLimitStore.delete(k); } }, 60000);\n\n")
+	}
+
 	for _, ep := range endpoints {
 		fmt.Fprintf(&b, "// STREAM %s\n", ep.Path)
 		if ep.Intent != nil {
 			fmt.Fprintf(&b, "// %s\n", ep.Intent.Text)
 		}
 
-		fmt.Fprintf(&b, "%s.get('%s', async (c) => {\n", routeVar, ep.Path)
+		// Build handler: routeVar.get('path', ...middleware, async (c) => { ... })
+		fmt.Fprintf(&b, "%s.get('%s'", routeVar, ep.Path)
+		for _, meta := range ep.Meta {
+			if meta.Kind == "use" && meta.Use != nil {
+				fmt.Fprintf(&b, ", %s", toCamelCase(meta.Use.Name))
+			}
+		}
+		b.WriteString(", async (c) => {\n")
 
 		// Extract path params at the start of the handler
 		pathParams := extractPathParams(ep.Path)
@@ -659,10 +728,77 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 			fmt.Fprintf(&b, "  const %s = c.req.param('%s');\n", toCamelCase(param), param)
 		}
 
-		b.WriteString("  return streamSSE(c, async (stream) => {\n")
+		// Emit rate-limit and webhook-auth checks, mirroring genRoute — these
+		// return early with the declared status before any setup logic runs.
+		for _, meta := range ep.Meta {
+			switch meta.Kind {
+			case "limit":
+				rateStr := exprToJS(meta.Value)
+				rateLimit, rateWindowMS := parseRateLimit(rateStr)
+				fmt.Fprintf(&b, "  // rate limit: %s\n", rateStr)
+				b.WriteString("  const _clientIp = c.req.header('x-forwarded-for') || 'unknown';\n")
+				b.WriteString("  const _now = Date.now();\n")
+				b.WriteString("  const _rateKey = `${_clientIp}:${c.req.path}`;\n")
+				b.WriteString("  const _rateEntry = _rateLimitStore.get(_rateKey);\n")
+				b.WriteString("  if (_rateEntry && _rateEntry.resetAt > _now) {\n")
+				fmt.Fprintf(&b, "    if (_rateEntry.count >= %d) {\n", rateLimit)
+				b.WriteString("      return c.json({ error: 'Rate limit exceeded' }, 429 as const);\n")
+				b.WriteString("    }\n")
+				b.WriteString("    _rateEntry.count++;\n")
+				b.WriteString("  } else {\n")
+				fmt.Fprintf(&b, "    _rateLimitStore.set(_rateKey, { count: 1, resetAt: _now + %d });\n", rateWindowMS)
+				b.WriteString("  }\n")
+			case "auth":
+				if secretKey := webhookAuthSecretKey(meta.Value); secretKey != "" {
+					b.WriteString("  const _payload = await c.req.text();\n")
+					b.WriteString("  const _sig = c.req.header('X-Webhook-Signature') ?? '';\n")
+					fmt.Fprintf(&b, "  const _expected = createHmac('sha256', env.%s).update(_payload).digest('hex');\n", secretKey)
+					b.WriteString("  let _sigBuf: Buffer; try { _sigBuf = Buffer.from(_sig, 'hex'); } catch { return c.json({ error: 'Invalid signature' }, 401 as const); }\n")
+					b.WriteString("  if (_sigBuf.length !== Buffer.from(_expected, 'hex').length || !timingSafeEqual(_sigBuf, Buffer.from(_expected, 'hex'))) return c.json({ error: 'Invalid signature' }, 401 as const);\n")
+				}
+			}
+		}
+
+		// Build context vars from middleware inject statements (same wiring genRoute uses)
+		ctxVars := make(map[string]bool)
+		boundVars := make(map[string]string)
+		varModels := make(map[string]string)
+		for _, meta := range ep.Meta {
+			if meta.Kind == "use" && meta.Use != nil {
+				if mw, ok := g.middlewares[meta.Use.Name]; ok {
+					for k, v := range extractInjectedVars(mw.Before) {
+						ctxVars[k] = v
+					}
+					for k, v := range extractInjectedVars(mw.After) {
+						ctxVars[k] = v
+					}
+					for modelName, ctxName := range extractInjectedModelMap(mw.Before) {
+						ctxRef := "c.get('" + toCamelCase(ctxName) + "')"
+						boundVars[modelName] = ctxRef
+						boundVars[ctxName] = ctxRef
+						camelCtx := toCamelCase(ctxName)
+						boundVars[camelCtx] = ctxRef
+						varModels[ctxName] = modelName
+						varModels[camelCtx] = modelName
+					}
+					for modelName, ctxName := range extractInjectedModelMap(mw.After) {
+						ctxRef := "c.get('" + toCamelCase(ctxName) + "')"
+						boundVars[modelName] = ctxRef
+						boundVars[ctxName] = ctxRef
+						camelCtx := toCamelCase(ctxName)
+						boundVars[camelCtx] = ctxRef
+						varModels[ctxName] = modelName
+						varModels[camelCtx] = modelName
+					}
+				}
+			}
+		}
 
 		ctx := emitCtx{
 			kind:        "function",
+			ctxVars:     ctxVars,
+			boundVars:   boundVars,
+			varModels:   varModels,
 			declared:    make(map[string]bool),
 			asyncFns:    g.buildAsyncFns(),
 			structEnums: g.structEnums,
@@ -672,13 +808,21 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 			ctx.declared[toCamelCase(param)] = true
 		}
 
-		// Emit setup statements
+		b.WriteString("  try {\n")
+
+		// Emit setup statements (fetch/guard/etc.) BEFORE entering the SSE
+		// stream, wrapped in the same BpError try/catch shape REST handlers
+		// use. Previously this ran inside the detached streamSSE callback, so
+		// a `guard` threw after the 200 had already been sent and the
+		// declared status code (e.g. 404) never reached the client.
 		if len(ep.Stmts) > 0 {
 			g.emitArrowStmts(&b, ep.Stmts, "    ", ctx)
 		}
 
+		b.WriteString("  return streamSSE(c, async (stream) => {\n")
+
 		// Emit each handler block as an event subscription or timeout
-		for _, h := range ep.Handlers {
+		for i, h := range ep.Handlers {
 			if h.Timeout != "" {
 				// Timeout handler: setInterval that sends a periodic SSE message
 				ms := durationToMS(h.Timeout)
@@ -689,9 +833,13 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 				fmt.Fprintf(&b, "    }, %s);\n", ms)
 				b.WriteString("    stream.onAbort(() => clearInterval(_interval));\n")
 			} else if h.EventName != "" {
-				// Event subscription: on('event_name', async (eventData) => { ... })
+				// Event subscription: bind the handler to a const so it can be
+				// unsubscribed via off() on abort — otherwise it stays
+				// registered against the shared event bus forever after the
+				// client disconnects.
+				handlerVar := fmt.Sprintf("_streamHandler%d", i)
 				fmt.Fprintf(&b, "    // on event: %s\n", h.EventName)
-				fmt.Fprintf(&b, "    on('%s', async (eventData: any) => {\n", h.EventName)
+				fmt.Fprintf(&b, "    const %s = async (eventData: any) => {\n", handlerVar)
 
 				// Build handler context with eventData available
 				handlerCtx := ctx
@@ -701,8 +849,9 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 				}
 				handlerCtx.declared["eventData"] = true
 				// Map 'event' -> 'eventData' so event.sender becomes eventData.sender
-				if handlerCtx.boundVars == nil {
-					handlerCtx.boundVars = make(map[string]string)
+				handlerCtx.boundVars = make(map[string]string)
+				for k, v := range ctx.boundVars {
+					handlerCtx.boundVars[k] = v
 				}
 				handlerCtx.boundVars["event"] = "eventData"
 
@@ -719,13 +868,19 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 					sseData := extractOutputValue(h.Body, &handlerCtx)
 					fmt.Fprintf(&b, "      await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData)
 				}
-				b.WriteString("    });\n")
+				b.WriteString("    };\n")
+				fmt.Fprintf(&b, "    on('%s', %s);\n", h.EventName, handlerVar)
+				fmt.Fprintf(&b, "    stream.onAbort(() => off('%s', %s));\n", h.EventName, handlerVar)
 			}
 		}
 
 		// Keep the stream open (await abort signal)
 		b.WriteString("    await new Promise<void>((resolve) => stream.onAbort(resolve));\n")
 		b.WriteString("  });\n")
+		b.WriteString("  } catch (err) {\n")
+		b.WriteString("    if (err instanceof BpError) return c.json({ error: err.message }, err.statusCode);\n")
+		b.WriteString("    throw err;\n")
+		b.WriteString("  }\n")
 		b.WriteString("});\n\n")
 	}
 
@@ -765,7 +920,38 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		writeDataImports(&b)
 	}
 
+	// Collect middleware, webhook-auth, and rate-limit meta the same way genRoute
+	// does — WS endpoints previously parsed but silently dropped this meta. Bare
+	// auth identifiers (e.g. `auth bearer`) still can't be enforced here: there's
+	// no generic bearer/jwt/api_key/basic verification codegen anywhere in this
+	// target (genRoute doesn't enforce them either), so inventing one here would
+	// risk conflicting with a hand-written check in on_connect. The linter flags
+	// that gap instead — see checkUnenforceableWsAuth in internal/linter.
+	middlewareNames := make(map[string]bool)
+	needsWebhookAuth := false
+	needsRateLimit := false
+	for _, ep := range endpoints {
+		for _, meta := range ep.Meta {
+			if meta.Kind == "use" && meta.Use != nil {
+				middlewareNames[meta.Use.Name] = true
+			}
+			if meta.Kind == "auth" && webhookAuthSecretKey(meta.Value) != "" {
+				needsWebhookAuth = true
+			}
+			if meta.Kind == "limit" {
+				needsRateLimit = true
+			}
+		}
+	}
+	for _, mwName := range sortedKeys2(middlewareNames) {
+		fmt.Fprintf(&b, "import { %s } from '../middleware/%s.js';\n",
+			toCamelCase(mwName), toKebabCase(mwName))
+	}
+
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
+	if needsWebhookAuth {
+		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
+	}
 	// Import emit from events lib if any handler uses it
 	needsEmit := false
 	for _, ep := range endpoints {
@@ -776,6 +962,9 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	}
 	if needsEmit {
 		b.WriteString("import { emit } from '../lib/events.js';\n")
+	}
+	if needsWebhookAuth {
+		ic.needsEnv = true
 	}
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
@@ -790,6 +979,13 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	b.WriteString("  // Room management for join/leave/broadcast\n")
 	b.WriteString("  const _rooms = new Map<string, Set<any>>();\n\n")
 
+	// Module-level rate limit store (shared across all handlers in this file)
+	if needsRateLimit {
+		b.WriteString("  // Module-level rate limit store with periodic cleanup\n")
+		b.WriteString("  const _rateLimitStore = new Map<string, { count: number, resetAt: number }>();\n")
+		b.WriteString("  setInterval(() => { const now = Date.now(); for (const [k, v] of _rateLimitStore) { if (v.resetAt <= now) _rateLimitStore.delete(k); } }, 60000);\n\n")
+	}
+
 	for _, ep := range endpoints {
 		fmt.Fprintf(&b, "// WS %s\n", ep.Path)
 		if ep.Intent != nil {
@@ -799,7 +995,63 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		// Extract path params for this endpoint
 		pathParams := extractPathParams(ep.Path)
 
-		fmt.Fprintf(&b, "%s.get('%s', upgradeWebSocket((c) => {\n", routeVar, ep.Path)
+		// Build handler: routeVar.get('path', ...use middleware, [rate-limit/webhook-auth middleware], upgradeWebSocket(...))
+		fmt.Fprintf(&b, "%s.get('%s'", routeVar, ep.Path)
+		for _, meta := range ep.Meta {
+			if meta.Kind == "use" && meta.Use != nil {
+				fmt.Fprintf(&b, ", %s", toCamelCase(meta.Use.Name))
+			}
+		}
+
+		// Rate-limit and webhook-auth meta can't run inside upgradeWebSocket's
+		// event factory (it can only return WS event handlers, not an HTTP
+		// response), so — exactly like genRoute's checks — they run as a
+		// plain middleware that can reject the upgrade before the handshake.
+		hasLimitMeta := false
+		hasWebhookAuthMeta := false
+		for _, meta := range ep.Meta {
+			if meta.Kind == "limit" {
+				hasLimitMeta = true
+			}
+			if meta.Kind == "auth" && webhookAuthSecretKey(meta.Value) != "" {
+				hasWebhookAuthMeta = true
+			}
+		}
+		if hasLimitMeta || hasWebhookAuthMeta {
+			b.WriteString(", async (c, next) => {\n")
+			for _, meta := range ep.Meta {
+				switch meta.Kind {
+				case "limit":
+					rateStr := exprToJS(meta.Value)
+					rateLimit, rateWindowMS := parseRateLimit(rateStr)
+					fmt.Fprintf(&b, "  // rate limit: %s\n", rateStr)
+					b.WriteString("  const _clientIp = c.req.header('x-forwarded-for') || 'unknown';\n")
+					b.WriteString("  const _now = Date.now();\n")
+					b.WriteString("  const _rateKey = `${_clientIp}:${c.req.path}`;\n")
+					b.WriteString("  const _rateEntry = _rateLimitStore.get(_rateKey);\n")
+					b.WriteString("  if (_rateEntry && _rateEntry.resetAt > _now) {\n")
+					fmt.Fprintf(&b, "    if (_rateEntry.count >= %d) {\n", rateLimit)
+					b.WriteString("      return c.json({ error: 'Rate limit exceeded' }, 429 as const);\n")
+					b.WriteString("    }\n")
+					b.WriteString("    _rateEntry.count++;\n")
+					b.WriteString("  } else {\n")
+					fmt.Fprintf(&b, "    _rateLimitStore.set(_rateKey, { count: 1, resetAt: _now + %d });\n", rateWindowMS)
+					b.WriteString("  }\n")
+				case "auth":
+					if secretKey := webhookAuthSecretKey(meta.Value); secretKey != "" {
+						b.WriteString("  const _payload = await c.req.text();\n")
+						b.WriteString("  const _sig = c.req.header('X-Webhook-Signature') ?? '';\n")
+						fmt.Fprintf(&b, "  const _expected = createHmac('sha256', env.%s).update(_payload).digest('hex');\n", secretKey)
+						b.WriteString("  let _sigBuf: Buffer; try { _sigBuf = Buffer.from(_sig, 'hex'); } catch { return c.json({ error: 'Invalid signature' }, 401 as const); }\n")
+						b.WriteString("  if (_sigBuf.length !== Buffer.from(_expected, 'hex').length || !timingSafeEqual(_sigBuf, Buffer.from(_expected, 'hex'))) return c.json({ error: 'Invalid signature' }, 401 as const);\n")
+					}
+				}
+			}
+			b.WriteString("  return next();\n")
+			b.WriteString("}")
+		}
+
+		b.WriteString(", upgradeWebSocket((c) => {\n")
 
 		// Extract path params into closure-scoped variables so all handlers can access them
 		for _, param := range pathParams {
@@ -822,9 +1074,47 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 
 		b.WriteString("  return {\n")
 
+		// Build context vars from middleware inject statements (same wiring genRoute uses)
+		ctxVars := make(map[string]bool)
+		boundVars := make(map[string]string)
+		varModels := make(map[string]string)
+		for _, meta := range ep.Meta {
+			if meta.Kind == "use" && meta.Use != nil {
+				if mw, ok := g.middlewares[meta.Use.Name]; ok {
+					for k, v := range extractInjectedVars(mw.Before) {
+						ctxVars[k] = v
+					}
+					for k, v := range extractInjectedVars(mw.After) {
+						ctxVars[k] = v
+					}
+					for modelName, ctxName := range extractInjectedModelMap(mw.Before) {
+						ctxRef := "c.get('" + toCamelCase(ctxName) + "')"
+						boundVars[modelName] = ctxRef
+						boundVars[ctxName] = ctxRef
+						camelCtx := toCamelCase(ctxName)
+						boundVars[camelCtx] = ctxRef
+						varModels[ctxName] = modelName
+						varModels[camelCtx] = modelName
+					}
+					for modelName, ctxName := range extractInjectedModelMap(mw.After) {
+						ctxRef := "c.get('" + toCamelCase(ctxName) + "')"
+						boundVars[modelName] = ctxRef
+						boundVars[ctxName] = ctxRef
+						camelCtx := toCamelCase(ctxName)
+						boundVars[camelCtx] = ctxRef
+						varModels[ctxName] = modelName
+						varModels[camelCtx] = modelName
+					}
+				}
+			}
+		}
+
 		// Build base context with WS kind, path params, and hoisted vars marked as declared
 		baseCtx := emitCtx{
 			kind:        "ws",
+			ctxVars:     ctxVars,
+			boundVars:   boundVars,
+			varModels:   varModels,
 			declared:    make(map[string]bool),
 			asyncFns:    g.buildAsyncFns(),
 			structEnums: g.structEnums,
@@ -837,21 +1127,41 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 			baseCtx.declared[name] = true
 		}
 
-		// onOpen handler
+		// onOpen handler — wrapped in try/catch because @hono/node-ws invokes
+		// onOpen/onMessage/onClose without awaiting them. An async handler
+		// that throws (e.g. a `guard` failing) rejects a promise nobody is
+		// watching; Node's default unhandledRejection behavior is to crash
+		// the process, taking down every other connection with it.
 		b.WriteString("    async onOpen(evt: Event, ws: WSContext) {\n")
+		b.WriteString("      try {\n")
 		if len(ep.OnConnect) > 0 {
 			onConnectCtx := baseCtx
 			onConnectCtx.declared = make(map[string]bool)
 			for k, v := range baseCtx.declared {
 				onConnectCtx.declared[k] = v
 			}
-			g.emitArrowStmts(&b, ep.OnConnect, "      ", onConnectCtx)
+			g.emitArrowStmts(&b, ep.OnConnect, "        ", onConnectCtx)
 		}
+		b.WriteString("      } catch (err) {\n")
+		b.WriteString("        if (err instanceof BpError) { ws.send(JSON.stringify({ error: err.message })); ws.close(1008, err.message); return; }\n")
+		b.WriteString("        console.error(err);\n")
+		b.WriteString("      }\n")
 		b.WriteString("    },\n")
 
-		// onMessage handler
+		// onMessage handler — event.data is fully client-controlled, so the
+		// JSON.parse is guarded separately from the rest of the handler: a
+		// malformed payload gets an error frame back instead of an unhandled
+		// throw, and a thrown BpError from guards/logic also becomes an
+		// error frame while leaving the socket open for the next message.
 		b.WriteString("    async onMessage(event: MessageEvent<WSMessageReceive>, ws: WSContext) {\n")
-		b.WriteString("      const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;\n")
+		b.WriteString("      let message: any;\n")
+		b.WriteString("      try {\n")
+		b.WriteString("        message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;\n")
+		b.WriteString("      } catch {\n")
+		b.WriteString("        ws.send(JSON.stringify({ error: 'Invalid JSON' }));\n")
+		b.WriteString("        return;\n")
+		b.WriteString("      }\n")
+		b.WriteString("      try {\n")
 		if len(ep.OnMessage) > 0 {
 			onMessageCtx := baseCtx
 			onMessageCtx.declared = make(map[string]bool)
@@ -859,20 +1169,31 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 				onMessageCtx.declared[k] = v
 			}
 			onMessageCtx.declared["message"] = true
-			g.emitArrowStmts(&b, ep.OnMessage, "      ", onMessageCtx)
+			g.emitArrowStmts(&b, ep.OnMessage, "        ", onMessageCtx)
 		}
+		b.WriteString("      } catch (err) {\n")
+		b.WriteString("        ws.send(JSON.stringify({ error: err instanceof BpError ? err.message : 'Internal error' }));\n")
+		b.WriteString("        if (!(err instanceof BpError)) console.error(err);\n")
+		b.WriteString("      }\n")
 		b.WriteString("    },\n")
 
-		// onClose handler
+		// onClose handler — evict this socket from every room it's still in
+		// (a user `leave` only removes it from one room) so dead sockets and
+		// emptied-out room entries don't accumulate in _rooms forever.
 		b.WriteString("    async onClose(evt: CloseEvent, ws: WSContext) {\n")
+		b.WriteString("      for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) _rooms.delete(k); }\n")
+		b.WriteString("      try {\n")
 		if len(ep.OnDisconnect) > 0 {
 			onDisconnectCtx := baseCtx
 			onDisconnectCtx.declared = make(map[string]bool)
 			for k, v := range baseCtx.declared {
 				onDisconnectCtx.declared[k] = v
 			}
-			g.emitArrowStmts(&b, ep.OnDisconnect, "      ", onDisconnectCtx)
+			g.emitArrowStmts(&b, ep.OnDisconnect, "        ", onDisconnectCtx)
 		}
+		b.WriteString("      } catch (err) {\n")
+		b.WriteString("        console.error(err);\n")
+		b.WriteString("      }\n")
 		b.WriteString("    },\n")
 
 		b.WriteString("  };\n")

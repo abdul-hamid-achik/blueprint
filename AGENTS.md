@@ -180,7 +180,7 @@ These are acknowledged gaps between spec and current implementation:
 - `@>` generate directives — parsed into AST but not resolved (M6 feature).
 
 ### Codegen (M3 gaps)
-- **Workers** — `genWorker()` is implemented but has no test coverage in `generator_test.go` and is not exercised by `all_features.bp`.
+- **Workers** — bodies compile and run (inputs bound from the job payload, async fns awaited, scheduler consumer wired, covered by `all_features.bp` + `worker_basic.bp` tests as of 2026-07-09), but there is **no producer path**: nothing in the language enqueues a job to a worker queue (`emit` dispatches to the in-process events registry, not BullMQ). Needs a SPEC decision (emit dual-dispatch vs. an `enqueue` builtin).
 - **`subscribe` blocks** — not implemented.
 - **`call external`** in endpoints — the `external` block generates `src/lib/external.ts` but `call service GET /path` inside endpoints is not fully hardened.
 - **Test codegen** — basic vitest files generated but fixture system (`seed api_key { ... }`) emits raw strings, not functional code.

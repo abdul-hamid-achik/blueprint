@@ -2,13 +2,28 @@
 
 All commands follow the pattern: `bp <command> [arguments] [flags]`
 
+**Flag syntax:** flags that take a value (e.g. `--out`, `--target`) accept both
+`--flag value` and `--flag=value` forms; boolean flags (e.g. `--json`,
+`--force`) take no value in either form. Passing an unrecognized flag is a hard
+error (with a "did you mean" hint when a close match exists) instead of being
+silently ignored, and a value-flag with nothing usable after it (end of args,
+or immediately followed by another `--flag`) is also an error rather than
+silently keeping the default. `--help`/`-h` after any command prints that
+command's usage and exits `0`.
+
 ## `bp check`
 
 Validate a `.bp` file for syntax and semantic errors.
 
 ```bash
-bp check <file.bp>
+bp check <file.bp> [--json]
 ```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | off | Output a machine-readable JSON result (for CI) instead of formatted text |
 
 **What it checks:**
 - Lexer errors (invalid tokens, malformed literals)
@@ -24,20 +39,27 @@ bp check my-service.bp
 bp check my-service.bp
 # my-service.bp:12:5: error: undefined name 'user_service' (did you mean 'auth_service'?)
 # my-service.bp:34:3: error: field 'email_address' should be snake_case
+
+bp check my-service.bp --json
+# {
+#   "filename": "my-service.bp",
+#   "success": true
+# }
 ```
 
 **Exit codes:**
 - `0` — no errors
-- `1` — one or more errors
+- `1` — one or more parse/semantic errors
+- `2` — the file could not be read
 
 ---
 
 ## `bp build`
 
-Compile a `.bp` file to TypeScript (default) or Python.
+Compile a `.bp` file to a runnable project.
 
 ```bash
-bp build <file.bp> [--out <dir>] [--target <node|python>] [--react-query] [--frontend-only] [--gen-tests]
+bp build <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query] [--frontend-only] [--gen-tests] [--force]
 ```
 
 **Flags:**
@@ -45,37 +67,75 @@ bp build <file.bp> [--out <dir>] [--target <node|python>] [--react-query] [--fro
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <dir>` | `generated/` | Output directory |
-| `--target <name>` | `node` | Codegen target. `node` emits Hono + Drizzle + Zod (production-ready, all examples). `python` emits FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (beta — see "Python target status" below) |
+| `--target <name>` | `node` | Codegen target. `node` emits Hono + Drizzle + Zod (production-ready, all examples). `python` emits FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (advanced — see "Python target status" below). `effect` emits TypeScript on Effect (experimental scaffold — project shell + secrets module; endpoint/model emit is still in design) |
 | `--react-query` | off | Generate `src/types/react-query.ts` and add TanStack React Query deps (node target only) |
 | `--frontend-only` | off | Emit only the standalone frontend contract package (node target only) |
 | `--gen-tests` | off | Generate contract + happy-path tests. **Node target:** Vitest suite under `test/generated/` with an in-memory (PGlite) database harness — runs with no external Postgres. **Python target:** pytest suite under `tests/` backed by `testcontainers[postgresql]` — Docker required, real Postgres per session, function-scoped TRUNCATE between tests |
+| `--force` | off | Overwrite a non-empty `--out` directory even if it has no `.blueprint/manifest.json`. Without it, `bp build` refuses to write into a foreign, non-empty directory it didn't create — see [Output directory safety](#output-directory-safety) below |
+
+### Output directory safety
+
+`bp build` refuses to write into an existing, non-empty `--out` directory that
+Blueprint didn't create:
+
+```bash
+bp build my-service.bp --out ./some-existing-dir
+# Error: output directory "./some-existing-dir" already exists, is not empty
+# (e.g. package.json, src), and has no .blueprint/manifest.json — refusing to
+# overwrite files bp didn't create. Use --force to proceed anyway, or point
+# --out at a fresh/empty directory
+```
+
+A directory Blueprint already built into (it carries `.blueprint/manifest.json`)
+is always safe to rebuild — that's the common case for `bp run`/`dev`/`test`/
+`migrate`/`deploy`, none of which expose `--force` and all of which keep working
+against their own prior output. Pass `--force` to overwrite a foreign directory
+anyway.
 
 ### Python target status
 
-`--target python` is a beta target tracked under the "Multi-target codegen
-progress" table in [docs/production-readiness.md](./production-readiness.md).
-Coverage today:
+`--target python` is an advanced (not yet 1.0-gated) target tracked under the
+"Multi-target codegen progress" table in
+[docs/production-readiness.md](./production-readiness.md). All 5 shipped
+examples (`hello-world`, `todo-api`, `auth-service`, `ecommerce-api`,
+`realtime-chat`) compile end-to-end on `--target python` today.
 
-- **Compiles end-to-end:** `examples/hello-world.bp`, `examples/todo-api.bp`.
-- **Rejects with a specific message:**
-  - `auth-service.bp` — `fn` declarations, `middleware` declarations, calls to
-    user fns (`hash_password`, `sign_jwt`, `verify_jwt`, `verify_password`).
-  - `ecommerce-api.bp` — `fn` declarations, calls to user fns (`charge_stripe`,
-    `sum`).
-  - `realtime-chat.bp` — `STREAM` endpoints, `WS` endpoints, `cache`,
-    `fn` declarations.
-- **Supported endpoint-body constructs:** `save` / `fetch` / `update` /
-  `delete` / `query` (with `paginate(page, per_page)`, `first`, `order(col, dir)`,
-  `where(col == val, ...)` `==`-only predicates), `guard`, `when` block + inline
-  form, `try`/`recover`, `map items: save M { ... }` (bound + unbound),
-  `map items: update M { ... }`, FK access (`item.product.x` via cached
-  `db.get` lookups), `log "msg"` → `print(f"...")`.
-- **Still rejected (Phase 3d/4 in BACKLOG.md):** non-`==` `where` predicates,
-  bare-expression step bindings, user-fn step calls, structured `log` modifiers,
-  partial-commit `try`/`recover` rollback, middleware → FastAPI dependencies,
-  `fn`/`pipe` with `impl python { ... }`.
+**Supported:**
+- Models, `database postgres` → SQLAlchemy 2.0 + Pydantic v2 + a full Alembic
+  skeleton.
+- Endpoint bodies: `save` / `fetch` / `update` / `delete` / `query` (with
+  `paginate(page, per_page)`, `first`, `order(col, dir)`, `where(col == val, ...)`
+  `==`-only predicates), `guard`, `when` block + inline form, `try`/`recover`,
+  `map items: save M { ... }` (bound + unbound), `map items: update M { ... }`,
+  FK access (`item.product.x` via cached `db.get` lookups), `log "msg"` →
+  `print(f"...")`, `sum(...)`.
+- `fn` declarations (the same `impl node { module: ..., func: ... }` block used
+  by the node target — there is no separate `impl python` syntax; the module
+  path is reinterpreted under `src/impl/functions/` and the user fills in the
+  Python side) and step calls to them.
+- `middleware` declarations → FastAPI `Depends(...)` dependencies.
+- `STREAM` endpoints (SSE via `sse-starlette`) and `WS` endpoints (FastAPI
+  WebSocket handshake) generate real routing/handshake code with a guarded
+  fetch prelude; the event body itself (message parsing, `on event(...)
+  where(...)` predicates, broadcast) emits as a commented TODO placeholder to
+  be filled in by hand. `cache redis` emits a working `src/lib/cache.py`.
+- `--gen-tests` — a pytest suite under `tests/` backed by
+  `testcontainers[postgresql]` (Docker required). See
+  [Testing Guide](./testing-guide.md#testing-the-python-target).
 
-Generated layout: `pyproject.toml` (uv), `src/app.py`, `src/lib/{env,db}.py`,
+**Still rejected** with a specific, actionable message (tracked under
+"Python target" in BACKLOG.md):
+- Top-level `storage`, `content`, `pipe`, `worker`, `schedule`, `subscribe`,
+  `external`, `state`, `analytics`, `save` (versioned save schemas),
+  `translation`, and `locale` declarations. None of the 5 shipped examples use
+  these, which is why all 5 still compile.
+- `query ... where(...)` predicates that aren't `==` (text search, `!=`, `<`,
+  `>`, `in`, function calls).
+- Step statements that aren't a data-op call — a bare expression or block
+  literal on the left of `|>` isn't translated.
+
+Generated layout: `pyproject.toml` (uv), `src/app.py`, `src/lib/{env,db}.py`
+(plus `src/lib/cache.py` when `cache redis` is declared),
 `src/models/{schema,pydantic}.py`, `src/routes/<resource>.py`, full Alembic
 skeleton (`alembic.ini`, `alembic/env.py`, `alembic/script.py.mako`,
 `alembic/versions/`). Run with `uv sync && uv run uvicorn src.app:app`. With
@@ -448,7 +508,7 @@ Print the installed Blueprint version.
 
 ```bash
 bp version
-# bp version 0.1.0
+# bp version 0.11.0
 ```
 
 ---
@@ -498,7 +558,7 @@ line-level unified diff per modified file (`---`/`+++`/`@@` hunks), plus
 new and deleted file summaries.
 
 ```bash
-bp diff <file.bp> [--out <dir>] [--target <node|python>] [--react-query] [--frontend-only] [--gen-tests] [--apply] [--exit-code] [--no-color]
+bp diff <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query] [--frontend-only] [--gen-tests] [--apply] [--exit-code] [--no-color]
 ```
 
 The codegen manifest (`.blueprint/manifest.json`) is suppressed from output — its
@@ -512,7 +572,7 @@ Shells out to `diff -u` for the unified patch.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <dir>` | `generated/` | Output directory to compare against |
-| `--target <name>` | `node` | Target to diff against (`node` or `python`) — must match the target the directory was built with |
+| `--target <name>` | `node` | Target to diff against (`node`, `python`, or `effect` — experimental scaffold) — must match the target the directory was built with |
 | `--react-query` | off | Compare as if `bp build --react-query` were used |
 | `--frontend-only` | off | Compare as if `bp build --frontend-only` were used |
 | `--gen-tests` | off | Compare as if `bp build --gen-tests` were used |
@@ -544,13 +604,18 @@ the image and probing `/health`.
 bp deploy <file.bp> [--out <dir>] [--tag <image>] [--target <name>] [--no-run]
 ```
 
+`bp deploy` always builds the **node** codegen target internally — its
+`--target` flag is a *deploy* target (where/how to ship the built image), not a
+codegen target. It is unrelated to the `--target node|python|effect` flag on
+`bp build`/`bp diff`/`bp migrate`.
+
 **Flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <dir>` | `generated/` | Build output directory |
 | `--tag <image>` | `blueprint-app:latest` | Docker image tag |
-| `--target <name>` | `docker` | Deploy target. `fly` is reserved for v0.11. |
+| `--target <name>` | `docker` | Deploy target. `fly` is not yet implemented. |
 | `--no-run` | false | Skip the smoke-test `docker run` after build (e.g. CI image builds) |
 
 **Example:**
@@ -655,9 +720,9 @@ bp lsp
 ```
 
 Provides IDE support for Blueprint files:
-- Syntax error diagnostics
-- Hover documentation
-- Go-to-definition (planned)
+- Syntax + semantic error diagnostics (`publishDiagnostics`, with structured codes)
+- Context-aware hover (models, `fn`/`pipe`/`middleware`, fields, `@` intents, data-op steps)
+- Go-to-definition (`textDocument/definition` — model, `fn`/`pipe`/`middleware`, and `<model>.<field>` references)
 - Autocomplete (planned)
 
 Configure your editor to use `bp lsp` for `.bp` files.
@@ -670,6 +735,35 @@ Configure your editor to use `bp lsp` for `.bp` files.
   "blueprint.languageServer.args": ["lsp"]
 }
 ```
+
+---
+
+## `bp explain`
+
+Print the documentation for a structured Blueprint error code.
+
+```bash
+bp explain <code>
+```
+
+The code is looked up case-insensitively (`bp explain c001` and `bp explain
+C001` are equivalent) against the same embedded docs `bp check`/`bp lint`
+errors point at — parser codes (`P###`), lexer codes (`L###`), and checker
+codes (`C###`). The canonical source is `internal/diag/error-codes.md`,
+mirrored at [error-codes.md](./error-codes.md) (a Go test fails CI if the two drift).
+
+**Example:**
+
+```bash
+bp explain C001
+# ### C001 — missing blueprint block
+#
+# Every `.bp` source file must start with a `blueprint` declaration...
+```
+
+**Exit codes:**
+- `0` — the code is documented; docs printed to stdout
+- `1` — the code isn't documented; prints an error + a hint pointing at [error-codes.md](./error-codes.md)
 
 ---
 
@@ -691,7 +785,7 @@ With a **topic**, prints the focused doc for that topic. Available topics:
 | `language` | `.bp` DSL: top-level decls, types, constraints, pipeline steps |
 | `cli` | The `bp` command surface, common flags, typical flows |
 | `codegen` | What `bp build` writes (Node + Python tree, manifest) |
-| `targets` | Choosing between `--target node` and `--target python` |
+| `targets` | Choosing between `--target node`, `--target python`, and `--target effect` |
 | `errors` | Diagnostic shape, code namespaces (`L###`/`P###`/`C###`), `bp explain` |
 | `workflow` | Recommended agent loop: read → edit → check → build → diff |
 | `examples` | What each `examples/*.bp` demonstrates |
@@ -723,6 +817,37 @@ Topics ship as embedded Markdown files (`internal/agentctx/topics/*.md`) so the 
 
 ---
 
+## `bp llms`
+
+Print the complete agent/LLM onboarding guide — every `bp context` topic plus the live CLI command surface and codegen target list, concatenated into one self-contained document (an `llms.txt` for `bp`).
+
+```bash
+bp llms [--out <file>]
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out <file>` | stdout | Write the guide to a file (e.g. `llms.txt`) instead of printing it |
+
+Where `bp context <topic>` gives you one focused slice and `bp explain <code>`
+gives you one error code's docs, `bp llms` is the "read this once and you know
+the whole surface" document — a framing preamble, the live CLI reference, the
+target list, and every topic in reading order, all assembled from
+`internal/agentctx` so it always reflects the real binary.
+
+**Example:**
+
+```bash
+bp llms --out llms.txt
+# Wrote agent/LLM guide to llms.txt (NNNN bytes)
+
+bp llms | less
+```
+
+---
+
 ## Environment Variables
 
 | Variable | Used by | Description |
@@ -731,7 +856,14 @@ Topics ship as embedded Markdown files (`internal/agentctx/topics/*.md`) so the 
 
 ## Exit Codes
 
+Every command follows the same convention, so scripts and CI can branch on the
+code without parsing command-specific output:
+
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Error (parse error, check error, build error) |
+| `1` | Validation error — parse/semantic errors from `bp check`/`bp build`/etc., lint errors, `bp fmt --check` on an unformatted file, a failed test run, an undocumented `bp explain <code>` |
+| `2` | Environment or file error — the input file couldn't be read, an unknown/malformed `--target` or flag, a required external tool is missing (`docker`, `uv`), an output-directory safety check failed (see `--force` on `bp build`) |
+| `4` | Codegen error — the AST parsed and checked cleanly, but the target generator itself failed (e.g. an unsupported construct for `--target python`/`--target effect`) |
+
+`--help`/`-h` on any command always exits `0` after printing usage.

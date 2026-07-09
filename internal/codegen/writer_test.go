@@ -1,11 +1,35 @@
 package codegen
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// captureStderr redirects os.Stderr for the duration of fn and returns
+// everything written to it. WriteOutputFiles's drift warning goes straight
+// to os.Stderr (it's a CLI-facing notice, not a returned error), so tests
+// asserting on it need to intercept the fd.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	fn()
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	return buf.String()
+}
 
 // TestLoadOutputManifestMissing covers the case when no manifest file exists
 // on disk — loadOutputManifest should return an empty default cleanly with no
@@ -164,6 +188,84 @@ func TestWriteOutputFilesUserOwnedSurvives(t *testing.T) {
 	if string(got) != string(userContent) {
 		t.Errorf("impl.ts = %q; want user's version %q (UserOwned files must not be overwritten)",
 			string(got), string(userContent))
+	}
+}
+
+// TestWriteOutputFilesWarnsOnDrift covers the "rebuild silently destroys hand
+// edits" bug: when a previously-generated file was hand-edited on disk
+// (differs from both the last recorded hash and the freshly generated
+// content), WriteOutputFiles must print a stderr warning naming the file
+// before overwriting it. It's a warning, not a refusal — the write still
+// happens with the new generated content.
+func TestWriteOutputFilesWarnsOnDrift(t *testing.T) {
+	dir := t.TempDir()
+
+	first := []OutputFile{{Path: "src/index.ts", Content: []byte("// v1\n")}}
+	if err := WriteOutputFiles(dir, first); err != nil {
+		t.Fatalf("first WriteOutputFiles: %v", err)
+	}
+
+	path := filepath.Join(dir, "src", "index.ts")
+	if err := os.WriteFile(path, []byte("// hand-edited\n"), 0o644); err != nil {
+		t.Fatalf("hand-edit: %v", err)
+	}
+
+	stderr := captureStderr(t, func() {
+		second := []OutputFile{{Path: "src/index.ts", Content: []byte("// v2\n")}}
+		if err := WriteOutputFiles(dir, second); err != nil {
+			t.Fatalf("second WriteOutputFiles: %v", err)
+		}
+	})
+
+	if !strings.Contains(stderr, "src/index.ts") {
+		t.Errorf("expected drift warning to name src/index.ts, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "modified since last build") {
+		t.Errorf("expected drift warning text, got: %q", stderr)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "// v2\n" {
+		t.Errorf("src/index.ts = %q err=%v; want overwritten with %q (warning, not refusal)", string(got), err, "// v2\n")
+	}
+}
+
+// TestWriteOutputFilesSilentOnCleanRebuild verifies a rebuild where the
+// on-disk file still matches the last recorded hash produces no warning —
+// the common case (no hand edits) must stay quiet.
+func TestWriteOutputFilesSilentOnCleanRebuild(t *testing.T) {
+	dir := t.TempDir()
+
+	first := []OutputFile{{Path: "src/index.ts", Content: []byte("// v1\n")}}
+	if err := WriteOutputFiles(dir, first); err != nil {
+		t.Fatalf("first WriteOutputFiles: %v", err)
+	}
+
+	stderr := captureStderr(t, func() {
+		second := []OutputFile{{Path: "src/index.ts", Content: []byte("// v2\n")}}
+		if err := WriteOutputFiles(dir, second); err != nil {
+			t.Fatalf("second WriteOutputFiles: %v", err)
+		}
+	})
+
+	if strings.Contains(stderr, "modified since last build") {
+		t.Errorf("expected no drift warning on a clean rebuild, got: %q", stderr)
+	}
+}
+
+// TestWriteOutputFilesSilentOnFirstBuild verifies a brand new path (never
+// tracked in a prior manifest) never triggers the drift warning, even though
+// there's nothing on disk to compare against.
+func TestWriteOutputFilesSilentOnFirstBuild(t *testing.T) {
+	dir := t.TempDir()
+	stderr := captureStderr(t, func() {
+		files := []OutputFile{{Path: "src/index.ts", Content: []byte("// v1\n")}}
+		if err := WriteOutputFiles(dir, files); err != nil {
+			t.Fatalf("WriteOutputFiles: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Errorf("expected no warnings on a first build, got: %q", stderr)
 	}
 }
 

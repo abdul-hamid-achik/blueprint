@@ -655,9 +655,11 @@ PATCH /api/cart/items/:id {
 	}
 }
 
-// TestPython_Phase3cTryRecover verifies the try/recover shape: a Python
-// `try:` followed by `except Exception as error:`, with the recover body
-// indented one level deeper than its enclosing scope.
+// TestPython_Phase3cTryRecover verifies the try/recover shape for a body with
+// >=2 mutations (save + update): the body is wrapped in
+// `with db.begin_nested():`, each mutation flushes instead of committing, the
+// wrapper commits once after the whole body succeeds, and the except branch
+// rolls back before running the recover body.
 func TestPython_Phase3cTryRecover(t *testing.T) {
 	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
 secret DATABASE_URL required
@@ -677,15 +679,214 @@ POST /api/orders {
 	body := readPy(t, buildPython(t, src), "src/routes/orders.py")
 	for _, want := range []string{
 		"    try:",
-		"        order = schema.Order(status=\"pending\")",
-		"        db.add(order)",
+		"        with db.begin_nested():",
+		"            order = schema.Order(status=\"pending\")",
+		"            db.add(order)",
+		"            db.flush()",
+		"            db.refresh(order)",
+		"            order.status = \"paid\"",
+		"        db.commit()",
 		"    except Exception as error:",
+		"        db.rollback()",
 		`        print(f"failed: {error}")`,
 		`        return JSONResponse(jsonable_encoder({"error": "boom"}), status_code=500)`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("try/recover missing %q in:\n%s", want, body)
 		}
+	}
+	// Both mutations (save + update) flush inside the transaction; neither
+	// commits until the wrapper's single db.commit() after the with-block.
+	if n := strings.Count(body, "db.flush()"); n != 2 {
+		t.Errorf("expected 2 db.flush() calls, got %d:\n%s", n, body)
+	}
+	if n := strings.Count(body, "db.commit()"); n != 1 {
+		t.Errorf("expected exactly 1 db.commit() (the wrapper's), got %d:\n%s", n, body)
+	}
+}
+
+// TestPython_TryRecoverWrapsMultiWriteInTransaction mirrors
+// js/generator_test.go:240-255 — a try body with >=2 mutations and no
+// guard/output gets wrapped in `with db.begin_nested():` so a later failure
+// rolls back the partial writes.
+func TestPython_TryRecoverWrapsMultiWriteInTransaction(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model a { id uuid primary  name string required }
+model b { id uuid primary  a_id uuid ref(a) required }
+POST /api/things {
+  <- name string required
+  |> try {
+    |> x = save a { name: name }
+    |> y = save b { a_id: x.id }
+  } recover {
+    -> 500 { error: "failed" }
+  }
+  -> 201 { id: x.id }
+}
+`
+	body := readPy(t, buildPython(t, src), "src/routes/things.py")
+	if !strings.Contains(body, "with db.begin_nested():") {
+		t.Errorf("multi-write try should be wrapped in db.begin_nested():\n%s", body)
+	}
+	if !strings.Contains(body, "db.rollback()") {
+		t.Errorf("except branch should call db.rollback():\n%s", body)
+	}
+}
+
+// TestPython_TryRecoverSingleWriteNotWrapped mirrors
+// js/generator_test.go:257-271 — a single write is already atomic, so no
+// `with db.begin_nested():` wrapper is emitted. The except branch still
+// rolls back defensively since the endpoint touches the DB (fix #4).
+func TestPython_TryRecoverSingleWriteNotWrapped(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model a { id uuid primary  name string required }
+POST /api/things {
+  <- name string required
+  |> try {
+    |> x = save a { name: name }
+  } recover {
+    -> 500 { error: "failed" }
+  }
+  -> 201 { id: x.id }
+}
+`
+	body := readPy(t, buildPython(t, src), "src/routes/things.py")
+	if strings.Contains(body, "db.begin_nested()") {
+		t.Errorf("single-write try should NOT be wrapped in a transaction:\n%s", body)
+	}
+	if !strings.Contains(body, "    except Exception as error:\n        db.rollback()\n") {
+		t.Errorf("unwrapped try/recover on a DB-touching endpoint should still rollback first:\n%s", body)
+	}
+}
+
+// TestPython_UpdateResolvesCorrectBindingForTransfer is the CRITICAL
+// regression test for the inverted emitUpdate condition: two variables bound
+// to the same model must each resolve their own update, never the other's,
+// regardless of Go map iteration order. Run several times to catch
+// nondeterminism (the old bug only manifested in ~11/12 builds).
+func TestPython_UpdateResolvesCorrectBindingForTransfer(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model account { id uuid primary  balance int required }
+POST /api/transfer {
+  <- from_id uuid required
+  <- to_id   uuid required
+  <- amount  int  required
+  |> from_account = fetch account(from_id)
+  |> to_account   = fetch account(to_id)
+  |> update from_account { balance: from_account.balance - amount }
+  |> update to_account { balance: to_account.balance + amount }
+  -> 200 { ok: true }
+}
+`
+	for i := 0; i < 20; i++ {
+		body := readPy(t, buildPython(t, src), "src/routes/transfer.py")
+		if !strings.Contains(body, "from_account.balance = (from_account.balance - amount)") {
+			t.Fatalf("run %d: update should mutate from_account, got:\n%s", i, body)
+		}
+		if !strings.Contains(body, "to_account.balance = (to_account.balance + amount)") {
+			t.Fatalf("run %d: update should mutate to_account, got:\n%s", i, body)
+		}
+		// Neither update should ever cross-mutate the other's variable.
+		if strings.Contains(body, "from_account.balance = (to_account.balance") ||
+			strings.Contains(body, "to_account.balance = (from_account.balance") {
+			t.Fatalf("run %d: update crossed to the wrong account, got:\n%s", i, body)
+		}
+	}
+}
+
+// TestPython_UpdateModelNameResolvesToBinding covers `update <model_name>`
+// where the actual bound variable has a different name — must resolve to the
+// binding (not emit a reference to the undefined model-name identifier).
+func TestPython_UpdateModelNameResolvesToBinding(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model account { id uuid primary  balance int required }
+POST /api/deposit {
+  <- id     uuid required
+  <- amount int  required
+  |> acct = fetch account(id)
+  |> update account { balance: acct.balance + amount }
+  -> 200 { balance: acct.balance }
+}
+`
+	body := readPy(t, buildPython(t, src), "src/routes/deposit.py")
+	if !strings.Contains(body, "acct.balance = (acct.balance + amount)") {
+		t.Errorf("update-by-model-name should resolve to the acct binding, got:\n%s", body)
+	}
+	if strings.Contains(body, "account.balance =") || strings.Contains(body, "db.refresh(account)") {
+		t.Errorf("update should not reference the undefined `account` identifier, got:\n%s", body)
+	}
+}
+
+// TestPython_TryRecoverGuardReraisesHTTPException covers fix #3: a guard
+// inside a try body raises HTTPException, which must re-raise past the
+// generic `except Exception` clause instead of being swallowed into the
+// recover branch's 500 response.
+func TestPython_TryRecoverGuardReraisesHTTPException(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model account { id uuid primary  balance int required }
+POST /api/withdraw {
+  <- id     uuid required
+  <- amount int  required
+  |> try {
+    |> acct = fetch account(id)
+    |> guard acct.balance >= amount -> 402 "Insufficient funds"
+    |> update acct { balance: acct.balance - amount }
+  } recover {
+    -> 500 { error: "failed" }
+  }
+  -> 200 { balance: acct.balance }
+}
+`
+	body := readPy(t, buildPython(t, src), "src/routes/withdraw.py")
+	httpIdx := strings.Index(body, "except HTTPException:")
+	excIdx := strings.Index(body, "except Exception as error:")
+	if httpIdx == -1 {
+		t.Fatalf("expected an `except HTTPException:` clause, got:\n%s", body)
+	}
+	if excIdx == -1 {
+		t.Fatalf("expected an `except Exception as error:` clause, got:\n%s", body)
+	}
+	if httpIdx > excIdx {
+		t.Errorf("except HTTPException must come before except Exception, got:\n%s", body)
+	}
+	if !strings.Contains(body, "except HTTPException:\n        raise\n") {
+		t.Errorf("expected a bare re-raise for HTTPException, got:\n%s", body)
+	}
+}
+
+// TestPython_TryRecoverErrorMessageBecomesStrError covers fix #5: Python
+// exceptions have no `.message` attribute, so `error.message` (both as a
+// plain field access and inside an f-string interpolation) must become
+// `str(error)` within the recover scope.
+func TestPython_TryRecoverErrorMessageBecomesStrError(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model order { id uuid primary  status string default("pending") }
+POST /api/orders {
+  <- session_id string required
+  |> try {
+    |> order = save order { status: "pending" }
+  } recover {
+    |> log "failed: {error.message}"
+    -> 500 { error: error.message }
+  }
+  -> 201 { id: order.id }
+}
+`
+	body := readPy(t, buildPython(t, src), "src/routes/orders.py")
+	if !strings.Contains(body, `print(f"failed: {str(error)}")`) {
+		t.Errorf("f-string interpolation should rewrite error.message to str(error), got:\n%s", body)
+	}
+	if !strings.Contains(body, `"error": str(error)`) {
+		t.Errorf("field access should rewrite error.message to str(error), got:\n%s", body)
+	}
+	if strings.Contains(body, "error.message") {
+		t.Errorf("error.message should not appear in generated Python, got:\n%s", body)
 	}
 }
 

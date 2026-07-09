@@ -514,7 +514,7 @@ The CLI entry point. Parses `os.Args` and dispatches to the appropriate pipeline
 | `bp lint` | lex → parse → check → lint rules |
 | `bp init` | scaffold new project |
 | `bp eject` | strip Blueprint markers from generated code |
-| `bp deploy` | build + smoke-run Docker image (`--target docker`; `fly` reserved) |
+| `bp deploy` | build + smoke-run Docker image (`--target docker`; `fly` not yet implemented) |
 | `bp stats` | parse + report code statistics |
 | `bp explain` | print docs for a structured error code (`Cxxx`/`Lxxx`/`Pxxx`) |
 | `bp context` | print the agent-facing language + CLI surface |
@@ -524,7 +524,7 @@ The CLI entry point. Parses `os.Args` and dispatches to the appropriate pipeline
 | `bp completion` | generate a shell completion script |
 | `bp version` | print version string |
 
-`--target` (`node` default, `python`, `effect`) is accepted by `build`, `diff`, `migrate`, and `deploy` — but **not** by `bp test`.
+The codegen `--target` (`node` default, `python`, `effect`) is accepted by `build` and `diff`; `migrate` accepts `node`/`python` only. `bp deploy` has a same-named but unrelated `--target` flag — a deploy target (`docker`; `fly` not yet implemented) — and always builds the node codegen target internally. Neither flag exists on `bp test`.
 
 ---
 

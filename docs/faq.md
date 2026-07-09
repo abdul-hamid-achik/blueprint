@@ -120,7 +120,7 @@ Rules:
 
 ### Can Blueprint generate something other than Node.js?
 
-Yes. The same `.bp` source can compile to three targets, selected with `--target` on `bp build` (and `bp diff`, `bp migrate`, `bp deploy`):
+Yes. The same `.bp` source can compile to three targets, selected with `--target` on `bp build` and `bp diff` (`bp migrate` accepts `--target node|python` only):
 
 - **`node`** (default) — TypeScript on Hono + Drizzle ORM + Zod.
 - **`python`** (`--target python`) — FastAPI + SQLAlchemy + Alembic.
@@ -129,6 +129,10 @@ Yes. The same `.bp` source can compile to three targets, selected with `--target
 ```bash
 bp build my-api.bp --target python
 ```
+
+`bp deploy` also has a `--target` flag, but it means something different there
+— it picks a *deploy* target (`docker`, with `fly` not yet implemented), not a
+codegen target. `bp deploy` always builds the node target internally.
 
 See [Multi-Target Codegen](./multi-target-codegen.md) for what each target covers.
 
@@ -234,7 +238,7 @@ Or use `bp deploy`:
 bp deploy my-api.bp --tag my-app:latest
 ```
 
-`bp deploy` builds the Docker image and then smoke-runs it: it starts the container, probes `/health`, and tears it down, failing if the health check doesn't pass. Pass `--no-run` to skip the smoke test (useful in CI that only validates the build). The default `--target docker` is the only target that runs today; `--target fly` is reserved for v0.11.
+`bp deploy` builds the Docker image and then smoke-runs it: it starts the container, probes `/health`, and tears it down, failing if the health check doesn't pass. Pass `--no-run` to skip the smoke test (useful in CI that only validates the build). The default `--target docker` is the only target that runs today; `--target fly` is not yet implemented.
 
 ---
 

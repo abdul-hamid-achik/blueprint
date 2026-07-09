@@ -30,6 +30,7 @@ func Lint(f *ast.File) []Issue {
 	issues = append(issues, checkEmptyEndpoints(f)...)
 	issues = append(issues, checkWherePredicateSelfEqual(f)...)
 	issues = append(issues, checkUnusedInput(f)...)
+	issues = append(issues, checkUnenforceableWsAuth(f)...)
 	return issues
 }
 
@@ -345,6 +346,61 @@ func checkEmptyEndpoints(f *ast.File) []Issue {
 	}
 
 	return issues
+}
+
+// checkUnenforceableWsAuth flags `auth` meta on WS endpoints that codegen
+// cannot enforce. genWsRoute only wires real enforcement for `auth webhook_sig
+// using(secret.NAME)` (an HMAC signature check run as middleware before the
+// handshake) — bare identifiers like `bearer`, `jwt`, `api_key(...)`, or
+// `basic` have no generic verification codegen anywhere in this target (the
+// same is true for REST's genRoute), so the connection ships without the
+// declared auth actually being checked unless it's verified by hand (e.g. in
+// on_connect, or via a `use` middleware).
+func checkUnenforceableWsAuth(f *ast.File) []Issue {
+	var issues []Issue
+
+	for _, block := range f.Blocks {
+		ws, ok := block.(*ast.WsEndpoint)
+		if !ok {
+			continue
+		}
+		for _, meta := range ws.Meta {
+			if meta.Kind != "auth" || isWebhookSigAuth(meta.Value) {
+				continue
+			}
+			issues = append(issues, Issue{
+				File:    meta.Loc.File,
+				Line:    meta.Loc.Line,
+				Col:     meta.Loc.Col,
+				Level:   "warning",
+				Rule:    "unenforceable-ws-auth",
+				Message: fmt.Sprintf("auth %s on WS %s is not enforced by codegen", authMetaName(meta.Value), ws.Path),
+				Hint:    "WS transports only auto-enforce `auth webhook_sig using(secret.NAME)` — verify bearer/jwt/api_key/basic tokens yourself (e.g. in on_connect, or via a `use` middleware) or the connection ships unauthenticated",
+			})
+		}
+	}
+
+	return issues
+}
+
+// isWebhookSigAuth reports whether an auth meta value is a `webhook_sig` call
+// — the only auth form genWsRoute/genStreamRoute/genRoute actually enforce.
+func isWebhookSigAuth(expr ast.Expr) bool {
+	fn, ok := expr.(*ast.FnCall)
+	return ok && fn.Name == "webhook_sig"
+}
+
+// authMetaName renders an auth meta value's identifying name for messages
+// (e.g. "bearer", "api_key", or "basic").
+func authMetaName(expr ast.Expr) string {
+	switch v := expr.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.FnCall:
+		return v.Name
+	default:
+		return "auth"
+	}
 }
 
 // checkWherePredicateSelfEqual flags `where(X == X)` predicates where both

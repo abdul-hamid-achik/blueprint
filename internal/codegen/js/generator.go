@@ -57,7 +57,7 @@ func (g *Generator) WithGenTests(enabled bool) *Generator {
 
 // emitCtx carries context for arrow statement code generation.
 type emitCtx struct {
-	kind              string            // "endpoint", "function", "middleware", "ws"
+	kind              string            // "endpoint", "function", "middleware", "ws", "worker"
 	method            string            // HTTP method for endpoints (e.g., "GET", "POST")
 	path              string            // URL path for endpoints (e.g., "/api/todos/:id")
 	ctxVars           map[string]bool   // identifiers injected via middleware (e.g., "auth" -> c.get('auth'))
@@ -352,6 +352,18 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	hasStorage := blueprintEntry(bp, "storage") != ""
 	g.hasStorage = hasStorage
 
+	// Extra infra env vars referenced directly by generated code that may not
+	// be hand-declared as secrets: REDIS_URL is read by src/lib/cache.ts and
+	// by every worker/schedule Redis connection in src/index.ts; DATABASE_URL
+	// is read by the Postgres pool in src/lib/db.ts.
+	var extraEnvVars []string
+	if hasCache || len(workers)+len(schedules) > 0 || blueprintEntry(bp, "queue") != "" {
+		extraEnvVars = append(extraEnvVars, "REDIS_URL")
+	}
+	if hasDB {
+		extraEnvVars = append(extraEnvVars, "DATABASE_URL")
+	}
+
 	if g.frontendOnly {
 		apiFile := g.genFrontendTypes(models, types, aliases, enums, states, endpoints, streams, ws)
 		schemasFile := g.genFrontendSchemas(models, types, aliases, enums, states, endpoints, streams, ws)
@@ -377,17 +389,12 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	files = append(files, g.genTSConfig())
 
 	// .env.example
-	files = append(files, g.genEnvExample(secrets, envs))
+	files = append(files, g.genEnvExample(secrets, envs, extraEnvVars...))
 
 	// src/index.ts — entrypoint
 	files = append(files, g.genIndex(bp, endpoints, streams, ws, middlewares, subscribes, workers, schedules, hasDB))
 
 	// src/lib/env.ts — env validation
-	// Collect extra infra env vars that may not be declared as secrets
-	var extraEnvVars []string
-	if hasCache {
-		extraEnvVars = append(extraEnvVars, "REDIS_URL")
-	}
 	files = append(files, g.genEnvTS(secrets, envs, extraEnvVars...))
 
 	// src/lib/errors.ts
@@ -471,8 +478,8 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// users opening the scaffold file see the real signatures, not
 	// `...args: any[]`.
 	type implStub struct {
-		Name string   // exported function name (after `func:` override)
-		Fn   *ast.Fn  // source AST node, for input/output types
+		Name string  // exported function name (after `func:` override)
+		Fn   *ast.Fn // source AST node, for input/output types
 	}
 	implModuleFuncs := make(map[string][]implStub) // stub path -> stubs
 	for _, fn := range fns {
@@ -1085,10 +1092,18 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 				}
 			}
 			cond := exprToJSWithCtx(s.Condition, &ctx)
-			if ctx.kind == "endpoint" {
+			switch ctx.kind {
+			case "endpoint":
 				fmt.Fprintf(b, "%sif (!(%s)) return c.json({ error: %q }, %s as const);\n",
 					indent, cond, s.Message, s.Status)
-			} else {
+			case "worker":
+				// Workers have no HTTP response to send — stop the job with a
+				// console.error and an early return instead of throwing (there's
+				// no BpError import in worker files, and a thrown BpError would
+				// just look like an unhandled job failure to BullMQ anyway).
+				fmt.Fprintf(b, "%sif (!(%s)) { console.error(%q); return; }\n",
+					indent, cond, s.Message)
+			default:
 				fmt.Fprintf(b, "%sif (!(%s)) throw new BpError(%s, %q);\n",
 					indent, cond, s.Status, s.Message)
 			}

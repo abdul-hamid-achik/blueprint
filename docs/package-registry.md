@@ -1,6 +1,6 @@
 # Blueprint Package Registry
 
-> **Status: DESIGN / NOT YET IMPLEMENTED** — none of these commands ship in the current `bp` binary (v0.10.0). `bp add`, `bp list`, `bp search`, `bp update`, `bp info`, `bp remove`, and `bp package …` are **not** real commands — running them prints `Unknown command`. The `pkg:` include resolution, `blueprint.json`/`blueprint.lock` files, and the registry HTTP API described below are a proposed design (an RFC), not a working feature. Run `bp help` to see what actually exists today. This page is kept to document the intended design; treat every command and file format here as a sketch, not a tutorial.
+> **Status: DESIGN / NOT YET IMPLEMENTED** — none of these commands ship in the current `bp` binary. `bp add`, `bp list`, `bp search`, `bp update`, `bp info`, `bp remove`, and `bp package …` are **not** real commands — running them prints `Unknown command`. The `pkg:` include resolution, `blueprint.json`/`blueprint.lock` files, and the registry HTTP API described below are a proposed design (an RFC), not a working feature. Run `bp help` to see what actually exists today. This page is kept to document the intended design; treat every command and file format here as a sketch, not a tutorial.
 
 This document describes the **proposed** Blueprint Package Registry design. It is a design document (RFC) for a feature that has not been built — see the status banner above.
 

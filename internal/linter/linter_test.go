@@ -552,3 +552,90 @@ GET /api/users {
 		}
 	}
 }
+
+func TestLint_UnenforceableWsAuth_BareBearer(t *testing.T) {
+	// `auth bearer` has no generic verification codegen for WS transports —
+	// the linter should flag it so it isn't silently unauthenticated.
+	src := minimalHeader + `
+@ "Chat over WebSocket"
+WS /ws/chat {
+  auth bearer
+
+  on_connect {
+    |> log "connected"
+  }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	var found bool
+	for _, iss := range issues {
+		if iss.Rule == "unenforceable-ws-auth" {
+			found = true
+			if iss.Level != "warning" {
+				t.Errorf("expected level 'warning', got %q", iss.Level)
+			}
+			if !strings.Contains(iss.Message, "bearer") {
+				t.Errorf("expected message to mention 'bearer', got %q", iss.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected an 'unenforceable-ws-auth' issue for `auth bearer` on a WS endpoint, got: %v", issues)
+	}
+}
+
+func TestLint_WsAuth_WebhookSig_NoIssue(t *testing.T) {
+	// `auth webhook_sig using(secret.NAME)` IS enforced by genWsRoute (HMAC
+	// check run as middleware before the handshake) — no warning expected.
+	src := minimalHeader + `
+secret SIGNING_KEY required
+
+@ "Webhook relay over WebSocket"
+WS /ws/relay {
+  auth webhook_sig using(secret.SIGNING_KEY)
+
+  on_connect {
+    |> log "connected"
+  }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	for _, iss := range issues {
+		if iss.Rule == "unenforceable-ws-auth" {
+			t.Errorf("auth webhook_sig is enforced by codegen and should not be flagged, got: %s", iss)
+		}
+	}
+}
+
+func TestLint_RestAuth_NoUnenforceableWsAuthIssue(t *testing.T) {
+	// The rule only applies to WS endpoints — REST/STREAM `auth` meta (even
+	// bare identifiers) is out of scope for this rule.
+	src := minimalHeader + `
+@ "List widgets"
+GET /api/widgets {
+  auth bearer
+  -> 200 "ok"
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	issues := linter.Lint(file)
+
+	for _, iss := range issues {
+		if iss.Rule == "unenforceable-ws-auth" {
+			t.Errorf("REST endpoint auth should not trigger the WS-specific rule, got: %s", iss)
+		}
+	}
+}

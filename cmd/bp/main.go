@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,6 +60,151 @@ func resolveTarget(t string) (string, error) {
 	}
 }
 
+// --- shared flag parsing ---
+//
+// Every command's argument loop parses through parseArgs so behavior is
+// identical everywhere: "--flag value" and "--flag=value" both work, unknown
+// flags are a hard error (with a "did you mean" hint when a close match
+// exists in spec) instead of being silently ignored, and a value-flag with
+// nothing usable after it is also a hard error instead of silently keeping
+// the default.
+
+// flagSpec maps a flag name (e.g. "--out") to whether it takes a value.
+type flagSpec map[string]bool
+
+// parsedArgs is the result of parseArgs: flag values/presence, plus any
+// leftover non-flag tokens in order (positional arguments, for callers like
+// `bp migrate`'s generate|push|studio|check or `bp context`'s topic).
+type parsedArgs struct {
+	values     map[string]string
+	set        map[string]bool
+	positional []string
+}
+
+// parseArgs walks args against spec. Flags may appear as "--flag value" or
+// "--flag=value"; boolean flags (spec[name] == false) take no value in
+// either form. Any "-"-prefixed token not present in spec is an error. A
+// value-flag with nothing usable after it — end of args, or immediately
+// followed by another "--flag" — is also an error rather than silently
+// leaving the caller's default in place.
+func parseArgs(args []string, spec flagSpec) (parsedArgs, error) {
+	result := parsedArgs{values: map[string]string{}, set: map[string]bool{}}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "" || arg == "-" || !strings.HasPrefix(arg, "-") {
+			result.positional = append(result.positional, arg)
+			continue
+		}
+
+		name, inlineValue, hasInline := arg, "", false
+		if eq := strings.IndexByte(arg, '='); eq >= 0 {
+			name, inlineValue, hasInline = arg[:eq], arg[eq+1:], true
+		}
+
+		takesValue, known := spec[name]
+		if !known {
+			if s := suggestFlag(name, spec); s != "" {
+				return result, fmt.Errorf("unknown flag %q (did you mean %q?)", name, s)
+			}
+			return result, fmt.Errorf("unknown flag %q", name)
+		}
+
+		if !takesValue {
+			if hasInline {
+				return result, fmt.Errorf("flag %q does not take a value", name)
+			}
+			result.set[name] = true
+			continue
+		}
+
+		if hasInline {
+			if inlineValue == "" {
+				return result, fmt.Errorf("flag %q needs a value", name)
+			}
+			result.values[name] = inlineValue
+			result.set[name] = true
+			continue
+		}
+
+		if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+			return result, fmt.Errorf("flag %q needs a value", name)
+		}
+		i++
+		result.values[name] = args[i]
+		result.set[name] = true
+	}
+	return result, nil
+}
+
+// suggestFlag returns the closest flag name in spec to input (within 2
+// edits), or "" when nothing is close enough to be worth suggesting. Mirrors
+// suggestCommand's typo-tolerance for command names.
+func suggestFlag(input string, spec flagSpec) string {
+	best := ""
+	bestDist := 3
+	for name := range spec {
+		if d := levenshteinDistance(input, name); d < bestDist {
+			bestDist = d
+			best = name
+		}
+	}
+	return best
+}
+
+// rejectPositional errors out if a command was handed positional arguments
+// it doesn't accept (e.g. a stray second file: `bp build a.bp b.bp`).
+func rejectPositional(positional []string) error {
+	if len(positional) > 0 {
+		return fmt.Errorf("unexpected argument %q", positional[0])
+	}
+	return nil
+}
+
+// exitOnArgError prints err (if any) as "Error: ..." to stderr and exits 1.
+// Shared tail call for every command's flag-parsing block.
+func exitOnArgError(err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+	os.Exit(1)
+}
+
+// checkOutDirSafety refuses to build into an existing, non-empty directory
+// that Blueprint didn't create (no .blueprint/manifest.json), unless force is
+// set. Without this, `bp build --out <dir-with-foreign-files>` silently
+// overwrote whatever was already there (a foreign package.json, say) with
+// exit 0. Directories bp has already built into (they carry the manifest)
+// are always safe to rebuild — that's the common case for `bp
+// run`/`dev`/`test`/`migrate`/`deploy`, none of which expose --force and all
+// of which must keep working against their own prior output.
+func checkOutDirSafety(outDir string, force bool) error {
+	if force {
+		return nil
+	}
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		return nil // missing/unreadable — let the real build surface that error
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(outDir, ".blueprint", "manifest.json")); err == nil {
+		return nil // previously built by bp — safe to overwrite
+	}
+	examples := make([]string, 0, 5)
+	for _, e := range entries {
+		examples = append(examples, e.Name())
+		if len(examples) == 5 {
+			break
+		}
+	}
+	return fmt.Errorf(
+		"output directory %q already exists, is not empty (e.g. %s), and has no .blueprint/manifest.json — "+
+			"refusing to overwrite files bp didn't create. Use --force to proceed anyway, or point --out at a fresh/empty directory",
+		outDir, strings.Join(examples, ", "))
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -78,16 +225,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp check <file.bp> [--json]")
 			os.Exit(1)
 		}
-		jsonOutput := false
-		for _, arg := range os.Args[3:] {
-			if arg == "--json" {
-				jsonOutput = true
-			}
-		}
-		os.Exit(cmdCheck(os.Args[2], jsonOutput))
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--json": false})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
+		os.Exit(cmdCheck(os.Args[2], parsed.set["--json"]))
 	case "build":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("build", "build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests]",
+			printCommandHelp("build", "build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--force]",
 				"Compile a .bp file to a runnable project.",
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
@@ -95,39 +239,31 @@ func main() {
 					{"--react-query", "Generate React Query hooks and add frontend deps (node target)"},
 					{"--frontend-only", "Emit only the standalone frontend package (node target)"},
 					{"--gen-tests", "Generate contract tests. node: PGlite-backed Vitest. python: testcontainers-backed pytest (Docker required)"},
+					{"--force", "Overwrite a non-empty --out directory even if it has no Blueprint manifest"},
 				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests]")
+			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--force]")
 			os.Exit(1)
 		}
+		parsed, err := parseArgs(os.Args[3:], flagSpec{
+			"--out": true, "--target": true, "--react-query": false,
+			"--frontend-only": false, "--gen-tests": false, "--force": false,
+		})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
-		target := targetNode
-		reactQuery := false
-		frontendOnly := false
-		genTests := false
-		for i := 3; i < len(os.Args); i++ {
-			switch os.Args[i] {
-			case "--out":
-				if i+1 < len(os.Args) {
-					outDir = os.Args[i+1]
-					i++
-				}
-			case "--target":
-				if i+1 < len(os.Args) {
-					target = os.Args[i+1]
-					i++
-				}
-			case "--react-query":
-				reactQuery = true
-			case "--frontend-only":
-				frontendOnly = true
-			case "--gen-tests":
-				genTests = true
-			}
+		if v, ok := parsed.values["--out"]; ok {
+			outDir = v
 		}
-		os.Exit(cmdBuild(os.Args[2], outDir, target, reactQuery, frontendOnly, genTests))
+		target := targetNode
+		if v, ok := parsed.values["--target"]; ok {
+			target = v
+		}
+		os.Exit(cmdBuildWithOptions(os.Args[2], outDir, target,
+			parsed.set["--react-query"], parsed.set["--frontend-only"], false,
+			parsed.set["--gen-tests"], parsed.set["--force"]))
 	case "frontend":
 		if len(os.Args) >= 3 && os.Args[2] == "publish" {
 			if hasHelpFlag(os.Args[3:]) {
@@ -140,20 +276,14 @@ func main() {
 				fmt.Fprintln(os.Stderr, "Usage: bp frontend publish <file.bp> [--out <dir>] [--react-query] [--skip-install]")
 				os.Exit(1)
 			}
+			parsed, err := parseArgs(os.Args[4:], flagSpec{"--out": true, "--react-query": false, "--skip-install": false})
+			exitOnArgError(err)
+			exitOnArgError(rejectPositional(parsed.positional))
 			outDir := "generated"
-			reactQuery := false
-			skipInstall := false
-			for i := 4; i < len(os.Args); i++ {
-				if os.Args[i] == "--out" && i+1 < len(os.Args) {
-					outDir = os.Args[i+1]
-					i++
-				} else if os.Args[i] == "--react-query" {
-					reactQuery = true
-				} else if os.Args[i] == "--skip-install" {
-					skipInstall = true
-				}
+			if v, ok := parsed.values["--out"]; ok {
+				outDir = v
 			}
-			os.Exit(cmdFrontendPublish(os.Args[3], outDir, reactQuery, skipInstall))
+			os.Exit(cmdFrontendPublish(os.Args[3], outDir, parsed.set["--react-query"], parsed.set["--skip-install"]))
 		}
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("frontend", "frontend <file.bp> [--out <dir>] [--react-query]",
@@ -165,17 +295,14 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp frontend <file.bp> [--out <dir>] [--react-query]")
 			os.Exit(1)
 		}
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--react-query": false})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
-		reactQuery := false
-		for i := 3; i < len(os.Args); i++ {
-			if os.Args[i] == "--out" && i+1 < len(os.Args) {
-				outDir = os.Args[i+1]
-				i++
-			} else if os.Args[i] == "--react-query" {
-				reactQuery = true
-			}
+		if v, ok := parsed.values["--out"]; ok {
+			outDir = v
 		}
-		os.Exit(cmdBuild(os.Args[2], outDir, targetNode, reactQuery, true, false))
+		os.Exit(cmdBuild(os.Args[2], outDir, targetNode, parsed.set["--react-query"], true, false))
 	case "fmt":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("fmt", "fmt <file.bp> [--write] [--check]",
@@ -190,17 +317,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp fmt <file.bp> [--write] [--check]")
 			os.Exit(1)
 		}
-		write := false
-		check := false
-		for _, arg := range os.Args[3:] {
-			if arg == "--write" {
-				write = true
-			}
-			if arg == "--check" {
-				check = true
-			}
-		}
-		os.Exit(cmdFmt(os.Args[2], write, check))
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--write": false, "--check": false})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
+		os.Exit(cmdFmt(os.Args[2], parsed.set["--write"], parsed.set["--check"]))
 	case "lint":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("lint", "lint <file.bp>",
@@ -212,6 +332,9 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp lint <file.bp>")
 			os.Exit(1)
 		}
+		parsed, err := parseArgs(os.Args[3:], flagSpec{})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
 		os.Exit(cmdLint(os.Args[2]))
 	case "docs":
 		if hasHelpFlag(os.Args[2:]) {
@@ -224,14 +347,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp docs <file.bp> [--out file.json]")
 			os.Exit(1)
 		}
-		outFile := ""
-		for i := 3; i < len(os.Args); i++ {
-			if os.Args[i] == "--out" && i+1 < len(os.Args) {
-				outFile = os.Args[i+1]
-				i++
-			}
-		}
-		os.Exit(cmdDocs(os.Args[2], outFile))
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
+		os.Exit(cmdDocs(os.Args[2], parsed.values["--out"]))
 	case "test":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("test", "test <file.bp> [--out <dir>]",
@@ -243,12 +362,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp test <file.bp> [--out <dir>]")
 			os.Exit(1)
 		}
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
-		for i := 3; i < len(os.Args); i++ {
-			if os.Args[i] == "--out" && i+1 < len(os.Args) {
-				outDir = os.Args[i+1]
-				i++
-			}
+		if v, ok := parsed.values["--out"]; ok {
+			outDir = v
 		}
 		os.Exit(cmdTest(os.Args[2], outDir))
 	case "migrate":
@@ -265,24 +384,29 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>]")
 			os.Exit(1)
 		}
-		outDir := "generated"
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--target": true})
+		exitOnArgError(err)
 		subCmd := "generate"
-		target := targetNode
-		for i := 3; i < len(os.Args); i++ {
-			switch os.Args[i] {
-			case "generate", "push", "studio", "check":
-				subCmd = os.Args[i]
-			case "--out":
-				if i+1 < len(os.Args) {
-					outDir = os.Args[i+1]
-					i++
-				}
-			case "--target":
-				if i+1 < len(os.Args) {
-					target = os.Args[i+1]
-					i++
-				}
+		switch len(parsed.positional) {
+		case 0:
+		case 1:
+			validSubs := map[string]bool{"generate": true, "push": true, "studio": true, "check": true}
+			if !validSubs[parsed.positional[0]] {
+				fmt.Fprintf(os.Stderr, "Error: unknown migrate subcommand %q (expected generate, push, studio, or check)\n", parsed.positional[0])
+				os.Exit(1)
 			}
+			subCmd = parsed.positional[0]
+		default:
+			fmt.Fprintf(os.Stderr, "Error: unexpected argument %q\n", parsed.positional[1])
+			os.Exit(1)
+		}
+		outDir := "generated"
+		if v, ok := parsed.values["--out"]; ok {
+			outDir = v
+		}
+		target := targetNode
+		if v, ok := parsed.values["--target"]; ok {
+			target = v
 		}
 		os.Exit(cmdMigrate(os.Args[2], outDir, subCmd, target))
 	case "generate":
@@ -296,13 +420,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp generate <file.bp> [--write]")
 			os.Exit(1)
 		}
-		write := false
-		for _, arg := range os.Args[3:] {
-			if arg == "--write" {
-				write = true
-			}
-		}
-		os.Exit(cmdGenerate(os.Args[2], write))
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--write": false})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
+		os.Exit(cmdGenerate(os.Args[2], parsed.set["--write"]))
 	case "init":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("init", "init [name]",
@@ -326,12 +447,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp run <file.bp> [--out <dir>]")
 			os.Exit(1)
 		}
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
-		for i := 3; i < len(os.Args); i++ {
-			if os.Args[i] == "--out" && i+1 < len(os.Args) {
-				outDir = os.Args[i+1]
-				i++
-			}
+		if v, ok := parsed.values["--out"]; ok {
+			outDir = v
 		}
 		os.Exit(cmdRun(os.Args[2], outDir))
 	case "dev":
@@ -345,12 +466,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp dev <file.bp> [--out <dir>]")
 			os.Exit(1)
 		}
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
-		for i := 3; i < len(os.Args); i++ {
-			if os.Args[i] == "--out" && i+1 < len(os.Args) {
-				outDir = os.Args[i+1]
-				i++
-			}
+		if v, ok := parsed.values["--out"]; ok {
+			outDir = v
 		}
 		os.Exit(cmdDev(os.Args[2], outDir))
 	case "eject":
@@ -384,41 +505,23 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>] [--react-query] [--frontend-only] [--gen-tests] [--apply] [--exit-code] [--no-color]")
 			os.Exit(1)
 		}
+		parsed, err := parseArgs(os.Args[3:], flagSpec{
+			"--out": true, "--target": true, "--react-query": false,
+			"--frontend-only": false, "--gen-tests": false, "--apply": false,
+			"--exit-code": false, "--no-color": false,
+		})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
-		target := targetNode
-		reactQuery := false
-		frontendOnly := false
-		genTests := false
-		apply := false
-		exitOnDiff := false
-		noColor := false
-		for i := 3; i < len(os.Args); i++ {
-			switch os.Args[i] {
-			case "--out":
-				if i+1 < len(os.Args) {
-					outDir = os.Args[i+1]
-					i++
-				}
-			case "--target":
-				if i+1 < len(os.Args) {
-					target = os.Args[i+1]
-					i++
-				}
-			case "--react-query":
-				reactQuery = true
-			case "--frontend-only":
-				frontendOnly = true
-			case "--gen-tests":
-				genTests = true
-			case "--apply":
-				apply = true
-			case "--exit-code":
-				exitOnDiff = true
-			case "--no-color":
-				noColor = true
-			}
+		if v, ok := parsed.values["--out"]; ok {
+			outDir = v
 		}
-		os.Exit(cmdDiff(os.Args[2], outDir, target, reactQuery, frontendOnly, genTests, apply, exitOnDiff, noColor))
+		target := targetNode
+		if v, ok := parsed.values["--target"]; ok {
+			target = v
+		}
+		os.Exit(cmdDiff(os.Args[2], outDir, target, parsed.set["--react-query"], parsed.set["--frontend-only"],
+			parsed.set["--gen-tests"], parsed.set["--apply"], parsed.set["--exit-code"], parsed.set["--no-color"]))
 	case "deploy":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("deploy", "deploy <file.bp> [--out <dir>] [--tag <tag>] [--target <name>] [--no-run]",
@@ -435,32 +538,22 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp deploy <file.bp> [--out <dir>] [--tag <tag>] [--target <name>] [--no-run]")
 			os.Exit(1)
 		}
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--tag": true, "--target": true, "--no-run": false})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
-		tag := "blueprint-app:latest"
-		deployTarget := "docker"
-		noRun := false
-		for i := 3; i < len(os.Args); i++ {
-			switch os.Args[i] {
-			case "--out":
-				if i+1 < len(os.Args) {
-					outDir = os.Args[i+1]
-					i++
-				}
-			case "--tag":
-				if i+1 < len(os.Args) {
-					tag = os.Args[i+1]
-					i++
-				}
-			case "--target":
-				if i+1 < len(os.Args) {
-					deployTarget = os.Args[i+1]
-					i++
-				}
-			case "--no-run":
-				noRun = true
-			}
+		if v, ok := parsed.values["--out"]; ok {
+			outDir = v
 		}
-		os.Exit(cmdDeploy(os.Args[2], outDir, tag, deployTarget, noRun))
+		tag := "blueprint-app:latest"
+		if v, ok := parsed.values["--tag"]; ok {
+			tag = v
+		}
+		deployTarget := "docker"
+		if v, ok := parsed.values["--target"]; ok {
+			deployTarget = v
+		}
+		os.Exit(cmdDeploy(os.Args[2], outDir, tag, deployTarget, parsed.set["--no-run"]))
 	case "version", "--version", "-v":
 		fmt.Printf("bp version %s\n", version)
 	case "completion":
@@ -486,13 +579,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: bp stats <file.bp> [--json]")
 			os.Exit(1)
 		}
-		jsonOutput := false
-		for _, arg := range os.Args[3:] {
-			if arg == "--json" {
-				jsonOutput = true
-			}
-		}
-		os.Exit(cmdStats(os.Args[2], jsonOutput))
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--json": false})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
+		os.Exit(cmdStats(os.Args[2], parsed.set["--json"]))
 	case "doctor":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("doctor", "doctor",
@@ -528,29 +618,19 @@ func main() {
 				nil)
 			os.Exit(0)
 		}
+		parsed, err := parseArgs(os.Args[2:], flagSpec{"--format": true})
+		exitOnArgError(err)
+		if len(parsed.positional) > 1 {
+			fmt.Fprintln(os.Stderr, "Error: at most one topic argument is supported")
+			os.Exit(1)
+		}
 		topic := ""
+		if len(parsed.positional) == 1 {
+			topic = parsed.positional[0]
+		}
 		format := "md"
-		args := os.Args[2:]
-		for i := 0; i < len(args); i++ {
-			switch args[i] {
-			case "--format":
-				if i+1 >= len(args) {
-					fmt.Fprintln(os.Stderr, "Error: --format needs a value (md or json)")
-					os.Exit(1)
-				}
-				format = args[i+1]
-				i++
-			default:
-				if strings.HasPrefix(args[i], "-") {
-					fmt.Fprintf(os.Stderr, "Error: unknown flag %s\n", args[i])
-					os.Exit(1)
-				}
-				if topic != "" {
-					fmt.Fprintln(os.Stderr, "Error: at most one topic argument is supported")
-					os.Exit(1)
-				}
-				topic = args[i]
-			}
+		if v, ok := parsed.values["--format"]; ok {
+			format = v
 		}
 		os.Exit(cmdContext(topic, format))
 	case "llms":
@@ -562,23 +642,10 @@ func main() {
 				})
 			os.Exit(0)
 		}
-		llmsOut := ""
-		llmsArgs := os.Args[2:]
-		for i := 0; i < len(llmsArgs); i++ {
-			switch llmsArgs[i] {
-			case "--out":
-				if i+1 >= len(llmsArgs) {
-					fmt.Fprintln(os.Stderr, "Error: --out needs a file path")
-					os.Exit(1)
-				}
-				llmsOut = llmsArgs[i+1]
-				i++
-			default:
-				fmt.Fprintf(os.Stderr, "Error: unknown argument %s\n", llmsArgs[i])
-				os.Exit(1)
-			}
-		}
-		os.Exit(cmdLlms(llmsOut))
+		parsed, err := parseArgs(os.Args[2:], flagSpec{"--out": true})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
+		os.Exit(cmdLlms(parsed.values["--out"]))
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -653,10 +720,10 @@ func cmdCheck(filename string, jsonOutput bool) int {
 }
 
 func cmdBuild(filename, outDir, target string, reactQuery, frontendOnly, genTests bool) int {
-	return cmdBuildWithOptions(filename, outDir, target, reactQuery, frontendOnly, false, genTests)
+	return cmdBuildWithOptions(filename, outDir, target, reactQuery, frontendOnly, false, genTests, false)
 }
 
-func cmdBuildWithOptions(filename, outDir, target string, reactQuery, frontendOnly, preserveNodeModules, genTests bool) int {
+func cmdBuildWithOptions(filename, outDir, target string, reactQuery, frontendOnly, preserveNodeModules, genTests, force bool) int {
 	// Validate target before any work — keeps errors visible and short.
 	canonical, err := resolveTarget(target)
 	if err != nil {
@@ -664,6 +731,16 @@ func cmdBuildWithOptions(filename, outDir, target string, reactQuery, frontendOn
 		return 2
 	}
 	target = canonical
+
+	// Pre-flight: refuse to clobber a foreign, non-Blueprint directory. Safe
+	// no-op for outDirs bp already built into (they carry the manifest) or
+	// fresh/empty ones — which covers every internal caller (run/dev/test/
+	// migrate/deploy) rebuilding their own output.
+	if err := checkOutDirSafety(outDir, force); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return 2
+	}
+
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
@@ -736,7 +813,7 @@ func cmdBuildWithOptions(filename, outDir, target string, reactQuery, frontendOn
 }
 
 func cmdFrontendPublish(filename, outDir string, reactQuery, skipInstall bool) int {
-	if code := cmdBuildWithOptions(filename, outDir, targetNode, reactQuery, true, skipInstall, false); code != 0 {
+	if code := cmdBuildWithOptions(filename, outDir, targetNode, reactQuery, true, skipInstall, false, false); code != 0 {
 		return code
 	}
 
@@ -1009,15 +1086,158 @@ func cmdDocs(filename, outFile string) int {
 	return 0
 }
 
+// copyProjectEnv copies a .env file from the project directory (the
+// directory containing the .bp source file) into outDir, so DATABASE_URL and
+// friends are available to whatever gets shelled out to next (drizzle-kit,
+// alembic, bun run start/test, ...). The project .env only wins when outDir
+// doesn't already have its own — an outDir-local .env (hand-edited after a
+// build) is left alone rather than clobbered on every invocation.
+func copyProjectEnv(filename, outDir string) {
+	envDst := filepath.Join(outDir, ".env")
+	if _, err := os.Stat(envDst); err == nil {
+		return // outDir already has its own — don't overwrite it
+	}
+	envSrc := filepath.Join(filepath.Dir(filename), ".env")
+	envContent, err := os.ReadFile(envSrc)
+	if err != nil {
+		return // no project .env to copy
+	}
+	if err := os.WriteFile(envDst, envContent, 0644); err == nil {
+		fmt.Printf("Copied .env from %s to %s\n", filepath.Dir(filename), outDir)
+	}
+}
+
+// packageHashPath is where installIfNeeded records the package.json content
+// hash from the last successful `bun install`, so a later build that changes
+// dependencies (e.g. `bp test`'s --gen-tests adding @electric-sql/pglite) is
+// detected even though node_modules already exists from an earlier build.
+const packageHashPath = ".blueprint/package-hash.txt"
+
+// needsInstall reports whether outDir's dependencies are stale: node_modules
+// is missing entirely, or package.json has changed since the last recorded
+// install. Historically we only checked node_modules existence, which meant
+// a `bp run` (no --gen-tests) followed by `bp test` (adds
+// @electric-sql/pglite to package.json) into the same outDir would skip
+// install and vitest would then die on a cryptic pglite resolution error.
+func needsInstall(outDir string) bool {
+	if _, err := os.Stat(filepath.Join(outDir, "node_modules")); os.IsNotExist(err) {
+		return true
+	}
+	pkgBytes, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		return true // can't tell what's installed — install to be safe
+	}
+	prev, err := os.ReadFile(filepath.Join(outDir, packageHashPath))
+	if err != nil {
+		return true // no recorded install for this outDir yet
+	}
+	return strings.TrimSpace(string(prev)) != hashBytes(pkgBytes)
+}
+
+// recordInstallHash stores package.json's content hash after a successful
+// install, so the next needsInstall check can detect "nothing changed".
+func recordInstallHash(outDir string) {
+	pkgBytes, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Join(outDir, ".blueprint"), 0o755)
+	_ = os.WriteFile(filepath.Join(outDir, packageHashPath), []byte(hashBytes(pkgBytes)+"\n"), 0o644)
+}
+
+func hashBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// installIfNeeded runs `bun install` in outDir when needsInstall says
+// dependencies are stale, and records the installed package.json's hash on
+// success so later calls can skip the reinstall once nothing has changed.
+func installIfNeeded(outDir string) error {
+	if !needsInstall(outDir) {
+		return nil
+	}
+	fmt.Printf("Installing dependencies in %s...\n", outDir)
+	install := exec.Command("bun", "install")
+	install.Dir = outDir
+	install.Stdout = os.Stdout
+	install.Stderr = os.Stderr
+	if err := install.Run(); err != nil {
+		return fmt.Errorf("bun install failed: %s", err)
+	}
+	recordInstallHash(outDir)
+	return nil
+}
+
+// devProcess wraps the `bun run start` subprocess cmdDev manages, so the
+// watch loop can tell "we killed it for a rebuild/shutdown" apart from "it
+// crashed on its own" — the latter used to go unreported, leaving `bp dev`
+// "watching" a dead server as if nothing were wrong.
+type devProcess struct {
+	cmd     *exec.Cmd
+	exited  chan struct{}
+	stopReq chan struct{} // closed by stop() before signaling the process
+}
+
+// startNodeProcess starts `bun run start` in outDir and reports unexpected
+// exits (crashes, missing deps, ...) to stderr as they happen.
+func startNodeProcess(outDir string) *devProcess {
+	cmd := exec.Command("bun", "run", "start")
+	cmd.Dir = outDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: server failed to start: %s\n", err)
+		return nil
+	}
+	fmt.Printf("Server started (pid %d)\n", cmd.Process.Pid)
+
+	dp := &devProcess{cmd: cmd, exited: make(chan struct{}), stopReq: make(chan struct{})}
+	go func() {
+		err := cmd.Wait()
+		close(dp.exited)
+		select {
+		case <-dp.stopReq:
+			// stopped intentionally for a rebuild/shutdown — not a crash
+		default:
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Server exited unexpectedly: %s\n", err)
+			} else {
+				fmt.Fprintln(os.Stderr, "Server exited unexpectedly.")
+			}
+		}
+	}()
+	return dp
+}
+
+// stop signals the process to shut down and blocks until it has exited.
+// Safe to call on a nil *devProcess (failed-to-start case).
+func (dp *devProcess) stop() {
+	if dp == nil {
+		return
+	}
+	close(dp.stopReq)
+	_ = dp.cmd.Process.Signal(syscall.SIGTERM)
+	<-dp.exited
+}
+
 func cmdDev(filename, outDir string) int {
 	// Initial build
 	fmt.Printf("Building %s...\n", filename)
 	if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
 		return code
 	}
+	copyProjectEnv(filename, outDir)
+	if err := installIfNeeded(outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		return 2
+	}
 
 	// Start the node process
 	proc := startNodeProcess(outDir)
+	if proc == nil {
+		fmt.Fprintln(os.Stderr, "Warning: server failed to start — will retry after the next change.")
+	}
 
 	// Track file modification time for change detection
 	info, err := os.Stat(filename)
@@ -1040,10 +1260,7 @@ func cmdDev(filename, outDir string) int {
 		select {
 		case <-sigCh:
 			fmt.Println("\nShutting down...")
-			if proc != nil {
-				_ = proc.Process.Signal(syscall.SIGTERM)
-				_ = proc.Wait()
-			}
+			proc.stop()
 			return 0
 		case <-ticker.C:
 			info, err := os.Stat(filename)
@@ -1054,52 +1271,35 @@ func cmdDev(filename, outDir string) int {
 				lastMod = info.ModTime()
 				fmt.Printf("\nFile changed — rebuilding...\n")
 
-				if proc != nil {
-					_ = proc.Process.Signal(syscall.SIGTERM)
-					_ = proc.Wait()
-					proc = nil
-				}
+				proc.stop()
+				proc = nil
 
 				if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
 					fmt.Fprintln(os.Stderr, "Build failed — waiting for next change...")
-				} else {
-					proc = startNodeProcess(outDir)
+					continue
+				}
+				copyProjectEnv(filename, outDir)
+				if err := installIfNeeded(outDir); err != nil {
+					fmt.Fprintf(os.Stderr, "%s — waiting for next change...\n", err)
+					continue
+				}
+				proc = startNodeProcess(outDir)
+				if proc == nil {
+					fmt.Fprintln(os.Stderr, "Warning: server failed to start — will retry after the next change.")
 				}
 			}
 		}
 	}
 }
 
-// startNodeProcess starts `bun run start` in the given output directory.
-func startNodeProcess(outDir string) *exec.Cmd {
-	cmd := exec.Command("bun", "run", "start")
-	cmd.Dir = outDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not start server: %s\n", err)
-		return nil
-	}
-	fmt.Printf("Server started (pid %d)\n", cmd.Process.Pid)
-	return cmd
-}
-
 func cmdRun(filename, outDir string) int {
 	if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
 		return code
 	}
-
-	// Install dependencies if node_modules is absent.
-	if _, err := os.Stat(filepath.Join(outDir, "node_modules")); os.IsNotExist(err) {
-		fmt.Printf("Installing dependencies in %s...\n", outDir)
-		install := exec.Command("bun", "install")
-		install.Dir = outDir
-		install.Stdout = os.Stdout
-		install.Stderr = os.Stderr
-		if err := install.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "bun install failed: %s\n", err)
-			return 2
-		}
+	copyProjectEnv(filename, outDir)
+	if err := installIfNeeded(outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		return 2
 	}
 
 	fmt.Printf("Starting server in %s...\n", outDir)
@@ -1120,17 +1320,10 @@ func cmdTest(filename, outDir string) int {
 	if code := cmdBuild(filename, outDir, targetNode, false, false, true); code != 0 {
 		return code
 	}
-
-	if _, err := os.Stat(filepath.Join(outDir, "node_modules")); os.IsNotExist(err) {
-		fmt.Printf("Installing dependencies in %s...\n", outDir)
-		install := exec.Command("bun", "install")
-		install.Dir = outDir
-		install.Stdout = os.Stdout
-		install.Stderr = os.Stderr
-		if err := install.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "bun install failed: %s\n", err)
-			return 2
-		}
+	copyProjectEnv(filename, outDir)
+	if err := installIfNeeded(outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		return 2
 	}
 
 	fmt.Printf("Running tests in %s...\n", outDir)
@@ -1158,19 +1351,8 @@ func cmdMigrate(filename, outDir, subCmd, target string) int {
 		return code
 	}
 
-	// Copy .env from the project directory (parent of outDir) to outDir if it exists.
-	// Both drizzle-kit and alembic read DATABASE_URL from .env, so keep this
-	// behavior identical across targets.
-	projectDir := filepath.Dir(filename)
-	envSrc := filepath.Join(projectDir, ".env")
-	envDst := filepath.Join(outDir, ".env")
-	if _, err := os.Stat(envSrc); err == nil {
-		if envContent, err := os.ReadFile(envSrc); err == nil {
-			if err := os.WriteFile(envDst, envContent, 0644); err == nil {
-				fmt.Printf("Copied .env from %s to %s\n", projectDir, outDir)
-			}
-		}
-	}
+	// Both drizzle-kit and alembic read DATABASE_URL from .env.
+	copyProjectEnv(filename, outDir)
 
 	switch target {
 	case targetPython:
@@ -1183,16 +1365,9 @@ func cmdMigrate(filename, outDir, subCmd, target string) int {
 // runDrizzleKit installs node deps if needed, then shells to `bunx drizzle-kit
 // <subCmd>` in outDir.
 func runDrizzleKit(outDir, subCmd string) int {
-	if _, err := os.Stat(filepath.Join(outDir, "node_modules")); os.IsNotExist(err) {
-		fmt.Printf("Installing dependencies in %s...\n", outDir)
-		install := exec.Command("bun", "install")
-		install.Dir = outDir
-		install.Stdout = os.Stdout
-		install.Stderr = os.Stderr
-		if err := install.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "bun install failed: %s\n", err)
-			return 2
-		}
+	if err := installIfNeeded(outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		return 2
 	}
 
 	fmt.Printf("Running drizzle-kit %s in %s...\n", subCmd, outDir)
@@ -1335,6 +1510,15 @@ func cmdInit(name string) int {
 	}
 
 	fmt.Printf("Created %s/%s.bp\n", safeName, safeName)
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Printf("  cd %s\n", safeName)
+	fmt.Printf("  bp check %s.bp\n", safeName)
+	fmt.Printf("  bp run %s.bp\n", safeName)
+	fmt.Println()
+	fmt.Println("  bp run builds to generated/ and needs DATABASE_URL set. After your first")
+	fmt.Println("  build/run, copy generated/.env.example to a .env file (project root or")
+	fmt.Println("  generated/.env) and fill it in.")
 	return 0
 }
 
@@ -1690,50 +1874,21 @@ func cmdDeploy(filename, outDir, tag, deployTarget string, noRun bool) int {
 	case "", "docker":
 		deployTarget = "docker"
 	case "fly":
-		fmt.Fprintln(os.Stderr, "Error: --target fly is not implemented yet; tracked for v0.11.")
+		fmt.Fprintln(os.Stderr, "Error: --target fly is not yet implemented; see the roadmap for status.")
 		fmt.Fprintln(os.Stderr, "See docs/production-readiness.md (Pillar 5: deployable artifacts) for status.")
 		return 2
 	default:
-		fmt.Fprintf(os.Stderr, "Error: unknown --target %q (supported: docker; fly is reserved for v0.11)\n", deployTarget)
+		fmt.Fprintf(os.Stderr, "Error: unknown --target %q (supported: docker; fly is reserved for a future release)\n", deployTarget)
 		return 2
 	}
 
-	// First, build the project
+	// Build to outDir through the same manifest-tracked, foreign-file-safe
+	// path as `bp build` — deploy never exposes its own --force, but an
+	// outDir it already built into (has a manifest) keeps working exactly
+	// as before.
 	fmt.Println("Building...")
-	src, err := os.ReadFile(filename)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-		return 2
-	}
-
-	file, parseErrors := parser.ParseFile(filename, src)
-	if len(parseErrors) > 0 {
-		for _, e := range parseErrors {
-			fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
-		}
-		return 1
-	}
-
-	if errs := resolveIncludes(file, filename); len(errs) > 0 {
-		for _, e := range errs {
-			fmt.Fprintln(os.Stderr, e)
-		}
-		return 1
-	}
-
-	checkErrors := checker.Check(file)
-	if len(checkErrors) > 0 {
-		for _, e := range checkErrors {
-			fmt.Fprintln(os.Stderr, e)
-		}
-		return 1
-	}
-
-	// Build to outDir
-	gen := js.New()
-	if err := gen.Generate(file, outDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
-		return 4
+	if code := cmdBuildWithOptions(filename, outDir, targetNode, false, false, false, false, false); code != 0 {
+		return code
 	}
 
 	// Check if Dockerfile exists
@@ -1806,24 +1961,95 @@ func dockerSmokeTest(tag string) int {
 	return 0
 }
 
+// cliCommand describes one top-level bp command, for shell completion and
+// (via allCommandNames) suggestCommand's typo list. This is the single
+// source of truth for "which commands exist" outside of main()'s switch —
+// add a command here and bash/zsh/fish completion and "did you mean" pick it
+// up automatically instead of silently drifting out of date.
+type cliCommand struct {
+	name        string
+	desc        string
+	takesBpFile bool // completes to *.bp when this is the previous word
+}
+
+var cliCommands = []cliCommand{
+	{name: "check", desc: "Validate syntax and semantics", takesBpFile: true},
+	{name: "build", desc: "Compile .bp to JavaScript/TypeScript", takesBpFile: true},
+	{name: "frontend", desc: "Generate standalone frontend SDK package", takesBpFile: true},
+	{name: "diff", desc: "Show changes without overwriting", takesBpFile: true},
+	{name: "run", desc: "Build and start the server", takesBpFile: true},
+	{name: "dev", desc: "Watch mode - rebuild and restart", takesBpFile: true},
+	{name: "test", desc: "Build and run vitest", takesBpFile: true},
+	{name: "migrate", desc: "Run drizzle-kit migration", takesBpFile: true},
+	{name: "generate", desc: "Resolve @> slots via LLM", takesBpFile: true},
+	{name: "docs", desc: "Generate OpenAPI 3.1 JSON", takesBpFile: true},
+	{name: "fmt", desc: "Format a .bp file", takesBpFile: true},
+	{name: "lint", desc: "Lint for best practices", takesBpFile: true},
+	{name: "stats", desc: "Show code statistics", takesBpFile: true},
+	{name: "deploy", desc: "Build and run Docker container", takesBpFile: true},
+	{name: "init", desc: "Scaffold a new project"},
+	{name: "eject", desc: "Remove Blueprint markers"},
+	{name: "doctor", desc: "Check environment dependencies"},
+	{name: "explain", desc: "Print docs for an error code"},
+	{name: "context", desc: "Agent-facing language + CLI surface"},
+	{name: "llms", desc: "Print the complete agent/LLM guide"},
+	{name: "lsp", desc: "Start LSP server"},
+	{name: "completion", desc: "Generate shell completion"},
+	{name: "version", desc: "Print version"},
+	{name: "help", desc: "Show help"},
+}
+
+func allCommandNames() []string {
+	names := make([]string, len(cliCommands))
+	for i, c := range cliCommands {
+		names[i] = c.name
+	}
+	return names
+}
+
+func bpFileCommandNames() []string {
+	var names []string
+	for _, c := range cliCommands {
+		if c.takesBpFile {
+			names = append(names, c.name)
+		}
+	}
+	return names
+}
+
 func cmdCompletion(shell string) int {
 	switch shell {
 	case "bash":
-		fmt.Println(`_bp_completion() {
+		fmt.Print(bashCompletionScript())
+	case "zsh":
+		fmt.Print(zshCompletionScript())
+	case "fish":
+		fmt.Print(fishCompletionScript())
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown shell: %s. Supported: bash, zsh, fish\n", shell)
+		return 1
+	}
+	return 0
+}
+
+func bashCompletionScript() string {
+	commands := strings.Join(allCommandNames(), " ")
+	bpFileCmds := strings.Join(bpFileCommandNames(), "|")
+	return fmt.Sprintf(`_bp_completion() {
     local cur prev opts
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    
-    commands="check build frontend diff run dev test migrate generate docs fmt lint init eject deploy completion version help"
-    
+
+    commands="%s"
+
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- ${cur}) )
         return 0
     fi
-    
+
     case "${prev}" in
-        check|build|frontend|diff|run|dev|test|migrate|generate|docs|fmt|lint|deploy)
+        %s)
             _filedir "@(.bp)"
             return 0
             ;;
@@ -1845,16 +2071,25 @@ func cmdCompletion(shell string) int {
         COMPREPLY=( $(compgen -W "publish" -- ${cur}) $(compgen -f -X '!*.bp' -- ${cur}) )
         return 0
     fi
-    
+
     if [[ ${cur} == -* ]]; then
-        COMPREPLY=( $(compgen -W "--out --react-query --frontend-only --skip-install --write --check --tag --help -h" -- ${cur}) )
+        COMPREPLY=( $(compgen -W "--out --target --react-query --frontend-only --gen-tests --force --skip-install --write --check --tag --json --format --apply --exit-code --no-color --no-run --help -h" -- ${cur}) )
         return 0
     fi
 }
 
-complete -F _bp_completion bp`)
-	case "zsh":
-		fmt.Println(`#compdef bp
+complete -F _bp_completion bp
+`, commands, bpFileCmds)
+}
+
+func zshCompletionScript() string {
+	lines := make([]string, len(cliCommands))
+	for i, c := range cliCommands {
+		lines[i] = fmt.Sprintf("                '%s[%s]'", c.name, c.desc)
+	}
+	values := strings.Join(lines, " \\\n")
+	bpFileCmds := strings.Join(bpFileCommandNames(), "|")
+	return fmt.Sprintf(`#compdef bp
 
 _bp() {
     local curcontext="$curcontext" state line
@@ -1867,81 +2102,54 @@ _bp() {
     case "$state" in
         command)
             _values 'commands' \
-                'check[Validate syntax and semantics]' \
-                'build[Compile .bp to JavaScript/TypeScript]' \
-                'frontend[Generate standalone frontend SDK package]' \
-                'diff[Show changes without overwriting]' \
-                'run[Build and start the server]' \
-                'dev[Watch mode - rebuild and restart]' \
-                'test[Build and run vitest]' \
-                'migrate[Run drizzle-kit migration]' \
-                'generate[Resolve @> slots via LLM]' \
-                'docs[Generate OpenAPI 3.1 JSON]' \
-                'fmt[Format a .bp file]' \
-                'lint[Lint for best practices]' \
-                'init[Scaffold a new project]' \
-                'eject[Remove Blueprint markers]' \
-                'deploy[Build and run Docker container]' \
-                'completion[Generate shell completion]' \
-                'version[Print version]' \
-                'help[Show help]'
+%s
             ;;
         args)
             case "$line[1]" in
-                check|build|frontend|diff|run|dev|test|migrate|generate|docs|fmt|lint|deploy)
+                %s)
                     _files -g "*.bp"
                     ;;
                 completion)
                     _values 'shell' 'bash' 'zsh' 'fish'
                     ;;
-                init|eject|version|help)
+                *)
                     ;;
             esac
             ;;
     esac
 }
 
-compdef _bp bp`)
-	case "fish":
-		fmt.Println(`complete -c bp -f
+compdef _bp bp
+`, values, bpFileCmds)
+}
 
-complete -c bp -n "__fish_use_subcommand" -a "check" -d "Validate syntax and semantics"
-complete -c bp -n "__fish_use_subcommand" -a "build" -d "Compile .bp to JavaScript/TypeScript"
-complete -c bp -n "__fish_use_subcommand" -a "frontend" -d "Generate standalone frontend SDK package"
-complete -c bp -n "__fish_use_subcommand" -a "diff" -d "Show changes without overwriting"
-complete -c bp -n "__fish_use_subcommand" -a "run" -d "Build and start the server"
-complete -c bp -n "__fish_use_subcommand" -a "dev" -d "Watch mode - rebuild and restart"
-complete -c bp -n "__fish_use_subcommand" -a "test" -d "Build and run vitest"
-complete -c bp -n "__fish_use_subcommand" -a "migrate" -d "Run drizzle-kit migration"
-complete -c bp -n "__fish_use_subcommand" -a "generate" -d "Resolve @> slots via LLM"
-complete -c bp -n "__fish_use_subcommand" -a "docs" -d "Generate OpenAPI 3.1 JSON"
-complete -c bp -n "__fish_use_subcommand" -a "fmt" -d "Format a .bp file"
-complete -c bp -n "__fish_use_subcommand" -a "lint" -d "Lint for best practices"
-complete -c bp -n "__fish_use_subcommand" -a "init" -d "Scaffold a new project"
-complete -c bp -n "__fish_use_subcommand" -a "eject" -d "Remove Blueprint markers"
-complete -c bp -n "__fish_use_subcommand" -a "deploy" -d "Build and run Docker container"
-complete -c bp -n "__fish_use_subcommand" -a "completion" -d "Generate shell completion"
-complete -c bp -n "__fish_use_subcommand" -a "version" -d "Print version"
-complete -c bp -n "__fish_use_subcommand" -a "help" -d "Show help"
-
-complete -c bp -n "__fish_seen_subcommand_from check build frontend diff run dev test migrate generate docs fmt lint deploy" -a "(__fish_complete_suffix .bp)"
-complete -c bp -n "__fish_seen_subcommand_from frontend; and not __fish_seen_subcommand_from publish" -a "publish" -d "Build and dry-run frontend package publish flow"
+func fishCompletionScript() string {
+	var sb strings.Builder
+	sb.WriteString("complete -c bp -f\n\n")
+	for _, c := range cliCommands {
+		fmt.Fprintf(&sb, "complete -c bp -n \"__fish_use_subcommand\" -a \"%s\" -d \"%s\"\n", c.name, c.desc)
+	}
+	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "complete -c bp -n \"__fish_seen_subcommand_from %s\" -a \"(__fish_complete_suffix .bp)\"\n",
+		strings.Join(bpFileCommandNames(), " "))
+	sb.WriteString(`complete -c bp -n "__fish_seen_subcommand_from frontend; and not __fish_seen_subcommand_from publish" -a "publish" -d "Build and dry-run frontend package publish flow"
 complete -c bp -n "__fish_seen_subcommand_from publish" -a "(__fish_complete_suffix .bp)"
 complete -c bp -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
 
 complete -c bp -l out -d "Output directory"
+complete -c bp -l target -d "Codegen/deploy target"
 complete -c bp -l react-query -d "Generate React Query hooks"
 complete -c bp -l frontend-only -d "Emit only the standalone frontend package"
+complete -c bp -l gen-tests -d "Generate contract tests"
+complete -c bp -l force -d "Overwrite a non-empty --out directory with no Blueprint manifest"
 complete -c bp -l skip-install -d "Skip bun install before frontend publish dry-run"
 complete -c bp -l write -d "Write output back to file"
 complete -c bp -l check -d "Check if formatted (CI mode)"
 complete -c bp -l tag -d "Docker image tag"
-complete -c bp -l help -s h -d "Show help"`)
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown shell: %s. Supported: bash, zsh, fish\n", shell)
-		return 1
-	}
-	return 0
+complete -c bp -l json -d "JSON output"
+complete -c bp -l help -s h -d "Show help"
+`)
+	return sb.String()
 }
 
 func buildInitTemplate(displayName, safeName string) string {
@@ -2036,10 +2244,7 @@ func printUsage() {
 
 // suggestCommand returns the closest matching command for typos
 func suggestCommand(input string) string {
-	commands := []string{"check", "build", "frontend", "diff", "run", "dev", "test", "migrate",
-		"generate", "docs", "fmt", "lint", "init", "eject", "deploy",
-		"completion", "explain", "context", "llms", "doctor", "lsp", "stats",
-		"version", "help"}
+	commands := allCommandNames()
 
 	// Common typos mapping
 	typos := map[string]string{

@@ -35,6 +35,6 @@ worker process_job {
 
   on_fail {
     |> update job { status: "failed" }
-    |> log "Job {job_id} failed"
+    |> log "Job failed" level(error)
   }
 }

@@ -42,7 +42,7 @@ sudo mv bin/bp /usr/local/bin/
 
 ```bash
 bp version
-# bp version 0.10.0
+# bp version 0.11.0
 ```
 
 ## Your First Service

@@ -348,13 +348,50 @@ func (g *Generator) genWorker(w *ast.Worker) codegen.OutputFile {
 	fmt.Fprintf(&b, "export const %sRetryCount = %d;\n", name, retryCount)
 	fmt.Fprintf(&b, "export const %sBackoff = %s;\n\n", name, backoffExpr)
 
-	ctx := emitCtx{kind: "function"}
+	// Worker inputs (`<- name type`) are unpacked from the BullMQ job payload —
+	// both the handler and on_fail receive the same `data` param, so both get
+	// the same destructuring assignments up front.
+	inputs := workerInputStmts(w.Stmts)
+	// on_fail runs without any of the handler's fetched records (BullMQ's
+	// failed-job callback only ever sees the raw job payload), so bare
+	// `update <model> { ... }` / `delete <model>` calls referencing a model
+	// whose id arrived as a `<model>_id` input need a synthetic bound
+	// reference to resolve their WHERE id.
+	idBindings := g.workerIDBindings(inputs)
+
+	newWorkerCtx := func() emitCtx {
+		ctx := emitCtx{
+			kind:        "worker",
+			declared:    make(map[string]bool),
+			boundVars:   make(map[string]string),
+			asyncFns:    g.buildAsyncFns(),
+			structEnums: g.structEnums,
+		}
+		for k, v := range idBindings {
+			ctx.boundVars[k] = v
+		}
+		return ctx
+	}
+
+	emitInputBindings := func(indent string, ctx *emitCtx) {
+		for _, inp := range inputs {
+			camelName := toCamelCase(inp.Name)
+			fmt.Fprintf(&b, "%sconst %s = data.%s;\n", indent, camelName, inp.Name)
+			ctx.declared[camelName] = true
+		}
+	}
+
 	fmt.Fprintf(&b, "export async function %s(data: any): Promise<void> {\n", name)
-	g.emitArrowStmts(&b, w.Stmts, "  ", ctx)
+	handlerCtx := newWorkerCtx()
+	emitInputBindings("  ", &handlerCtx)
+	g.emitArrowStmts(&b, w.Stmts, "  ", handlerCtx)
 	b.WriteString("}\n\n")
+
 	fmt.Fprintf(&b, "export async function %sOnFail(data: any, error: Error): Promise<void> {\n", name)
 	if len(w.OnFail) > 0 {
-		g.emitArrowStmts(&b, w.OnFail, "  ", ctx)
+		onFailCtx := newWorkerCtx()
+		emitInputBindings("  ", &onFailCtx)
+		g.emitArrowStmts(&b, w.OnFail, "  ", onFailCtx)
 	}
 	b.WriteString("}\n")
 
@@ -362,6 +399,36 @@ func (g *Generator) genWorker(w *ast.Worker) codegen.OutputFile {
 		Path:    fmt.Sprintf("src/workers/%s.ts", toKebabCase(w.Name)),
 		Content: []byte(b.String()),
 	}
+}
+
+// workerInputStmts returns the InputStmt entries in a worker body — the
+// `<- name type` bindings unpacked from the BullMQ job payload.
+func workerInputStmts(stmts []ast.ArrowStmt) []*ast.InputStmt {
+	var out []*ast.InputStmt
+	for _, s := range stmts {
+		if inp, ok := s.(*ast.InputStmt); ok {
+			out = append(out, inp)
+		}
+	}
+	return out
+}
+
+// workerIDBindings synthesizes id-only bound-variable references (model name
+// -> a `{ id: <camelInput> }` stand-in) for worker inputs named `<model>_id`
+// where `<model>` is a declared model. dataOpToJSWithCtx's update/delete paths
+// append `.id` to whatever's bound for the model, so this resolves bare
+// `update <model> { ... }` / `delete <model>` calls to the job payload's id
+// even when (as in on_fail) no fetch step bound the model to a real row.
+func (g *Generator) workerIDBindings(inputs []*ast.InputStmt) map[string]string {
+	bound := make(map[string]string)
+	for _, inp := range inputs {
+		modelName := strings.TrimSuffix(inp.Name, "_id")
+		if modelName == inp.Name || !g.declaredModels[modelName] {
+			continue
+		}
+		bound[modelName] = fmt.Sprintf("({ id: %s } as any)", toCamelCase(inp.Name))
+	}
+	return bound
 }
 
 func workerQueueName(w *ast.Worker) string {
@@ -413,7 +480,14 @@ func workerBackoffExpr(w *ast.Worker) string {
 		}
 		parts := make([]string, 0, len(meta.Extra))
 		for _, kv := range meta.Extra {
-			parts = append(parts, fmt.Sprintf("%s: %s", toCamelCase(kv.Key), exprToJS(kv.Value)))
+			val := exprToJS(kv.Value)
+			if kv.Key == "strategy" {
+				// Strategy is parsed as a bare identifier (e.g. `exponential`);
+				// quote it since it's a string literal in BullMQ's backoff
+				// options, not a JS identifier reference.
+				val = fmt.Sprintf("%q", exprToString(kv.Value))
+			}
+			parts = append(parts, fmt.Sprintf("%s: %s", toCamelCase(kv.Key), val))
 		}
 		return fmt.Sprintf("{ %s }", strings.Join(parts, ", "))
 	}

@@ -243,7 +243,7 @@ func TestFullGuideIsSelfContainedAndCurrent(t *testing.T) {
 		"# Blueprint — agent & LLM guide (v0.10.0)",
 		"## CLI quick reference",
 		"## Codegen targets",
-		"bp llms",        // the new command advertises itself
+		"bp llms",         // the new command advertises itself
 		"--target effect", // currency: the third target is present
 	} {
 		if !strings.Contains(g, want) {
