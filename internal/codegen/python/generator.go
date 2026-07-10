@@ -413,12 +413,12 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 				continue
 			case "where":
 				// where(col op val, ...) — comparison ops (==, !=, <, >,
-				// <=, >=) and `in` with an identifier LHS are supported.
-				// Anything else (text-search, function calls, `like`) is
-				// still rejected.
+				// <=, >=), `in`, `or`/`and` (recursive), and text-search
+				// shorthand (bare ident) are supported. `like` and
+				// function-call predicates are still rejected.
 				for _, pred := range marker.Args {
 					if !isSupportedWherePredicate(pred) {
-						out = append(out, "`query ... where(...)` with unsupported predicates (expected comparison ops or `in`)")
+						out = append(out, "`query ... where(...)` with unsupported predicates (expected comparison ops, `in`, `or`/`and`, or text-search ident)")
 						break
 					}
 				}
@@ -451,16 +451,23 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 
 // isSupportedWherePredicate reports whether a single `where(...)` predicate is
 // in the subset Python codegen can translate: identifier <comparison-op>
-// anything (==, !=, <, >, <=, >=), or `col in collection.field` / `col in list`.
+// anything (==, !=, <, >, <=, >=), `col in collection.field` / `col in list`,
+// `or`/`and` of supported predicates (recursive), or a bare ident (text-search
+// shorthand → conditional ILIKE on text columns).
 func isSupportedWherePredicate(e ast.Expr) bool {
-	bin, ok := e.(*ast.BinaryExpr)
-	if !ok {
-		return false
-	}
-	switch bin.Op {
-	case "==", "!=", "<", ">", "<=", ">=", "in":
-		_, ok := bin.Left.(*ast.Ident)
-		return ok
+	switch v := e.(type) {
+	case *ast.BinaryExpr:
+		switch v.Op {
+		case "==", "!=", "<", ">", "<=", ">=", "in":
+			_, ok := v.Left.(*ast.Ident)
+			return ok
+		case "or", "and":
+			return isSupportedWherePredicate(v.Left) && isSupportedWherePredicate(v.Right)
+		default:
+			return false
+		}
+	case *ast.Ident:
+		return true // text-search shorthand
 	default:
 		return false
 	}

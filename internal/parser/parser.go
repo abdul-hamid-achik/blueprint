@@ -1458,6 +1458,8 @@ func (p *Parser) parseStepExpr() ast.Expr {
 		return p.parseCallOperation()
 	case lexer.TokenEmit:
 		return p.parseEmitOperation()
+	case lexer.TokenEnqueue:
+		return p.parseEnqueueOperation()
 	case lexer.TokenLog:
 		return p.parseLogOperation()
 	case lexer.TokenSleep:
@@ -1666,6 +1668,31 @@ func (p *Parser) parseEmitOperation() ast.Expr {
 	}
 
 	return &ast.FnCall{Loc: loc, Name: "emit", Args: args}
+}
+
+// parseEnqueueOperation parses `enqueue queue_name { data }` — enqueues a
+// job to a BullMQ queue. The queue name can be a string literal or an ident
+// matching a worker's trigger queue("name"). The body { data } is required
+// and becomes the job payload.
+func (p *Parser) parseEnqueueOperation() ast.Expr {
+	loc := p.expect(lexer.TokenEnqueue).Loc
+	var args []ast.Expr
+
+	// Queue name (string literal or ident)
+	if p.check(lexer.TokenString) {
+		args = append(args, &ast.StringLit{Loc: p.peek().Loc, Value: p.advance().Value})
+	} else {
+		nameLoc := p.peek().Loc
+		name := p.expectIdent()
+		args = append(args, &ast.Ident{Loc: nameLoc, Name: name})
+	}
+
+	// Required body { data } — the job payload
+	if p.check(lexer.TokenLBrace) {
+		args = append(args, p.parseBlockExpr())
+	}
+
+	return &ast.FnCall{Loc: loc, Name: "enqueue", Args: args}
 }
 
 func (p *Parser) parseLogOperation() ast.Expr {
@@ -2578,7 +2605,7 @@ func (p *Parser) isKeywordUsableAsIdent() bool {
 	case lexer.TokenAnalytics, lexer.TokenAuth, lexer.TokenCache, lexer.TokenCall,
 		lexer.TokenClose, lexer.TokenCount, lexer.TokenCronKw,
 		lexer.TokenDefault, lexer.TokenDelete, lexer.TokenDownload,
-		lexer.TokenEmit, lexer.TokenEnv, lexer.TokenFetch, lexer.TokenFirst,
+		lexer.TokenEmit, lexer.TokenEnqueue, lexer.TokenEnv, lexer.TokenFetch, lexer.TokenFirst,
 		lexer.TokenFormat, lexer.TokenFrom, lexer.TokenGenerated,
 		lexer.TokenInject, lexer.TokenIs, lexer.TokenJoin,
 		lexer.TokenLeave, lexer.TokenLimit, lexer.TokenLog,

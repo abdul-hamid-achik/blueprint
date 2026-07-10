@@ -849,6 +849,7 @@ var checkerBuiltinFns = map[string]bool{
 	"delete_s3_object": true,
 	"download":         true,
 	"emit":             true,
+	"enqueue":          true,
 	"event":            true,
 	"export_bundle":    true,
 	"fetch":            true,

@@ -42,6 +42,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsPaginate := false
 	needsEncoder := false
 	needsNow := false
+	needsTimedelta := false
 	userFnCalls := map[string]bool{}
 	middlewares := map[string]bool{}
 	for _, ep := range eps {
@@ -63,10 +64,16 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			}
 		}
 		// Collect every user fn the endpoint calls (anywhere in its stmts),
-		// every `use <middleware>` meta, and whether any expression needs `now`.
 		walkEndpointExprs(ep, func(e ast.Expr) {
 			if _, ok := e.(*ast.NowLit); ok {
 				needsNow = true
+			}
+			// Duration expressions (N.days.ago, N.hours) need timedelta.
+			if fa, ok := e.(*ast.FieldAccess); ok {
+				if fa.Field == "ago" || pyDurationField(fa.Field) != "" {
+					needsTimedelta = true
+					needsNow = true // ago uses datetime.now(timezone.utc)
+				}
 			}
 			if fc, ok := e.(*ast.FnCall); ok && g.userFnNames()[fc.Name] {
 				userFnCalls[fc.Name] = true
@@ -103,14 +110,20 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			sqlImports = append(sqlImports, "func")
 		}
 		needsAnd := false
+		needsOr := false
 		for _, ep := range eps {
 			if endpointHasMultiWhere(ep) {
 				needsAnd = true
-				break
+			}
+			if endpointHasOrInWhere(ep) {
+				needsOr = true
 			}
 		}
 		if needsAnd {
 			sqlImports = append(sqlImports, "and_")
+		}
+		if needsOr {
+			sqlImports = append(sqlImports, "or_")
 		}
 		fmt.Fprintf(b, "from sqlalchemy import %s\n", strings.Join(sqlImports, ", "))
 		b.WriteString("from sqlalchemy.orm import Session\n")
@@ -121,7 +134,11 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 		b.WriteString("from types import SimpleNamespace\n")
 	}
 	if needsNow {
-		b.WriteString("from datetime import datetime, timezone\n")
+		dtImports := []string{"datetime", "timezone"}
+		if needsTimedelta {
+			dtImports = append(dtImports, "timedelta")
+		}
+		fmt.Fprintf(b, "from datetime import %s\n", strings.Join(dtImports, ", "))
 	}
 	// `use <middleware>` requires Depends + the middleware module import.
 	if len(middlewares) > 0 {

@@ -482,44 +482,106 @@ func emitQuery(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx,
 }
 
 // whereConditions converts a `where(...)` marker into SQLAlchemy predicates.
-// Supports comparison operators (==, !=, <, >, <=, >=) and `in`:
-//   - `col == val`    → `schema.M.col == val`
-//   - `col != val`    → `schema.M.col != val`
-//   - `col < val`     → `schema.M.col < val`
-//   - `col > val`     → `schema.M.col > val`
-//   - `col <= val`    → `schema.M.col <= val`
-//   - `col >= val`    → `schema.M.col >= val`
-//   - `col in list`   → `schema.M.col.in_(list)`
+// Supports comparison operators (==, !=, <, >, <=, >=), `in`, `or`, `and`,
+// and text-search shorthand (bare ident → conditional ILIKE):
+//   - `col == val`     → `schema.M.col == val`
+//   - `col != val`     → `schema.M.col != val`
+//   - `col < val`      → `schema.M.col < val`
+//   - `col > val`      → `schema.M.col > val`
+//   - `col <= val`     → `schema.M.col <= val`
+//   - `col >= val`     → `schema.M.col >= val`
+//   - `col in list`    → `schema.M.col.in_(list)`
 //   - `col in tags.fk` → `schema.M.col.in_([r.fk for r in tags])`
+//   - `a or b`         → `or_(<pred_a>, <pred_b>)` (recursive)
+//   - `a and b`        → `and_(<pred_a>, <pred_b>)` (recursive)
+//   - `ident` (bare)   → conditional ILIKE on text columns (text-search)
 func whereConditions(where *ast.FnCall, className string, ctx *bodyCtx) []string {
 	var preds []string
 	for _, arg := range where.Args {
-		bin, ok := arg.(*ast.BinaryExpr)
-		if !ok {
-			continue
-		}
-		lhsIdent, ok := bin.Left.(*ast.Ident)
-		if !ok {
-			continue
-		}
-		colRef := fmt.Sprintf("schema.%s.%s", className, lhsIdent.Name)
-		switch bin.Op {
-		case "==", "!=", "<", ">", "<=", ">=":
-			preds = append(preds, fmt.Sprintf("%s %s %s",
-				colRef, bin.Op, exprToPyWithCtx(bin.Right, ctx)))
-		case "in":
-			if fa, ok := bin.Right.(*ast.FieldAccess); ok {
-				// `col in tags.tag_id` → `.in_([r.tag_id for r in tags])`
-				coll := exprToPyWithCtx(fa.Base, ctx)
-				preds = append(preds, fmt.Sprintf("%s.in_([r.%s for r in %s])",
-					colRef, fa.Field, coll))
-			} else {
-				preds = append(preds, fmt.Sprintf("%s.in_(%s)",
-					colRef, exprToPyWithCtx(bin.Right, ctx)))
-			}
+		if p := wherePredicateExpr(arg, className, ctx); p != "" {
+			preds = append(preds, p)
 		}
 	}
 	return preds
+}
+
+// wherePredicateExpr translates a single where argument into a SQLAlchemy
+// predicate string. Returns "" for unrecognised shapes.
+func wherePredicateExpr(e ast.Expr, className string, ctx *bodyCtx) string {
+	switch v := e.(type) {
+	case *ast.BinaryExpr:
+		if v.Op == "or" {
+			left := wherePredicateExpr(v.Left, className, ctx)
+			right := wherePredicateExpr(v.Right, className, ctx)
+			if left != "" && right != "" {
+				return fmt.Sprintf("or_(%s, %s)", left, right)
+			}
+			return ""
+		}
+		if v.Op == "and" {
+			left := wherePredicateExpr(v.Left, className, ctx)
+			right := wherePredicateExpr(v.Right, className, ctx)
+			if left != "" && right != "" {
+				return fmt.Sprintf("and_(%s, %s)", left, right)
+			}
+			return ""
+		}
+		lhsIdent, ok := v.Left.(*ast.Ident)
+		if !ok {
+			return ""
+		}
+		colRef := fmt.Sprintf("schema.%s.%s", className, lhsIdent.Name)
+		switch v.Op {
+		case "==", "!=", "<", ">", "<=", ">=":
+			return fmt.Sprintf("%s %s %s",
+				colRef, v.Op, exprToPyWithCtx(v.Right, ctx))
+		case "in":
+			if fa, ok := v.Right.(*ast.FieldAccess); ok {
+				coll := exprToPyWithCtx(fa.Base, ctx)
+				return fmt.Sprintf("%s.in_([r.%s for r in %s])",
+					colRef, fa.Field, coll)
+			}
+			return fmt.Sprintf("%s.in_(%s)",
+				colRef, exprToPyWithCtx(v.Right, ctx))
+		}
+	case *ast.Ident:
+		// Text-search shorthand: `where(q)` → conditional ILIKE on text cols.
+		varName := v.Name
+		textCols := pythonTextColumns(className, ctx)
+		if len(textCols) == 0 {
+			return ""
+		}
+		conds := make([]string, 0, len(textCols))
+		for _, col := range textCols {
+			conds = append(conds, fmt.Sprintf("schema.%s.%s.ilike(f\"%%{%s}%%\")",
+				className, col, varName))
+		}
+		if len(conds) == 1 {
+			return fmt.Sprintf("(%s is not None and %s)", varName, conds[0])
+		}
+		return fmt.Sprintf("(%s is not None and or_(%s))", varName, strings.Join(conds, ", "))
+	}
+	return ""
+}
+
+// pythonTextColumns returns text/string column names for a model, used by
+// the text-search shorthand `where(q)`.
+func pythonTextColumns(className string, ctx *bodyCtx) []string {
+	if ctx.models == nil {
+		return nil
+	}
+	for _, m := range ctx.models {
+		if common.PascalCase(m.Name) == className {
+			var cols []string
+			for _, f := range m.Fields {
+				if pt, ok := f.Type.(*ast.PrimitiveType); ok && pt.Name == "string" {
+					cols = append(cols, f.Name)
+				}
+			}
+			return cols
+		}
+	}
+	return nil
 }
 
 // orderClause renders one `order(col, asc|desc)` marker as a SQLAlchemy
@@ -1089,6 +1151,22 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 	case *ast.Ident:
 		return v.Name
 	case *ast.FieldAccess:
+		// N.days.ago → datetime.now(timezone.utc) - timedelta(days=N)
+		// Handles the "ago" suffix on N.duration_unit patterns.
+		if v.Field == "ago" {
+			if inner, ok := v.Base.(*ast.FieldAccess); ok && pyDurationField(inner.Field) != "" {
+				if numLit, ok := inner.Base.(*ast.IntLit); ok {
+					unit := pyDurationField(inner.Field)
+					return fmt.Sprintf("datetime.now(timezone.utc) - timedelta(%s=%s)", unit, numLit.Value)
+				}
+			}
+		}
+		// N.days, N.hours, etc. → timedelta(days=N), timedelta(hours=N)
+		if unit := pyDurationField(v.Field); unit != "" {
+			if numLit, ok := v.Base.(*ast.IntLit); ok {
+				return fmt.Sprintf("timedelta(%s=%s)", unit, numLit.Value)
+			}
+		}
 		// Python exceptions have no `.message` attribute (unlike JS Error);
 		// `str(error)` is the portable equivalent. Only rewrite inside a
 		// recover scope — `error` isn't bound anywhere else.
@@ -1136,6 +1214,25 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 		return "(" + exprToPyWithCtx(v.Expr, ctx) + ")"
 	}
 	return exprToPy(e)
+}
+
+// pyDurationField maps a Blueprint duration field name to the equivalent
+// Python timedelta keyword argument. Returns "" if the field is not a
+// recognized duration unit.
+func pyDurationField(field string) string {
+	switch field {
+	case "ms":
+		return "milliseconds"
+	case "s", "sec", "seconds":
+		return "seconds"
+	case "min", "minutes":
+		return "minutes"
+	case "hour", "hours":
+		return "hours"
+	case "day", "days":
+		return "days"
+	}
+	return ""
 }
 
 // pyStringLiteralWithCtx is pyStringLiteral with FK-alias rewriting applied
@@ -1348,6 +1445,54 @@ func stmtsHaveMultiWhere(stmts []ast.ArrowStmt) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// endpointHasOrInWhere reports whether any where(...) predicate in the
+// endpoint uses `or`, which requires `or_` in the sqlalchemy import.
+func endpointHasOrInWhere(ep *ast.Endpoint) bool {
+	return stmtsHaveOrInWhere(ep.Stmts)
+}
+
+func stmtsHaveOrInWhere(stmts []ast.ArrowStmt) bool {
+	for _, s := range stmts {
+		switch v := s.(type) {
+		case *ast.StepStmt:
+			fn, ok := v.Expr.(*ast.FnCall)
+			if !ok || fn.Name != "query" {
+				continue
+			}
+			for _, arg := range fn.Args[1:] {
+				if marker, ok := arg.(*ast.FnCall); ok && marker.Name == "where" {
+					for _, pred := range marker.Args {
+						if hasOrPredicate(pred) {
+							return true
+						}
+					}
+				}
+			}
+		case *ast.WhenStmt:
+			if stmtsHaveOrInWhere(v.Body) {
+				return true
+			}
+		case *ast.TryRecover:
+			if stmtsHaveOrInWhere(v.Try) || stmtsHaveOrInWhere(v.Recover) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasOrPredicate recursively checks whether a where predicate expression
+// contains an `or` binary operator.
+func hasOrPredicate(e ast.Expr) bool {
+	if bin, ok := e.(*ast.BinaryExpr); ok {
+		if bin.Op == "or" {
+			return true
+		}
+		return hasOrPredicate(bin.Left) || hasOrPredicate(bin.Right)
 	}
 	return false
 }

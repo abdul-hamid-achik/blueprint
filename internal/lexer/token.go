@@ -74,6 +74,7 @@ const (
 	TokenDelete       // delete operation
 	TokenDeleteMethod // DELETE HTTP method
 	TokenDownload
+	TokenEnqueue
 	TokenEmit
 	TokenEnum
 	TokenEnv
@@ -225,6 +226,7 @@ var tokenNames = map[TokenKind]string{
 	TokenDelete:       "delete",
 	TokenDeleteMethod: "DELETE",
 	TokenDownload:     "download",
+	TokenEnqueue:      "enqueue",
 	TokenEmit:         "emit",
 	TokenEnum:         "enum",
 	TokenEnv:          "env",
@@ -344,6 +346,7 @@ var keywords = map[string]TokenKind{
 	"delete":        TokenDelete,
 	"DELETE":        TokenDeleteMethod,
 	"download":      TokenDownload,
+	"enqueue":       TokenEnqueue,
 	"emit":          TokenEmit,
 	"enum":          TokenEnum,
 	"env":           TokenEnv,

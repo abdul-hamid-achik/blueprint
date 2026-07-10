@@ -368,6 +368,20 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		}
 	}
 
+	// Detect enqueue calls to know which BullMQ Queue instances to create.
+	enqueueQueues := map[string]bool{}
+	for _, ep := range endpoints {
+		walkEndpointStmts(ep.Stmts, func(s ast.ArrowStmt) {
+			if step, ok := s.(*ast.StepStmt); ok {
+				if fc, ok := step.Expr.(*ast.FnCall); ok && fc.Name == "enqueue" && len(fc.Args) >= 1 {
+					if name := exprToString(fc.Args[0]); name != "" {
+						enqueueQueues[name] = true
+					}
+				}
+			}
+		})
+	}
+
 	if needsZValidator {
 		b.WriteString("import { zValidator } from '@hono/zod-validator';\n")
 	}
@@ -391,6 +405,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 			toCamelCase(mwName), toKebabCase(mwName))
 	}
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
+	if len(enqueueQueues) > 0 {
+		b.WriteString("import { Queue } from 'bullmq';\n")
+	}
 	if needsWebhookAuth {
 		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
 	}
@@ -401,6 +418,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		ic.merge(g.collectImports(ep.Stmts))
 	}
 	if needsWebhookAuth {
+		ic.needsEnv = true
+	}
+	if len(enqueueQueues) > 0 {
 		ic.needsEnv = true
 	}
 	ic.writeImports(&b, g.hasStorage)
@@ -466,6 +486,13 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		b.WriteString("// Module-level rate limit store with periodic cleanup\n")
 		b.WriteString("const _rateLimitStore = new Map<string, { count: number, resetAt: number }>();\n")
 		b.WriteString("setInterval(() => { const now = Date.now(); for (const [k, v] of _rateLimitStore) { if (v.resetAt <= now) _rateLimitStore.delete(k); } }, 60000);\n\n")
+	}
+	// Module-level BullMQ Queue instances for enqueue calls.
+	if len(enqueueQueues) > 0 {
+		for _, qName := range sortedKeys2(enqueueQueues) {
+			fmt.Fprintf(&b, "const _%sQueue = new Queue('%s', { connection: { url: env.REDIS_URL } });\n", toCamelCase(qName), qName)
+		}
+		b.WriteString("\n")
 	}
 
 	for _, ep := range endpoints {
@@ -1262,5 +1289,20 @@ func streamCondToJS(e ast.Expr, ctx *emitCtx) string {
 		return fmt.Sprintf("%s.%s", obj, toCamelCase(v.Field))
 	default:
 		return exprToJSWithCtx(e, ctx)
+	}
+}
+
+// walkEndpointStmts visits every ArrowStmt in an endpoint (including nested
+// when/try bodies). Used by import/feature detection scans.
+func walkEndpointStmts(stmts []ast.ArrowStmt, visit func(ast.ArrowStmt)) {
+	for _, s := range stmts {
+		visit(s)
+		switch v := s.(type) {
+		case *ast.WhenStmt:
+			walkEndpointStmts(v.Body, visit)
+		case *ast.TryRecover:
+			walkEndpointStmts(v.Try, visit)
+			walkEndpointStmts(v.Recover, visit)
+		}
 	}
 }

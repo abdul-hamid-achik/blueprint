@@ -317,6 +317,16 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 				return fmt.Sprintf("emit('%s', {})", eventName)
 			}
 			return "/* emit: missing args */"
+		case "enqueue":
+			// enqueue queue_name { data } — enqueue a job to a BullMQ queue.
+			// The _<queueName>Queue variable is created at module level by
+			// genRoute when any endpoint in the file uses enqueue.
+			if len(v.Args) >= 2 {
+				queueName := exprToString(v.Args[0])
+				data := exprToJSWithCtx(v.Args[1], ctx)
+				return fmt.Sprintf("await _%sQueue.add('job', %s)", toCamelCase(queueName), data)
+			}
+			return "/* enqueue: missing args */"
 		case "map":
 			// map collection: body
 			// Loop variable is always "item" — the bp convention for referencing
@@ -1453,7 +1463,7 @@ func isBuiltinFn(name string) bool {
 	switch name {
 	case "log", "clock", "sleep", "inject", "map", "pipe",
 		"where", "order", "paginate", "limit", "offset",
-		"join", "leave", "broadcast", "emit", "on", "sum",
+		"join", "leave", "broadcast", "emit", "enqueue", "on", "sum",
 		"publish", "archive", "rollback", "track", "upgrade_save", "transition":
 		return true
 	}

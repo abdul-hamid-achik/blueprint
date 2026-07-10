@@ -383,7 +383,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// package.json
-	files = append(files, g.genPackageJSON(bp, hasDB, hasCache, hasStorage, len(workers)+len(schedules) > 0, len(endpoints) > 0, len(ws) > 0))
+	files = append(files, g.genPackageJSON(bp, hasDB, hasCache, hasStorage, len(workers)+len(schedules) > 0 || hasEnqueue(endpoints), len(endpoints) > 0, len(ws) > 0))
 
 	// tsconfig.json
 	files = append(files, g.genTSConfig())
@@ -1270,6 +1270,37 @@ func queryIsPaginated(fn *ast.FnCall) bool {
 		}
 	}
 	return false
+}
+
+// hasEnqueue reports whether any endpoint in the file uses `enqueue` —
+// used to decide whether bullmq needs to be in package.json.
+func hasEnqueue(endpoints []*ast.Endpoint) bool {
+	for _, ep := range endpoints {
+		var found bool
+		walkStmtsForEnqueue(ep.Stmts, &found)
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func walkStmtsForEnqueue(stmts []ast.ArrowStmt, found *bool) {
+	for _, s := range stmts {
+		if step, ok := s.(*ast.StepStmt); ok {
+			if fc, ok := step.Expr.(*ast.FnCall); ok && fc.Name == "enqueue" {
+				*found = true
+				return
+			}
+		}
+		if w, ok := s.(*ast.WhenStmt); ok {
+			walkStmtsForEnqueue(w.Body, found)
+		}
+		if tr, ok := s.(*ast.TryRecover); ok {
+			walkStmtsForEnqueue(tr.Try, found)
+			walkStmtsForEnqueue(tr.Recover, found)
+		}
+	}
 }
 
 // Ensure Generator implements codegen.Generator.
