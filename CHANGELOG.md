@@ -48,6 +48,26 @@ A correctness-and-hardening batch driven by a 7-dimension audit (2026-07-09): tw
 
 - **Docs accuracy pass**: `docs/cli-reference.md` reflects the real Python-target coverage (all 5 examples compile), documents `bp explain`, `bp llms`, `bp check --json`, the `effect` target, `--force`, strict flag parsing, and the full exit-code table; `docs/changelog.md` is caught up to v0.11.0; `--target`-per-command claims corrected (deploy's `--target` is a deploy target, not codegen); `docs/testing-guide.md` gains the Python (pytest + testcontainers) testing story; version-anchored "fly reserved for v0.11" claims made version-neutral; `docs/multi-target-codegen.md` now covers the `--gen-tests` builder convention, exit-code contract, and per-command target dispatch; the README middleware example is `bp check`-clean.
 
+
+### Fixed (iteration-3 batch — reviewer-confirmed defects)
+
+- **Python: `orderedBindings` omitted `MapResults`** — a `delete <model>` on a map-produced collection regressed to `NameError` because the binding was never registered. Map-result bindings are now included in the lookup.
+- **Python: `lastBindingForModel` was position-unaware** — `update <model>` could resolve to a binding declared *after* the statement (or inside `recover`), causing a forward-reference `NameError`. Bindings are now registered incrementally after each step is emitted, so the lookup only sees preceding declarations.
+- **Python: nested `try` inside a transaction-wrapped `try` emitted `db.rollback()`/`db.commit()` inside `begin_nested()`** — the rollback discarded the outer write and returned a phantom 201. A nested `try` inside `ctx.inTxn` now gets its own `begin_nested()` savepoint, flushes instead of committing, and suppresses `db.rollback()` (the savepoint handles it).
+- **Node: worker input named `data`/`error` collided with generated function parameters** — a worker with an input named `data` (or an `on_fail` that references `error`) shadowed the BullMQ payload parameter. Worker handler and `on_fail` parameters are now `_bpData`/`_bpError`.
+- **Node: auto-added `REDIS_URL`/`DATABASE_URL` not deduped against user `env` declarations** — a user `env DATABASE_URL { ... }` plus the auto-added infra var produced duplicate Zod schema keys (TS1117). The dedupe set is now seeded with user `env` names before infra vars are added, in both `env.ts` and `.env.example`.
+- **Node: `off()` during `emit()` spliced the array being iterated** — a client disconnecting mid-emit made other SSE subscribers miss the event. `emit()` now iterates a snapshot of the handlers array.
+- **Node: scheduler queue name collided with user `trigger queue("scheduler")`** — the auto-generated consumer used the bare queue name `'scheduler'`. It is now namespaced to `'__bp_scheduler'`.
+- **Node: WS close-reason >123 bytes threw `RangeError`** — the WebSocket spec limits close reasons to 123 UTF-8 bytes. The reason is now truncated via `err.message.slice(0, 123)`.
+- **Node: duplicate `const _interval` when two `on timeout()` handlers exist in one STREAM block** — the interval is now indexed (`_interval0`, `_interval1`, …).
+- **CLI: `--force` not accepted by `run`/`dev`/`test`/`migrate`** — `checkOutDirSafety` said "Use --force" but those commands didn't accept it. `--force` is now threaded through all build-adjacent commands.
+- **CLI: stale-file removal deleted hand-edited generated files silently** — the manifest-tracked writer now warns before removing a previously-generated file that was hand-edited since the last build (hash comparison), matching the existing overwrite-warning.
+
+### Added (iteration-3 batch)
+
+- **Python: `where(...)` predicates support comparison operators and `in`** — `!=`, `<`, `>`, `<=`, `>=`, and `col in collection.field` (-> `schema.M.col.in_([r.field for r in coll])`) now translate to SQLAlchemy, matching the node target's coverage. New `testdata/valid/where_predicates.bp` fixture exercises all operators on both targets; generator tests on both targets assert the emitted predicates and `tsc`-compile the output.
+- **Node: string interpolation `{expr}` now converts snake_case identifiers to camelCase** — `{user_id}` in a log/error message previously emitted `${user_id}` (an undeclared name in the JS scope, TS2xxx). `transformInterpolation` now regex-matches snake_case identifiers and applies `toCamelCase`, alongside the existing `.count -> .length` rewrite.
+
 ## [0.11.0] - 2026-06-16
 
 Adds a third codegen target (an Effect-TS scaffold), a one-shot agent/LLM guide command (`bp llms`), two codegen correctness fixes (duplicate `pgEnum`, transactional `try/recover`), a generator-interface refactor that exposes `Files()`, and a full documentation accuracy + learnability pass (the VitePress site builds with every `.bp` snippet `bp check`-clean and zero dead links).

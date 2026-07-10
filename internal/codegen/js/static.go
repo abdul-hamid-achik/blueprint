@@ -138,8 +138,14 @@ func (g *Generator) genEnvExample(secrets []*ast.Secret, envs []*ast.Env, extraE
 		fmt.Fprintf(&b, "%s=\n", s.Name)
 		wroteInfraLine = true
 	}
+	// Seed the dedupe set with user env declarations BEFORE adding extra
+	// infra vars so a user `env DATABASE_URL { ... }` doesn't produce a
+	// duplicate line in .env.example.
+	for _, e := range envs {
+		declared[e.Name] = true
+	}
 	// Extra infra env vars (e.g., REDIS_URL, DATABASE_URL) that aren't already
-	// declared as secrets — keep .env.example in sync with what env.ts requires.
+	// declared as secrets or envs — keep .env.example in sync with env.ts.
 	for _, name := range extraEnvVars {
 		if declared[name] {
 			continue
@@ -174,8 +180,13 @@ func (g *Generator) genEnvTS(secrets []*ast.Secret, envs []*ast.Env, extraEnvVar
 		}
 		fmt.Fprintf(&b, "  %s: z.string()%s,\n", s.Name, req)
 	}
-
-	// Add extra infra env vars (e.g., REDIS_URL for cache) that aren't already declared
+	// Seed the dedupe set with user env declarations BEFORE adding extra
+	// infra vars (REDIS_URL, DATABASE_URL, ...) so a user `env DATABASE_URL
+	// { ... }` is not also emitted as a bare z.string(), producing a
+	// duplicate key (TS1117).
+	for _, e := range envs {
+		declared[e.Name] = true
+	}
 	for _, name := range extraEnvVars {
 		if !declared[name] {
 			declared[name] = true

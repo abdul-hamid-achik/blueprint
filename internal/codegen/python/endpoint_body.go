@@ -28,13 +28,18 @@ type bodyCtx struct {
 	models      []*ast.Model      // for FK resolution
 	userFns     map[string]bool   // declared fn/pipe names (for step-call dispatch)
 
-	// orderedBindings lists every binding->model fact in source declaration
-	// order (middleware-injected aliases first, then facts.DataOps). Used by
-	// emitUpdate/emitDelete to resolve an `update <model>`/`delete <model>`
-	// reference (the target is a model name, not a binding) to the last
-	// binding declared for that model — deterministically, instead of
-	// picking an arbitrary same-model binding via Go map iteration.
+	// orderedBindings lists every binding->model fact declared SO FAR (in
+	// source order, middleware-injected aliases first). It is built
+	// incrementally: each step registers its binding AFTER it is emitted, so
+	// lastBindingForModel only sees bindings that precede the current
+	// statement — preventing forward-reference NameErrors and resolving to
+	// the correct preceding binding for `update <model>`/`delete <model>`.
 	orderedBindings []resolve.StepFact
+
+	// bindingModels maps every binding name in the block to its model,
+	// pre-computed from resolve.ResolveBlock. Used to register bindings
+	// incrementally into orderedBindings without re-deriving the model.
+	bindingModels map[string]string
 
 	// touchesDB mirrors endpointTouchesDB(ep) — computed once so
 	// emitTryRecover can decide whether an unwrapped except branch still
@@ -58,14 +63,15 @@ type bodyCtx struct {
 
 func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
 	c := &bodyCtx{
-		path:        ep.Path,
-		inputs:      map[string]bool{},
-		varModel:    map[string]string{},
-		cardinality: map[string]resolve.Cardinality{},
-		fkAliases:   map[string]string{},
-		models:      g.models(),
-		userFns:     g.userFnNames(),
-		touchesDB:   endpointTouchesDB(ep),
+		path:          ep.Path,
+		inputs:        map[string]bool{},
+		varModel:      map[string]string{},
+		cardinality:   map[string]resolve.Cardinality{},
+		fkAliases:     map[string]string{},
+		bindingModels: map[string]string{},
+		models:        g.models(),
+		userFns:       g.userFnNames(),
+		touchesDB:     endpointTouchesDB(ep),
 	}
 	for _, s := range ep.Stmts {
 		if in, ok := s.(*ast.InputStmt); ok {
@@ -94,11 +100,12 @@ func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
 	for _, f := range facts.DataOps {
 		c.varModel[f.Name] = f.Model
 		c.cardinality[f.Name] = f.Cardinality
+		c.bindingModels[f.Name] = f.Model
 	}
-	c.orderedBindings = append(c.orderedBindings, facts.DataOps...)
 	for _, f := range facts.MapResults {
 		c.varModel[f.Name] = f.Model
 		c.cardinality[f.Name] = f.Cardinality
+		c.bindingModels[f.Name] = f.Model
 	}
 	return c
 }
@@ -152,6 +159,15 @@ func emitBodyStmt(b *strings.Builder, s ast.ArrowStmt, ctx *bodyCtx, indent stri
 		fmt.Fprintf(b, "%s# %s\n", indent, v.Text)
 	case *ast.StepStmt:
 		emitStep(b, v, ctx, indent)
+		// Register this step's binding into orderedBindings AFTER emission
+		// so lastBindingForModel is position-aware: `update <model>`/
+		// `delete <model>` only resolve to bindings declared in preceding
+		// statements, never forward references (or bindings inside recover).
+		if v.Binding != "" {
+			if model, ok := ctx.bindingModels[v.Binding]; ok {
+				ctx.orderedBindings = append(ctx.orderedBindings, resolve.StepFact{Name: v.Binding, Model: model})
+			}
+		}
 	case *ast.GuardStmt:
 		emitGuard(b, v, ctx, indent)
 	case *ast.WhenStmt:
@@ -461,21 +477,42 @@ func emitQuery(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx,
 }
 
 // whereConditions converts a `where(...)` marker into SQLAlchemy predicates.
-// Phase 3b only handles `col == value` shapes; any other predicate is
-// rejected by complexStepFeatures before we ever get here.
+// Supports comparison operators (==, !=, <, >, <=, >=) and `in`:
+//   - `col == val`    → `schema.M.col == val`
+//   - `col != val`    → `schema.M.col != val`
+//   - `col < val`     → `schema.M.col < val`
+//   - `col > val`     → `schema.M.col > val`
+//   - `col <= val`    → `schema.M.col <= val`
+//   - `col >= val`    → `schema.M.col >= val`
+//   - `col in list`   → `schema.M.col.in_(list)`
+//   - `col in tags.fk` → `schema.M.col.in_([r.fk for r in tags])`
 func whereConditions(where *ast.FnCall, className string, ctx *bodyCtx) []string {
 	var preds []string
 	for _, arg := range where.Args {
 		bin, ok := arg.(*ast.BinaryExpr)
-		if !ok || bin.Op != "==" {
+		if !ok {
 			continue
 		}
 		lhsIdent, ok := bin.Left.(*ast.Ident)
 		if !ok {
 			continue
 		}
-		preds = append(preds, fmt.Sprintf("schema.%s.%s == %s",
-			className, lhsIdent.Name, exprToPyWithCtx(bin.Right, ctx)))
+		colRef := fmt.Sprintf("schema.%s.%s", className, lhsIdent.Name)
+		switch bin.Op {
+		case "==", "!=", "<", ">", "<=", ">=":
+			preds = append(preds, fmt.Sprintf("%s %s %s",
+				colRef, bin.Op, exprToPyWithCtx(bin.Right, ctx)))
+		case "in":
+			if fa, ok := bin.Right.(*ast.FieldAccess); ok {
+				// `col in tags.tag_id` → `.in_([r.tag_id for r in tags])`
+				coll := exprToPyWithCtx(fa.Base, ctx)
+				preds = append(preds, fmt.Sprintf("%s.in_([r.%s for r in %s])",
+					colRef, fa.Field, coll))
+			} else {
+				preds = append(preds, fmt.Sprintf("%s.in_(%s)",
+					colRef, exprToPyWithCtx(bin.Right, ctx)))
+			}
+		}
 	}
 	return preds
 }
@@ -849,7 +886,13 @@ func inlineWhenStatement(e ast.Expr, ctx *bodyCtx) string {
 // try/recover whenever the endpoint touches the DB at all.
 func emitTryRecover(b *strings.Builder, s *ast.TryRecover, ctx *bodyCtx, indent string) {
 	inner := indent + "    "
-	wrap := tryBodyNeedsTransaction(s.Try)
+	// When already inside a begin_nested() (ctx.inTxn), force a savepoint so
+	// the inner try's writes are isolated from the outer transaction. Without
+	// this, the inner try body's flush() writes go into the outer savepoint;
+	// if the inner try fails, the recover branch's db.rollback() would roll
+	// back the ENTIRE outer transaction — discarding the outer body's writes
+	// and returning a phantom 201 from the recover body.
+	wrap := tryBodyNeedsTransaction(s.Try) || ctx.inTxn
 	fmt.Fprintf(b, "%stry:\n", indent)
 	switch {
 	case len(s.Try) == 0:
@@ -862,7 +905,15 @@ func emitTryRecover(b *strings.Builder, s *ast.TryRecover, ctx *bodyCtx, indent 
 		for _, stmt := range s.Try {
 			emitBodyStmt(b, stmt, &txnCtx, nested)
 		}
-		fmt.Fprintf(b, "%sdb.commit()\n", inner)
+		// When inside an outer transaction (ctx.inTxn), flush instead of
+		// commit — db.commit() would commit the ENTIRE outer transaction,
+		// not just release this savepoint. When this is the outermost
+		// transaction, commit as before.
+		if ctx.inTxn {
+			fmt.Fprintf(b, "%sdb.flush()\n", inner)
+		} else {
+			fmt.Fprintf(b, "%sdb.commit()\n", inner)
+		}
 	default:
 		for _, stmt := range s.Try {
 			emitBodyStmt(b, stmt, ctx, inner)
@@ -879,7 +930,13 @@ func emitTryRecover(b *strings.Builder, s *ast.TryRecover, ctx *bodyCtx, indent 
 
 	fmt.Fprintf(b, "%sexcept Exception as error:\n", indent)
 	emittedInExcept := false
-	if ctx.touchesDB {
+	// Suppress db.rollback() when already inside a nested transaction
+	// (ctx.inTxn): the begin_nested() savepoint auto-rolls-back on
+	// exception, and db.rollback() would roll back the entire outer
+	// transaction instead of just this savepoint. The outer try/recover
+	// (or get_db's defense-in-depth) handles the outer transaction's
+	// rollback.
+	if ctx.touchesDB && !ctx.inTxn {
 		fmt.Fprintf(b, "%sdb.rollback()\n", inner)
 		emittedInExcept = true
 	}

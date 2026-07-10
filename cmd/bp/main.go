@@ -353,38 +353,42 @@ func main() {
 		os.Exit(cmdDocs(os.Args[2], parsed.values["--out"]))
 	case "test":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("test", "test <file.bp> [--out <dir>]",
+			printCommandHelp("test", "test <file.bp> [--out <dir>] [--force]",
 				"Build and run the Vitest test suite.",
-				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+				[][2]string{
+					{"--out <dir>", "Output directory (default: generated/)"},
+					{"--force", "Overwrite a non-empty --out directory even if it has no Blueprint manifest"},
+				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp test <file.bp> [--out <dir>]")
+			fmt.Fprintln(os.Stderr, "Usage: bp test <file.bp> [--out <dir>] [--force]")
 			os.Exit(1)
 		}
-		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true})
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--force": false})
 		exitOnArgError(err)
 		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
 		if v, ok := parsed.values["--out"]; ok {
 			outDir = v
 		}
-		os.Exit(cmdTest(os.Args[2], outDir))
+		os.Exit(cmdTest(os.Args[2], outDir, parsed.set["--force"]))
 	case "migrate":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("migrate", "migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>]",
+			printCommandHelp("migrate", "migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>] [--force]",
 				"Build and run database migrations.\nnode (default): Drizzle Kit. python: Alembic via uv.",
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
 					{"--target <name>", "Codegen target: node (default, drizzle-kit) or python (alembic)"},
+					{"--force", "Overwrite a non-empty --out directory even if it has no Blueprint manifest"},
 				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>]")
+			fmt.Fprintln(os.Stderr, "Usage: bp migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>] [--force]")
 			os.Exit(1)
 		}
-		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--target": true})
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--target": true, "--force": false})
 		exitOnArgError(err)
 		subCmd := "generate"
 		switch len(parsed.positional) {
@@ -408,7 +412,7 @@ func main() {
 		if v, ok := parsed.values["--target"]; ok {
 			target = v
 		}
-		os.Exit(cmdMigrate(os.Args[2], outDir, subCmd, target))
+		os.Exit(cmdMigrate(os.Args[2], outDir, subCmd, target, parsed.set["--force"]))
 	case "generate":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("generate", "generate <file.bp> [--write]",
@@ -438,42 +442,48 @@ func main() {
 		os.Exit(cmdInit(name))
 	case "run":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("run", "run <file.bp> [--out <dir>]",
+			printCommandHelp("run", "run <file.bp> [--out <dir>] [--force]",
 				"Build and start the server. Runs bun install if needed.",
-				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+				[][2]string{
+					{"--out <dir>", "Output directory (default: generated/)"},
+					{"--force", "Overwrite a non-empty --out directory even if it has no Blueprint manifest"},
+				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp run <file.bp> [--out <dir>]")
+			fmt.Fprintln(os.Stderr, "Usage: bp run <file.bp> [--out <dir>] [--force]")
 			os.Exit(1)
 		}
-		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true})
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--force": false})
 		exitOnArgError(err)
 		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
 		if v, ok := parsed.values["--out"]; ok {
 			outDir = v
 		}
-		os.Exit(cmdRun(os.Args[2], outDir))
+		os.Exit(cmdRun(os.Args[2], outDir, parsed.set["--force"]))
 	case "dev":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("dev", "dev <file.bp> [--out <dir>]",
+			printCommandHelp("dev", "dev <file.bp> [--out <dir>] [--force]",
 				"Watch mode -- rebuild and restart the server on file changes.",
-				[][2]string{{"--out <dir>", "Output directory (default: generated/)"}})
+				[][2]string{
+					{"--out <dir>", "Output directory (default: generated/)"},
+					{"--force", "Overwrite a non-empty --out directory even if it has no Blueprint manifest"},
+				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp dev <file.bp> [--out <dir>]")
+			fmt.Fprintln(os.Stderr, "Usage: bp dev <file.bp> [--out <dir>] [--force]")
 			os.Exit(1)
 		}
-		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true})
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--force": false})
 		exitOnArgError(err)
 		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
 		if v, ok := parsed.values["--out"]; ok {
 			outDir = v
 		}
-		os.Exit(cmdDev(os.Args[2], outDir))
+		os.Exit(cmdDev(os.Args[2], outDir, parsed.set["--force"]))
 	case "eject":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("eject", "eject <dir>",
@@ -1263,10 +1273,10 @@ func (dp *devProcess) stop() {
 	<-dp.exited
 }
 
-func cmdDev(filename, outDir string) int {
+func cmdDev(filename, outDir string, force bool) int {
 	// Initial build
 	fmt.Printf("Building %s...\n", filename)
-	if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
+	if code := cmdBuildWithOptions(filename, outDir, targetNode, false, false, false, false, force); code != 0 {
 		return code
 	}
 	copyProjectEnv(filename, outDir)
@@ -1334,8 +1344,8 @@ func cmdDev(filename, outDir string) int {
 	}
 }
 
-func cmdRun(filename, outDir string) int {
-	if code := cmdBuild(filename, outDir, targetNode, false, false, false); code != 0 {
+func cmdRun(filename, outDir string, force bool) int {
+	if code := cmdBuildWithOptions(filename, outDir, targetNode, false, false, false, false, force); code != 0 {
 		return code
 	}
 	copyProjectEnv(filename, outDir)
@@ -1356,10 +1366,10 @@ func cmdRun(filename, outDir string) int {
 	return 0
 }
 
-func cmdTest(filename, outDir string) int {
+func cmdTest(filename, outDir string, force bool) int {
 	// Enable auto-generated contract tests with the in-memory (PGlite) harness so
 	// `bp test` runs end-to-end without a live database.
-	if code := cmdBuild(filename, outDir, targetNode, false, false, true); code != 0 {
+	if code := cmdBuildWithOptions(filename, outDir, targetNode, false, false, false, true, force); code != 0 {
 		return code
 	}
 	copyProjectEnv(filename, outDir)
@@ -1379,7 +1389,7 @@ func cmdTest(filename, outDir string) int {
 	return 0
 }
 
-func cmdMigrate(filename, outDir, subCmd, target string) int {
+func cmdMigrate(filename, outDir, subCmd, target string, force bool) int {
 	// Validate target up front so we don't half-build a node tree before
 	// realising the user asked for python or vice versa.
 	canonical, err := resolveTarget(target)
@@ -1398,7 +1408,7 @@ func cmdMigrate(filename, outDir, subCmd, target string) int {
 		return 2
 	}
 
-	if code := cmdBuild(filename, outDir, target, false, false, false); code != 0 {
+	if code := cmdBuildWithOptions(filename, outDir, target, false, false, false, false, force); code != 0 {
 		return code
 	}
 

@@ -57,6 +57,11 @@ func WriteOutputFiles(outDir string, files []OutputFile) error {
 			continue
 		}
 		path := filepath.Join(outDir, filepath.FromSlash(rel))
+		// Warn before removing if the on-disk copy was hand-edited since
+		// the last build (hash differs from the manifest's recorded hash).
+		// Without this, a user's hand edits to a generated file would be
+		// silently lost when the file is no longer produced.
+		warnIfStaleRemoved(outDir, rel, manifest.Generated[rel])
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove stale generated file %s: %w", path, err)
 		}
@@ -159,6 +164,26 @@ func warnIfDrifted(outDir, rel string, newContent []byte, prevHash string) {
 		return // already matches the new content — nothing to warn about
 	}
 	fmt.Fprintf(os.Stderr, "%s was modified since last build; overwriting — put custom code in src/impl/ (UserOwned) or run `bp diff` first\n", rel)
+}
+
+// warnIfStaleRemoved prints a stderr warning when a previously-generated
+// file that is about to be removed (no longer produced by this build) was
+// hand-edited since the last build — the user's edits would be lost.
+// Silent when there's nothing to compare or the on-disk file still matches
+// the last recorded build (no hand edits to lose).
+func warnIfStaleRemoved(outDir, rel, prevHash string) {
+	if prevHash == "" {
+		return // not tracked by a previous build
+	}
+	onDisk, err := os.ReadFile(filepath.Join(outDir, filepath.FromSlash(rel)))
+	if err != nil {
+		return // nothing readable on disk
+	}
+	onDiskHash := "sha256:" + hashContent(onDisk)
+	if onDiskHash == prevHash {
+		return // matches the last build — no hand edits to lose
+	}
+	fmt.Fprintf(os.Stderr, "%s was modified since last build; removing (no longer generated) — hand edits will be lost\n", rel)
 }
 
 func writeFile(outDir, rel string, content []byte) error {

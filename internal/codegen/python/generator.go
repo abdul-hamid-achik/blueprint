@@ -407,12 +407,13 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 			case "paginate", "order":
 				continue
 			case "where":
-				// Phase 3b accepts where(col == val, ...) — every arg must
-				// be `==` with an identifier on the LHS. Anything else
-				// (text-search, !=, <, >, in, function calls) is Phase 3d.
+				// where(col op val, ...) — comparison ops (==, !=, <, >,
+				// <=, >=) and `in` with an identifier LHS are supported.
+				// Anything else (text-search, function calls, `like`) is
+				// still rejected.
 				for _, pred := range marker.Args {
 					if !isSupportedWherePredicate(pred) {
-						out = append(out, "`query ... where(...)` with non-`==` predicates")
+						out = append(out, "`query ... where(...)` with unsupported predicates (expected comparison ops or `in`)")
 						break
 					}
 				}
@@ -444,14 +445,20 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 }
 
 // isSupportedWherePredicate reports whether a single `where(...)` predicate is
-// in the subset Phase 3b can translate (identifier `==` anything).
+// in the subset Python codegen can translate: identifier <comparison-op>
+// anything (==, !=, <, >, <=, >=), or `col in collection.field` / `col in list`.
 func isSupportedWherePredicate(e ast.Expr) bool {
 	bin, ok := e.(*ast.BinaryExpr)
-	if !ok || bin.Op != "==" {
+	if !ok {
 		return false
 	}
-	_, ok = bin.Left.(*ast.Ident)
-	return ok
+	switch bin.Op {
+	case "==", "!=", "<", ">", "<=", ">=", "in":
+		_, ok := bin.Left.(*ast.Ident)
+		return ok
+	default:
+		return false
+	}
 }
 
 // blueprintEntry returns the value of a key in the blueprint block as a string

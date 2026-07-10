@@ -259,13 +259,13 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	// sit there forever (cron handlers would be dead code at runtime).
 	if len(schedules) > 0 {
 		b.WriteString("  // Register scheduled jobs\n")
-		b.WriteString("  const schedulerQueue = new Queue('scheduler', { connection: { url: env.REDIS_URL } });\n")
+		b.WriteString("  const schedulerQueue = new Queue('__bp_scheduler', { connection: { url: env.REDIS_URL } });\n")
 		for _, s := range schedules {
 			name := toCamelCase(s.Name)
 			cronName := name + "Cron"
 			fmt.Fprintf(&b, "  schedulerQueue.add('%s', {}, { repeat: { pattern: %s }, attempts: 3, backoff: { type: 'exponential', delay: 1000 } });\n", s.Name, cronName)
 		}
-		b.WriteString("  new Worker('scheduler', async (job) => {\n")
+		b.WriteString("  new Worker('__bp_scheduler', async (job) => {\n")
 		b.WriteString("    switch (job.name) {\n")
 		for _, s := range schedules {
 			name := toCamelCase(s.Name)
@@ -828,10 +828,10 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 				ms := durationToMS(h.Timeout)
 				sseData := extractOutputValue(h.Body, &ctx)
 				fmt.Fprintf(&b, "    // on timeout: %s\n", h.Timeout)
-				b.WriteString("    const _interval = setInterval(async () => {\n")
+				fmt.Fprintf(&b, "    const _interval%d = setInterval(async () => {\n", i)
 				fmt.Fprintf(&b, "      await stream.writeSSE({ event: 'ping', data: JSON.stringify(%s) });\n", sseData)
 				fmt.Fprintf(&b, "    }, %s);\n", ms)
-				b.WriteString("    stream.onAbort(() => clearInterval(_interval));\n")
+				fmt.Fprintf(&b, "    stream.onAbort(() => clearInterval(_interval%d));\n", i)
 			} else if h.EventName != "" {
 				// Event subscription: bind the handler to a const so it can be
 				// unsubscribed via off() on abort — otherwise it stays
@@ -1143,7 +1143,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 			g.emitArrowStmts(&b, ep.OnConnect, "        ", onConnectCtx)
 		}
 		b.WriteString("      } catch (err) {\n")
-		b.WriteString("        if (err instanceof BpError) { ws.send(JSON.stringify({ error: err.message })); ws.close(1008, err.message); return; }\n")
+		b.WriteString("        if (err instanceof BpError) { const _reason = err.message.slice(0, 123); ws.send(JSON.stringify({ error: err.message })); ws.close(1008, _reason); return; }\n")
 		b.WriteString("        console.error(err);\n")
 		b.WriteString("      }\n")
 		b.WriteString("    },\n")

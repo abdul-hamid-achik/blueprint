@@ -376,18 +376,18 @@ func (g *Generator) genWorker(w *ast.Worker) codegen.OutputFile {
 	emitInputBindings := func(indent string, ctx *emitCtx) {
 		for _, inp := range inputs {
 			camelName := toCamelCase(inp.Name)
-			fmt.Fprintf(&b, "%sconst %s = data.%s;\n", indent, camelName, inp.Name)
+			fmt.Fprintf(&b, "%sconst %s = _bpData.%s;\n", indent, camelName, inp.Name)
 			ctx.declared[camelName] = true
 		}
 	}
 
-	fmt.Fprintf(&b, "export async function %s(data: any): Promise<void> {\n", name)
+	fmt.Fprintf(&b, "export async function %s(_bpData: any): Promise<void> {\n", name)
 	handlerCtx := newWorkerCtx()
 	emitInputBindings("  ", &handlerCtx)
 	g.emitArrowStmts(&b, w.Stmts, "  ", handlerCtx)
 	b.WriteString("}\n\n")
 
-	fmt.Fprintf(&b, "export async function %sOnFail(data: any, error: Error): Promise<void> {\n", name)
+	fmt.Fprintf(&b, "export async function %sOnFail(_bpData: any, _bpError: Error): Promise<void> {\n", name)
 	if len(w.OnFail) > 0 {
 		onFailCtx := newWorkerCtx()
 		emitInputBindings("  ", &onFailCtx)

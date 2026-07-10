@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/abdul-hamid-achik/blueprint/internal/checker"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen/python"
 	"github.com/abdul-hamid-achik/blueprint/internal/parser"
 )
@@ -534,11 +535,13 @@ POST /api/cart/items {
 }
 
 func TestPython_Phase3bRejectsUnsupportedWherePredicate(t *testing.T) {
+	// `>=` is now supported; this test uses a non-Ident LHS (`1 == 1`)
+	// which the Python codegen can't translate to a simple column reference.
 	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
 secret DATABASE_URL required
 model product { id uuid primary  stock int required }
 GET /api/products {
-  |> rows = query product where(stock >= 10)
+  |> rows = query product where(1 == 1)
   -> 200 { items: rows }
 }
 `
@@ -547,8 +550,8 @@ GET /api/products {
 		t.Fatalf("parse: %v", errs)
 	}
 	err := python.New().Generate(file, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "non-`==` predicates") {
-		t.Errorf("expected non-`==` rejection, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported predicates") {
+		t.Errorf("expected unsupported-predicate rejection for non-ident LHS, got: %v", err)
 	}
 }
 
@@ -556,6 +559,84 @@ GET /api/products {
 // expressions (`|> filters = {}`) are still rejected because they're not
 // data operations. This keeps the runtime small — Phase 3d will add
 // step-expression dict literals.
+func TestPython_WherePredicatesComparisonOps(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model product { id int primary  price int required  stock int required  status string required }
+GET /api/products/expensive {
+  |> products = query product where(price > 100)
+  -> 200 { products: products }
+}
+GET /api/products/in-stock {
+  |> products = query product where(stock >= 10, status != "discontinued")
+  -> 200 { products: products }
+}
+GET /api/products/affordable {
+  |> products = query product where(price <= 50, price > 0)
+  -> 200 { products: products }
+}
+`
+	file, errs := parser.ParseFile("t.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker: %v", checkErrs)
+	}
+	outDir := t.TempDir()
+	if err := python.New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/products.py"))
+	if err != nil {
+		t.Fatal("src/routes/products.py should exist")
+	}
+	routeStr := string(routeContent)
+	for _, expected := range []string{
+		"schema.Product.price > 100",
+		"schema.Product.stock >= 10",
+		`schema.Product.status != "discontinued"`,
+		"schema.Product.price <= 50",
+		`and_(schema.Product.stock >= 10, schema.Product.status != "discontinued")`,
+	} {
+		if !strings.Contains(routeStr, expected) {
+			t.Errorf("expected %q in products.py, got:\n%s", expected, routeStr)
+		}
+	}
+}
+
+func TestPython_WherePredicatesInOperator(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model category { id int primary  name string required }
+model product { id int primary  category_id int ref(category) }
+GET /api/categories/active {
+  |> cats = query category
+  |> products = query product where(id in cats.id)
+  -> 200 { products: products }
+}
+`
+	file, errs := parser.ParseFile("t.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker: %v", checkErrs)
+	}
+	outDir := t.TempDir()
+	if err := python.New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/categories.py"))
+	if err != nil {
+		t.Fatal("src/routes/categories.py should exist")
+	}
+	routeStr := string(routeContent)
+	if !strings.Contains(routeStr, ".in_([r.id for r in cats])") {
+		t.Errorf("expected .in_([r.id for r in cats]) for `id in cats.id`, got:\n%s", routeStr)
+	}
+}
+
 func TestPython_Phase3cRejectsBareBlockStep(t *testing.T) {
 	src := `blueprint "x" { version "1.0" port 3000 runtime node }
 GET /api/x {

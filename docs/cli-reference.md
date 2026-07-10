@@ -88,9 +88,9 @@ bp build my-service.bp --out ./some-existing-dir
 
 A directory Blueprint already built into (it carries `.blueprint/manifest.json`)
 is always safe to rebuild — that's the common case for `bp run`/`dev`/`test`/
-`migrate`/`deploy`, none of which expose `--force` and all of which keep working
-against their own prior output. Pass `--force` to overwrite a foreign directory
-anyway.
+`migrate`/`deploy`, all of which keep working against their own prior output.
+Pass `--force` (available on `build`, `run`, `dev`, `test`, and `migrate`) to
+overwrite a foreign directory anyway.
 
 ### Python target status
 
@@ -223,7 +223,7 @@ bp frontend publish my-service.bp --out web-contract --react-query --skip-instal
 Build and start the server.
 
 ```bash
-bp run <file.bp> [--out <dir>]
+bp run <file.bp> [--out <dir>] [--force]
 ```
 
 Equivalent to `bp build` followed by `bun install && bun run start` in the output directory.
@@ -243,7 +243,7 @@ bp run my-service.bp
 Watch mode — rebuild and restart the server on file changes.
 
 ```bash
-bp dev <file.bp> [--out <dir>]
+bp dev <file.bp> [--out <dir>] [--force]
 ```
 
 Watches the `.bp` file (and all included files) for changes. On save:
@@ -268,7 +268,7 @@ bp dev my-service.bp --out generated
 Build and run the Vitest test suite.
 
 ```bash
-bp test <file.bp> [--out <dir>]
+bp test <file.bp> [--out <dir>] [--force]
 ```
 
 Compiles the service (including test files), then runs `bun run test` in the output directory.
@@ -297,7 +297,7 @@ Run database migrations. Default delegates to `drizzle-kit`; `--target python`
 delegates to `alembic` via `uv run`.
 
 ```bash
-bp migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>]
+bp migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>] [--force]
 ```
 
 Builds the service first, then runs the matching migration tool.

@@ -1,0 +1,47 @@
+blueprint "where-predicates" {
+  version "0.1.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+model product {
+  id    int       primary
+  name  string    required
+  price int       required
+  stock int       required
+  status string  required
+  category_id int ref(category)
+}
+
+model category {
+  id    int    primary
+  name  string required
+}
+
+GET /api/products/expensive {
+  |> products = query product where(price > 100) order(price, desc)
+  -> 200 { products: products }
+}
+
+GET /api/products/in-stock {
+  |> products = query product where(stock >= 10, status != "discontinued")
+  -> 200 { products: products }
+}
+
+GET /api/products/affordable {
+  |> products = query product where(price <= 50, price > 0)
+  -> 200 { products: products }
+}
+
+GET /api/categories/active-products {
+  |> cats = query category
+  |> products = query product where(id in cats.id)
+  -> 200 { products: products }
+}
+
+GET /api/products/by-status {
+  <- status string required
+  |> products = query product where(status == status)
+  -> 200 { products: products }
+}

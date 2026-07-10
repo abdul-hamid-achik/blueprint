@@ -1999,7 +1999,7 @@ WS /ws/chat {
 	if !strings.Contains(onOpenBody, "try {") || !strings.Contains(onOpenBody, "} catch (err) {") {
 		t.Errorf("onOpen should wrap its body in try/catch, got:\n%s", onOpenBody)
 	}
-	if !strings.Contains(onOpenBody, "if (err instanceof BpError) { ws.send(JSON.stringify({ error: err.message })); ws.close(1008, err.message); return; }") {
+	if !strings.Contains(onOpenBody, "if (err instanceof BpError) { const _reason = err.message.slice(0, 123); ws.send(JSON.stringify({ error: err.message })); ws.close(1008, _reason); return; }") {
 		t.Errorf("onOpen catch should send an error frame and close(1008, ...) for BpError, got:\n%s", onOpenBody)
 	}
 	if !strings.Contains(onOpenBody, "console.error(err);") {
@@ -2474,8 +2474,8 @@ worker process_job {
 	if !strings.Contains(workerStr, "processJob") {
 		t.Errorf("expected processJob function name, got:\n%s", workerStr)
 	}
-	if !strings.Contains(workerStr, "export async function processJob(data: any)") {
-		t.Errorf("expected 'export async function processJob(data: any)', got:\n%s", workerStr)
+	if !strings.Contains(workerStr, "export async function processJob(_bpData: any)") {
+		t.Errorf("expected 'export async function processJob(_bpData: any)', got:\n%s", workerStr)
 	}
 	if !strings.Contains(workerStr, "Promise<void>") {
 		t.Errorf("expected Promise<void> return type, got:\n%s", workerStr)
@@ -2486,8 +2486,8 @@ worker process_job {
 	if !strings.Contains(workerStr, "processJobOnFail") {
 		t.Errorf("expected processJobOnFail function for on_fail block, got:\n%s", workerStr)
 	}
-	if !strings.Contains(workerStr, "export async function processJobOnFail(data: any, error: Error)") {
-		t.Errorf("expected 'export async function processJobOnFail(data: any, error: Error)', got:\n%s", workerStr)
+	if !strings.Contains(workerStr, "export async function processJobOnFail(_bpData: any, _bpError: Error)") {
+		t.Errorf("expected 'export async function processJobOnFail(_bpData: any, _bpError: Error)', got:\n%s", workerStr)
 	}
 	if !strings.Contains(workerStr, `console.log("Job failed")`) {
 		t.Errorf("expected console.log(\"Job failed\") in on_fail handler, got:\n%s", workerStr)
@@ -2540,7 +2540,7 @@ worker process_job {
 		`export const processJobTimeoutMs = 300000;`,
 		`export const processJobRetryCount = 3;`,
 		`export const processJobBackoff = { strategy: "exponential", base: 1 * 1000, max: 30 * 1000 };`,
-		`export async function processJobOnFail(data: any, error: Error): Promise<void> {`,
+		`export async function processJobOnFail(_bpData: any, _bpError: Error): Promise<void> {`,
 	} {
 		if !strings.Contains(workerStr, expected) {
 			t.Fatalf("expected worker metadata output %q\n%s", expected, workerStr)
@@ -2599,8 +2599,8 @@ func TestGenWorkerBasicFixture(t *testing.T) {
 	// The `<- job_id uuid` input must be destructured from `data` in BOTH the
 	// handler and on_fail — on_fail receives the same raw job payload, not
 	// any record the handler fetched.
-	if got := strings.Count(workerStr, "const jobId = data.job_id;"); got != 2 {
-		t.Errorf("expected 'const jobId = data.job_id;' once in the handler and once in on_fail (got %d), full output:\n%s", got, workerStr)
+	if got := strings.Count(workerStr, "const jobId = _bpData.job_id;"); got != 2 {
+		t.Errorf("expected 'const jobId = _bpData.job_id;' once in the handler and once in on_fail (got %d), full output:\n%s", got, workerStr)
 	}
 
 	// The impl-backed fn call must be awaited (missing await previously meant
@@ -2671,7 +2671,7 @@ func TestGenScheduleBasicFixtureRunsScheduledJobs(t *testing.T) {
 	indexStr := string(indexContent)
 
 	for _, expected := range []string{
-		"new Worker('scheduler', async (job) => {",
+		"new Worker('__bp_scheduler', async (job) => {",
 		"case 'cleanup':",
 		"return cleanup();",
 		"Unknown scheduled job",
@@ -2682,9 +2682,64 @@ func TestGenScheduleBasicFixtureRunsScheduledJobs(t *testing.T) {
 	}
 
 	guardIdx := strings.Index(indexStr, "if (!process.env.VITEST)")
-	schedulerWorkerIdx := strings.Index(indexStr, "new Worker('scheduler'")
+	schedulerWorkerIdx := strings.Index(indexStr, "new Worker('__bp_scheduler'")
 	if guardIdx == -1 || schedulerWorkerIdx == -1 || schedulerWorkerIdx < guardIdx {
 		t.Errorf("expected the scheduler Worker to appear after the VITEST guard, got:\n%s", indexStr)
+	}
+
+	requireTypeScriptCompile(t, outDir)
+}
+
+// TestGenWherePredicatesFixture builds testdata/valid/where_predicates.bp
+// end-to-end and asserts that comparison operators (!=, <, >, <=, >=) and the
+// `in` operator are emitted as Drizzle ORM filter calls (gt, lt, gte, lte, ne,
+// inArray) in the generated route handlers.
+func TestGenWherePredicatesFixture(t *testing.T) {
+	src, err := os.ReadFile("../../../testdata/valid/where_predicates.bp")
+	if err != nil {
+		t.Skip("where_predicates.bp not found")
+	}
+	file, errs := parser.ParseFile("where_predicates.bp", src)
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker errors: %v", checkErrs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	productsContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/products.ts"))
+	if err != nil {
+		t.Fatal("src/routes/products.ts should exist")
+	}
+	productsStr := string(productsContent)
+
+	// Comparison operators must appear as Drizzle ORM filter calls.
+	for _, expected := range []string{
+		"gt(schema.product.price, 100)",               // price > 100
+		"gte(schema.product.stock, 10)",               // stock >= 10
+		"ne(schema.product.status, \"discontinued\")", // status != "discontinued"
+		"lte(schema.product.price, 50)",               // price <= 50
+		"gt(schema.product.price, 0)",                 // price > 0
+	} {
+		if !strings.Contains(productsStr, expected) {
+			t.Errorf("expected %q in generated products.ts, got:\n%s", expected, productsStr)
+		}
+	}
+
+	// The `in` operator must produce an inArray call.
+	catsContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/categories.ts"))
+	if err != nil {
+		t.Fatal("src/routes/categories.ts should exist")
+	}
+	catsStr := string(catsContent)
+	if !strings.Contains(catsStr, "inArray(") {
+		t.Errorf("expected inArray() for `id in cats.id` in categories.ts, got:\n%s", catsStr)
 	}
 
 	requireTypeScriptCompile(t, outDir)

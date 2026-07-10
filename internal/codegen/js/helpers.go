@@ -2,6 +2,7 @@ package js
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1523,10 +1524,24 @@ func resolveWsRoomArg(e ast.Expr, ctx *emitCtx) string {
 	return exprToJSWithCtx(e, ctx)
 }
 
+// snakeCaseRe matches identifiers containing underscores (snake_case) that
+// need to be converted to camelCase for JavaScript. It matches the full
+// identifier including any trailing underscore-delimited segments.
+var snakeCaseRe = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+`)
+
 // transformInterpolation applies Blueprint-to-JS transformations on string
-// interpolation bodies. For example, `.count` becomes `.length` in JavaScript.
+// interpolation bodies. Two rewrites:
+//  1. `.count` becomes `.length` (JS arrays use .length, not .count)
+//  2. snake_case identifiers are converted to camelCase (e.g. `user_id`
+//     becomes `userId`) so the generated template literal references the
+//     correct variable name — without this, `{user_id}` emits `${user_id}`
+//     which is an undeclared name in the JS scope (TS2xxx).
 func transformInterpolation(s string) string {
-	return strings.ReplaceAll(s, ".count", ".length")
+	s = strings.ReplaceAll(s, ".count", ".length")
+	s = snakeCaseRe.ReplaceAllStringFunc(s, func(m string) string {
+		return common.CamelCase(m)
+	})
+	return s
 }
 
 // normalizeServiceName converts an external service name to a canonical underscore form

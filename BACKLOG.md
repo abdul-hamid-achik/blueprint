@@ -131,53 +131,46 @@ _(detailed working notes live in the maintainer's Obsidian vault under
   loudly and never claims the dropped logic was preserved. `bp check` is NOT a
   sufficient import-validity gate. _(experiment done 2026-06-16)_
 
-### Iteration-3 queue — reviewer-confirmed defects in the 2026-07-09 batch (fix FIRST)
+### Iteration-3 queue — reviewer-confirmed defects (shipped 2026-07-09)
 
-The adversarial review of commit 882bb5c confirmed these; the fixer agents hit a session
-limit before landing them. Full evidence in the Obsidian handoff note (`projects/blueprint/`).
+All 6 must-fix defects + 5 smaller reviewer items + P1 (python where-predicates) + P3 (JS
+string interpolation) shipped. See CHANGELOG [Unreleased] "iteration-3 batch".
 
-- [ ] **(python, must-fix)** try/recover nested via `when` inside a transaction-wrapped try
-  emits `db.rollback()`/`db.commit()` inside the outer `with db.begin_nested():` — discards
-  the outer write, returns a phantom 201. Wrap the inner try in its own `begin_nested()` and
-  suppress rollback/commit when `ctx.inTxn` (endpoint_body.go ~:858-885).
-- [ ] **(python, must-fix)** `lastBindingForModel` is position-unaware: `update <model>` can
-  resolve to a binding declared AFTER the statement (or inside recover) → forward-reference
-  NameError. Thread statement position into the lookup (endpoint_body.go ~:109-119).
-- [ ] **(python, must-fix)** `orderedBindings` omits `facts.MapResults` (and middleware/stream
-  ctxs never populate it) — `delete <model>` on a map-produced collection regressed to
-  NameError (endpoint_body.go ~:98).
-- [ ] **(js, must-fix)** worker input named `data` (or `error` in on_fail) collides with the
-  generated function parameters — rename params to `_bpData`/`_bpError` (functions.go ~:371-390).
-- [ ] **(js, must-fix)** auto-added REDIS_URL/DATABASE_URL not deduped against user `env`
-  declarations — duplicate object keys in env.ts, TS1117 (static.go ~:179-209, seed the
-  dedupe set with env names in genEnvTS AND genEnvExample).
-- [ ] **(js, must-fix)** `off()` during `emit()` splices the array emit iterates — a client
-  disconnecting mid-emit makes other SSE subscribers miss the event; iterate a snapshot in
-  the emitted emit() (events.go ~:27-36).
-- [ ] (js) scheduler consumer vs user `trigger queue("scheduler")` collision — namespace to
-  `__bp_scheduler` or reject the reserved name.
-- [ ] (js) WS onOpen close reason >123 UTF-8 bytes throws RangeError in the catch — truncate.
-- [ ] (js) two `on timeout(...)` handlers in one STREAM block emit duplicate `const _interval`
-  — index like the event handlers.
-- [ ] (cli) `checkOutDirSafety` message says "Use --force" but run/dev/test/migrate/deploy/
-  diff --apply don't accept --force — thread it through or make the message command-aware.
-- [ ] (cli) stale-file removal path deletes hand-edited generated files silently — apply the
-  same drift warning before os.Remove (writer.go ~:51-63).
-- [ ] **(python, deferred package P1)** where-predicate long tail: comparison ops (`!=` `<`
-  `>` `<=` `>=`), `in` (SQLAlchemy `.in_`), duration RHS (`N.days.ago` → timedelta), new
-  `testdata/valid/where_predicates.bp` fixture wired into BOTH targets' tests. Full design in
-  the audit findings (task file wqxaat4fz.output) and the Obsidian handoff note.
-- [ ] **(js, deferred package P3)** string-interpolation `{expr}` bodies emitted raw — no
-  camelCase/ctx resolution → TS references to undeclared names for snake_case identifiers.
+- [x] **(python, must-fix)** try/recover nested via `when` inside a transaction-wrapped try
+  — inner try now gets its own `begin_nested()` savepoint when `ctx.inTxn`, flushes instead
+  of committing, suppresses `db.rollback()` (the savepoint handles it).
+- [x] **(python, must-fix)** `lastBindingForModel` is position-unaware — bindings are now
+  registered incrementally after each step is emitted; the lookup only sees preceding
+  declarations.
+- [x] **(python, must-fix)** `orderedBindings` omits `facts.MapResults` — map-result bindings
+  are now included in the lookup.
+- [x] **(js, must-fix)** worker input named `data`/`error` collides with generated params —
+  renamed to `_bpData`/`_bpError`.
+- [x] **(js, must-fix)** auto-added REDIS_URL/DATABASE_URL not deduped vs user `env` — dedupe
+  set seeded with env names before infra vars in both `genEnvTS` and `genEnvExample`.
+- [x] **(js, must-fix)** `off()` during `emit()` splices the array — `emit()` now iterates a
+  snapshot.
+- [x] (js) scheduler consumer queue name collision — namespaced to `__bp_scheduler`.
+- [x] (js) WS onOpen close reason >123 bytes — truncated via `err.message.slice(0, 123)`.
+- [x] (js) duplicate `const _interval` — indexed as `_interval0`, `_interval1`, ….
+- [x] (cli) `--force` not accepted by run/dev/test/migrate — threaded through all
+  build-adjacent commands.
+- [x] (cli) stale-file removal deletes hand-edits silently — `warnIfStaleRemoved` checks the
+  manifest hash before `os.Remove`.
+- [x] **(python, P1)** where-predicate comparison ops (`!=`, `<`, `>`, `<=`, `>=`) and `in`
+  (SQLAlchemy `.in_`) — `whereConditions` now translates all of them; new
+  `testdata/valid/where_predicates.bp` fixture wired into both targets' tests. Duration RHS
+  (`N.days.ago` → timedelta) is still deferred.
+- [x] **(js, P3)** string-interpolation `{expr}` snake_case identifiers —
+  `transformInterpolation` now regex-matches and applies `toCamelCase`.
 
 ### Found in the 2026-07-09 audit (not yet fixed)
 
-- [ ] **`bp migrate --target effect` silently falls through to the node/drizzle path** —
-  resolveTarget accepts `effect` but cmdMigrate's dispatch has no effect case; fails with a
-  confusing drizzle.config.ts error. Reject it explicitly.
-- [ ] **JS string-interpolation identifiers not camelCased** — `exprToJSWithCtx`'s StringLit
-  path embeds `{expr}` bodies as raw source, so snake_case identifiers interpolated in
-  log/error messages reference undeclared names. (internal/codegen/js/helpers.go)
+- [x] **`bp migrate --target effect` silently falls through to the node/drizzle path** —
+  rejected explicitly (iteration-2). _(shipped)_
+- [x] **JS string-interpolation identifiers not camelCased** — `transformInterpolation` now
+  regex-matches snake_case identifiers and applies `toCamelCase`. _(shipped 2026-07-09
+  iteration-3)_
 - [ ] **Stale "fly reserved for v0.11" strings inside the binary** — printCommandHelp (~:532)
   and printUsage (~:2233) in cmd/bp/main.go, plus internal/agentctx/topics/targets.md
   (embedded in `bp context`/`bp llms`). The runtime error string is already version-neutral.
@@ -244,8 +237,9 @@ Prep work (must precede the Python generator):
     - [x] `map items: update M { ... }` (unbound) -> for-loop with per-iteration FK alias
     - [x] `log "msg"` -> `print(f"...")`
   - [ ] Phase 3d: the long tail still rejected with a specific message.
-    - [ ] `where(...)` with non-`==` predicates (`>=`, `<`, `!=`, text-search
-      `where(q)`, `or`, `in`)
+    - [x] `where(...)` comparison ops (`!=`, `<`, `>`, `<=`, `>=`) and `in` —
+      shipped 2026-07-09 (iteration-3). Text-search `where(q)`, `or`, and
+      `like` are still rejected.
     - [x] Step calls to user-defined `fn` names — shipped in Phase 3d/5 via
       generated wrapper + user-owned scaffold (`raise NotImplementedError`).
     - [x] `|> total = sum(...)` aggregate — shipped (rewrites to

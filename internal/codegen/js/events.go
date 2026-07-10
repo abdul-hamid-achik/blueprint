@@ -31,7 +31,10 @@ export function off(event: string, handler: EventHandler) {
   if (idx !== -1) handlers.splice(idx, 1);
 }
 export async function emit(event: string, data: unknown) {
-  for (const handler of subscriptions[event] ?? []) {
+  // Iterate a snapshot of the handlers array — a handler that calls off()
+  // during emit() would splice the live array and cause other subscribers
+  // to miss the event (e.g. a STREAM/SSE client disconnecting mid-emit).
+  for (const handler of [...(subscriptions[event] ?? [])]) {
     await handler(data);
   }
 }
