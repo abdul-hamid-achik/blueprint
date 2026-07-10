@@ -218,8 +218,14 @@ func (s *Server) handleDidChange(msg *jsonRPCMessage) error {
 	}
 
 	doc.Version = params.TextDocument.Version
-	if len(params.ContentChanges) > 0 {
-		doc.Text = params.ContentChanges[0].Text
+	// The server advertises textDocumentSync = Full (1) in handleInitialize, so
+	// every entry in ContentChanges carries the entire new document text rather
+	// than a range-based edit. A single didChange notification may legally batch
+	// multiple content changes; per the LSP spec they must be applied in order,
+	// which — for full-document sync — means the last entry wins. Only applying
+	// ContentChanges[0] silently dropped every edit after the first.
+	for _, change := range params.ContentChanges {
+		doc.Text = change.Text
 	}
 
 	// TODO: Validate document and publish diagnostics

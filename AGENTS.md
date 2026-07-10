@@ -214,7 +214,7 @@ These are acknowledged gaps between spec and current implementation:
 
 1. Add a new `case` in `cmd/bp/main.go`'s `main()` switch
 2. Implement `cmdFoo(args) int` in the same file or a new file in `cmd/bp/`
-3. Return 0 for success, 1 for validation error, 2 for file error, 4 for codegen error (see SPEC §24.2)
+3. Return 0 for success, 1 for validation error, 2 for file error, 4 for codegen error (see SPEC.md Appendix D)
 
 ## Adding a New Codegen Feature
 

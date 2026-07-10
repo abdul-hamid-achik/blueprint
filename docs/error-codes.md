@@ -25,7 +25,7 @@ Codes are namespaced by the pass that emits them:
 | Prefix | Pass | Notes |
 |--------|------|-------|
 | `L###` | Lexer | Token-level errors. `L001` documented below. |
-| `P###` | Parser | Syntax errors. `P001` documented below; broader coverage in progress. |
+| `P###` | Parser | Syntax errors. `P001`-`P002` documented below; broader coverage in progress. |
 | `C###` | Checker | Semantic errors. `C001`–`C015` documented below. |
 | `R###` | Resolver | Reserved. Resolver does not currently emit user-facing errors. |
 | `G###` | Codegen | Reserved. |
@@ -82,6 +82,44 @@ secret API_KEY required
 
 The checker emits `C001` for the related case where the parser saw no
 top-level constructs at all (empty file).
+
+### P002 — control-flow keyword in step position
+
+Blueprint has no `if`/`else`, `for`, `while`, or `switch` — the "flat by
+force" / "no if/else" / "no loops" rules in SPEC.md §1.3 replace branching
+with `guard`/`when` and iteration with `map`. Using one of these keywords as
+the first token of a step (right after `|>`) is the most common mistake for
+anyone coming from JS/Python, so it gets a dedicated diagnostic instead of a
+generic syntax error:
+
+```bp
+POST /api/todos {
+  |> if title == "" {        # P002: no if/else
+    -> 400 "title required"
+  }
+  -> 200 todo
+}
+```
+
+Replace the branch with `guard` (early return) or `when` (conditional step):
+
+```bp
+POST /api/todos {
+  |> guard title == "" -> 400 "title required"
+  -> 200 todo
+}
+```
+
+For iteration, use `map`:
+
+```bp
+|> items = map orders: order.total
+```
+
+The parser also bounds recovery to the malformed construct itself (the
+condition plus its balanced `{ ... }` body, including any chained
+`else`/`else if`), so a single stray `if` doesn't cascade into unrelated
+errors on the steps that follow it.
 
 ---
 

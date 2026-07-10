@@ -74,6 +74,12 @@ documented and exercised on the canonical examples in CI.
 
 `bp deploy` takes a checked `.bp` file to a running container or to Fly.io with
 one command, with predictable failure modes when prerequisites are missing.
+This pillar's `--target` is a *deploy* target (`docker`, `fly`) — a different
+axis from the codegen `--target` (`node`/`python`/`effect`) covered under
+[Pillar 2](#pillar-2--codegen-correctness) and
+[Multi-target codegen progress](#multi-target-codegen-progress) below.
+`bp deploy` always builds the node codegen target internally today, so this
+pillar's gates are node-only regardless of how far python/effect progress.
 
 | Gate | Threshold | Verified by |
 |------|-----------|-------------|
@@ -112,8 +118,11 @@ Legend: ✅ meets gate · 🟡 partial · 🔴 not started · ⏳ implemented, g
 
 ### Multi-target codegen progress
 
-Not a 1.0 gate (post-1.0 beta per "What's out of scope"), but tracked here so
-the Python work doesn't drift.
+The python target is not a 1.0 gate — 1.0 is defined against the node target
+only (see "What's explicitly out of scope" below) — but it is no longer
+theoretical: it is advanced, not planned. All 5 canonical examples already
+compile end-to-end under `--target python`, tracked phase-by-phase here so the
+work doesn't drift and regress:
 
 | Phase | What | Status | As of |
 |-------|------|--------|-------|
@@ -126,6 +135,13 @@ the Python work doesn't drift.
 | 5 | STREAM (SSE), WS, `cache redis` | ✅ shipped — **5/5 examples compile** | 2026-05-29 |
 | 3d | Non-`==` `where`, bare-expression steps, partial-commit rollback, structured `log` | 🔴 not started | 2026-05-29 |
 | 4 | Middleware, fn/pipe (`impl python`), `bp test` with testcontainers | 🟡 `--gen-tests` shipped (pytest + testcontainers harness); middleware / fn impl python still pending | 2026-05-29 |
+
+**The effect target is separate and much earlier.** `--target effect`
+(`internal/codegen/effect/`) exists and is wired into `bp build`/`bp diff`,
+but it is an early scaffold, not tracked phase-by-phase above: it emits the
+project shell and a `Config` secrets module; endpoint and model emission
+aren't implemented yet. Treat it as experimental/opt-in, not as a target with
+a 1.0-adjacent timeline.
 
 ---
 
@@ -165,9 +181,14 @@ already at ✅.
 
 Stating these up front so we don't drift:
 
-- **Languages other than TypeScript/Node.** Multi-target codegen (Python,
-  Go) becomes possible after IR slices 2–4 ship, but it ships as a separate
-  beta and is not gated on 1.0.
+- **1.0 gates apply to the node target only.** IR slices 2–4 (the
+  target-agnostic `resolve` facts multi-target codegen leans on) have already
+  shipped, and both a python target (`--target python`, advanced — see
+  "Multi-target codegen progress" above) and an early effect scaffold
+  (`--target effect`) exist today. Neither is gated on 1.0 or held to this
+  document's pillar thresholds: python ships as a separate beta as it closes
+  out its remaining phases, and effect is pre-beta. A Go target has not been
+  started.
 - **Hosted service.** Blueprint is a compiler and CLI; we do not run anyone
   else's code. `bp deploy` shells out to user-owned infrastructure.
 - **Custom DSL extensions at runtime.** The plugin system in the roadmap

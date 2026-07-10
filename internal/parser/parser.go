@@ -21,7 +21,23 @@ const (
 	// (The parser-specific code is P001; the checker keeps C001 for the
 	// "blueprint block exists somewhere but is invalid" cases.)
 	CodeMissingBlueprint = "P001"
+
+	// CodeControlFlowKeyword flags an if/else/for/while/switch keyword found
+	// in statement/step position. Blueprint has neither if/else nor loops
+	// (SPEC.md's "flat by force" / "no if/else" / "no loops" rules) — use
+	// guard/when for branching and map for iteration instead. See P002 in
+	// docs/error-codes.md.
+	CodeControlFlowKeyword = "P002"
 )
+
+// controlFlowKeywords are step-position identifiers that don't exist in
+// Blueprint but are the #1 mistake for anyone coming from JS/Python/etc.
+// Left unhandled, `|> if cond { ... }` degrades into a generic "Expected
+// '}'" panic whose panic-mode recovery can misparse everything that follows
+// (see reportControlFlowStmt).
+var controlFlowKeywords = map[string]bool{
+	"if": true, "else": true, "for": true, "while": true, "switch": true,
+}
 
 // Parser parses a token stream into an AST.
 type Parser struct {
@@ -1282,11 +1298,88 @@ func (p *Parser) parseArrowStmt() ast.ArrowStmt {
 	case lexer.TokenGenerate:
 		return p.parseGenerateStepStmt()
 	default:
+		if p.isControlFlowKeyword() {
+			p.reportControlFlowStmt()
+			return nil
+		}
 		p.addError(p.peek().Loc,
 			"Expected arrow statement (<-, |>, ->, or @>)",
 			"Arrow statements start with <-, |>, ->, or @>")
 		p.advance()
 		return nil
+	}
+}
+
+// isControlFlowKeyword reports whether the current token is one of Blueprint's
+// forbidden control-flow keywords (if/else/for/while/switch) appearing where
+// a step is expected. These aren't reserved words in the lexer — they're
+// plain identifiers — so this check is scoped to statement/step position
+// only (here and in parseStepOrGuardOrWhenOrTry), not to identifiers in
+// general.
+func (p *Parser) isControlFlowKeyword() bool {
+	return p.peek().Kind == lexer.TokenIdent && controlFlowKeywords[p.peek().Value]
+}
+
+// reportControlFlowStmt emits the dedicated "Blueprint has no if/else or
+// loops" diagnostic for a stray control-flow keyword in step position, then
+// consumes the whole malformed construct (condition/iterable + balanced
+// `{ ... }` body, plus any chained `else`/`else if`) itself rather than
+// panicking. This bounds the blast radius: panic-mode recovery elsewhere
+// (recoverToNextBlock) skips forward to the next *top-level* construct
+// start, which can swallow a following `|> save x { ... }` step and
+// misparse it as a top-level `save` schema block. Consuming the construct
+// here means parsing resumes at the very next real step/output/closing
+// brace instead.
+func (p *Parser) reportControlFlowStmt() {
+	tok := p.peek()
+	p.addErrorCode(tok.Loc, CodeControlFlowKeyword,
+		fmt.Sprintf("Blueprint has no '%s' — it has no if/else or loops", tok.Value),
+		`Use '|> guard <cond> -> <status> "msg"' for early return, `+
+			"'|> when <cond>: <step>' (or '|> when <cond> { ... }') for a conditional step, "+
+			"and 'map' for iteration.")
+
+	for {
+		p.skipControlFlowConstruct()
+		if p.peek().Kind == lexer.TokenIdent && p.peek().Value == "else" {
+			p.advance() // consume "else"; a following "if" is just more condition
+			// tokens to skipControlFlowConstruct, which stops at the next '{'.
+			continue
+		}
+		break
+	}
+}
+
+// skipControlFlowConstruct consumes one `<condition/iterable> { <body> }`
+// unit starting at the current position (assumed to be right after a
+// control-flow keyword or "else"). Braces inside the body are balanced, so
+// arbitrarily nested blocks (including legitimate nested steps) are skipped
+// as a whole. If no '{' is found before an arrow-statement start, '}', or
+// EOF, it stops there instead of running away.
+func (p *Parser) skipControlFlowConstruct() {
+	for !p.atEnd() && !p.check(lexer.TokenLBrace) {
+		if p.isArrowStart() || p.check(lexer.TokenRBrace) {
+			return
+		}
+		p.advance()
+	}
+	if !p.check(lexer.TokenLBrace) {
+		return
+	}
+	depth := 0
+	for !p.atEnd() {
+		switch p.peek().Kind {
+		case lexer.TokenLBrace:
+			depth++
+			p.advance()
+		case lexer.TokenRBrace:
+			depth--
+			p.advance()
+			if depth == 0 {
+				return
+			}
+		default:
+			p.advance()
+		}
 	}
 }
 
@@ -1328,6 +1421,10 @@ func (p *Parser) parseStepOrGuardOrWhenOrTry() ast.ArrowStmt {
 		// |> -> expr (return in logic blocks)
 		return p.parseOutputStmt()
 	default:
+		if p.isControlFlowKeyword() {
+			p.reportControlFlowStmt()
+			return nil
+		}
 		return p.parseStepStmt(loc)
 	}
 }

@@ -24,6 +24,22 @@ A correctness-and-hardening batch driven by a 7-dimension audit (2026-07-09): tw
 
 ### Added
 
+- **Dedicated diagnostic for the #1 beginner error (`P002`)**: writing `if`/`else`/`for`/`while`/`switch` in a step now produces "Blueprint has no 'if'…" with guard/when/map hints, and the parser consumes the malformed construct instead of panic-mode recovery misparsing the next step as a top-level declaration (the "game-save" cascade is gone).
+
+- **First tests for `bp generate`'s file-rewriting path** (`internal/generate` was at 0% coverage): Apply splicing (multi-slot, boundaries, unicode), no-op safety, API error handling without file mutation, idempotency — via an injectable API seam, no network.
+
+- **LSP `didChange` fix + first handler tests**: the server applied only `ContentChanges[0]`, dropping subsequent edits in multi-change notifications; all changes now apply in order, covered by JSON-RPC-level tests (didOpen → didChange → hover/definition/diagnostics).
+
+- **`bp eject` no longer sets up silent data loss**: eject now deletes `.blueprint/manifest.json`, so a subsequent `bp build` hits the foreign-directory `--force` guard instead of clobbering ejected files. First `cmdEject` tests added.
+
+### Fixed (second batch)
+
+- **`bp migrate` no longer targets a stale database**: the project-root `.env` copy is refreshed when the output-dir copy is still bp's own (hash-tracked); hand-edited copies are preserved with a warning.
+- **`bp migrate --target effect` is rejected explicitly** instead of falling through to the drizzle-kit path with a confusing error.
+- **SPEC.md truth sync**: Appendix C targets table reflects reality (node mature / python advanced / effect experimental), the `in` predicate operator is in the grammar, `like`/`or` status is stated, and a new Appendix D documents the CLI exit-code contract (AGENTS.md's phantom "§24.2" citation fixed). Roadmap line counts and production-readiness multi-target framing corrected.
+
+### Added
+
 - **Worker coverage in the compile gate**: `testdata/valid/all_features.bp` now declares a realistic worker (input binding, fetch/update, guard, `impl node` fn call, `on_fail`), and generator tests build `testdata/valid/worker_basic.bp` end-to-end, so worker codegen is permanently covered by the `tsc` CI gate.
 
 - **`bp init` prints next steps**; shell completions (bash/zsh/fish) are generated from one shared command table and now include `stats`/`doctor`/`explain`/`llms`/`context`; `.env` discovery is consistent across `run`/`dev`/`test`/`migrate` (project-root `.env` is used when the output dir has none).

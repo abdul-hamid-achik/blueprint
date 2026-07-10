@@ -38,7 +38,7 @@ opt-in scaffold.
 
 ## Per-command target flag
 
-`--target` is parsed by: `bp build`, `bp diff`, `bp migrate`, `bp deploy` (currently `docker|fly`, where `fly` exits cleanly as "not implemented; v0.11"). `bp check`, `bp lint`, `bp fmt`, `bp docs` (OpenAPI) are target-agnostic — they operate on `.bp` source only.
+`--target` is parsed by: `bp build`, `bp diff`, `bp migrate` (node/python only — `effect` has no migration tooling and is rejected with a clear error), `bp deploy` (currently `docker|fly`, where `fly` exits cleanly as "not yet implemented"; see the roadmap for status). `bp check`, `bp lint`, `bp fmt`, `bp docs` (OpenAPI) are target-agnostic — they operate on `.bp` source only.
 
 ## See also
 

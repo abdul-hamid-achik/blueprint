@@ -529,7 +529,7 @@ func main() {
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
 					{"--tag <tag>", "Docker image tag (default: blueprint-app:latest)"},
-					{"--target <name>", "Deploy target: docker (default). fly is reserved for v0.11."},
+					{"--target <name>", "Deploy target: docker (default). fly is reserved for a future release."},
 					{"--no-run", "Skip the smoke-test docker run after build"},
 				})
 			os.Exit(0)
@@ -1086,25 +1086,67 @@ func cmdDocs(filename, outFile string) int {
 	return 0
 }
 
+// envHashPath is where copyProjectEnv records the hash of the .env content it
+// last copied into outDir, mirroring packageHashPath's "detect drift since we
+// last touched this" pattern.
+const envHashPath = ".blueprint/env-hash.txt"
+
 // copyProjectEnv copies a .env file from the project directory (the
 // directory containing the .bp source file) into outDir, so DATABASE_URL and
 // friends are available to whatever gets shelled out to next (drizzle-kit,
-// alembic, bun run start/test, ...). The project .env only wins when outDir
-// doesn't already have its own — an outDir-local .env (hand-edited after a
-// build) is left alone rather than clobbered on every invocation.
+// alembic, bun run start/test, ...).
+//
+// outDir/.env is only ever bp's own earlier copy or a file the user placed/
+// edited by hand — we can't tell those apart by content alone, so we record
+// the hash of what bp last wrote there. If outDir/.env still matches that
+// recorded hash, it's safe to refresh from the (possibly changed) project
+// .env. If it doesn't match — either the user hand-edited it, or it predates
+// this tracking — we leave it alone and, if the content actually differs
+// from the project .env, warn on stderr so a stale DATABASE_URL doesn't
+// silently point migrations/tests/runs at the wrong place.
 func copyProjectEnv(filename, outDir string) {
-	envDst := filepath.Join(outDir, ".env")
-	if _, err := os.Stat(envDst); err == nil {
-		return // outDir already has its own — don't overwrite it
-	}
 	envSrc := filepath.Join(filepath.Dir(filename), ".env")
-	envContent, err := os.ReadFile(envSrc)
+	srcContent, err := os.ReadFile(envSrc)
 	if err != nil {
 		return // no project .env to copy
 	}
-	if err := os.WriteFile(envDst, envContent, 0644); err == nil {
-		fmt.Printf("Copied .env from %s to %s\n", filepath.Dir(filename), outDir)
+
+	envDst := filepath.Join(outDir, ".env")
+	dstContent, dstErr := os.ReadFile(envDst)
+	if dstErr != nil {
+		// No outDir/.env yet — plain copy.
+		if err := os.WriteFile(envDst, srcContent, 0644); err == nil {
+			recordEnvHash(outDir, srcContent)
+			fmt.Printf("Copied .env from %s to %s\n", filepath.Dir(filename), outDir)
+		}
+		return
 	}
+
+	if hashBytes(dstContent) == hashBytes(srcContent) {
+		return // already in sync, nothing to do
+	}
+
+	recorded, hashErr := os.ReadFile(filepath.Join(outDir, envHashPath))
+	if hashErr == nil && strings.TrimSpace(string(recorded)) == hashBytes(dstContent) {
+		// outDir/.env is unchanged since bp last copied it here — safe to
+		// refresh with the (updated) project .env.
+		if err := os.WriteFile(envDst, srcContent, 0644); err == nil {
+			recordEnvHash(outDir, srcContent)
+			fmt.Printf("Copied .env from %s to %s\n", filepath.Dir(filename), outDir)
+		}
+		return
+	}
+
+	fmt.Fprintf(os.Stderr,
+		"Warning: %s differs from %s and looks hand-edited (or predates bp's .env tracking); leaving it in place. Delete it if you want bp to refresh it from the project .env.\n",
+		envDst, envSrc)
+}
+
+// recordEnvHash stores content's hash so a later copyProjectEnv call can tell
+// whether outDir/.env is still exactly what bp copied there last time.
+func recordEnvHash(outDir string, content []byte) {
+	_ = os.MkdirAll(filepath.Join(outDir, ".blueprint"), 0o755)
+	_ = os.WriteFile(filepath.Join(outDir, envHashPath), []byte(hashBytes(content)+"\n"), 0o644)
 }
 
 // packageHashPath is where installIfNeeded records the package.json content
@@ -1347,6 +1389,15 @@ func cmdMigrate(filename, outDir, subCmd, target string) int {
 	}
 	target = canonical
 
+	// The effect target has no migration tooling wired up yet. Reject it
+	// explicitly rather than falling through to the drizzle-kit path below,
+	// which would build a node tree with no drizzle.config.ts and die on a
+	// confusing error.
+	if target == targetEffect {
+		fmt.Fprintf(os.Stderr, "Error: --target effect does not support migrations yet (no drizzle/alembic equivalent wired up).\n")
+		return 2
+	}
+
 	if code := cmdBuild(filename, outDir, target, false, false, false); code != 0 {
 		return code
 	}
@@ -1531,6 +1582,9 @@ func cmdEject(dir string) int {
 		if !strings.HasSuffix(path, ".ts") && !strings.HasSuffix(path, ".json") {
 			return nil
 		}
+		if isManifestPath(dir, path) {
+			return nil // not marker-bearing source — removed separately below
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -1563,9 +1617,36 @@ func cmdEject(dir string) int {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		return 2
 	}
+
+	// checkOutDirSafety treats the presence of .blueprint/manifest.json as
+	// proof "bp made this, safe to overwrite" — that's exactly the contract
+	// eject exists to end. Leaving the manifest behind meant the very next
+	// `bp build --out <this dir>` would silently clobber every file just
+	// handed over to the user. Removing it routes that rebuild through the
+	// same foreign-directory guard as any other non-Blueprint directory, so
+	// it refuses (and requires --force) instead of overwriting silently.
+	manifestPath := filepath.Join(dir, ".blueprint", "manifest.json")
+	if err := os.Remove(manifestPath); err == nil {
+		fmt.Println("  removed: .blueprint/manifest.json")
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: could not remove %s: %s\n", manifestPath, err)
+	}
+
 	fmt.Printf("\nEjected %d file(s). This code is now fully yours.\n", count)
 	fmt.Println("You can safely delete your .bp source file and stop using Blueprint.")
 	return 0
+}
+
+// isManifestPath reports whether path is dir's .blueprint/manifest.json —
+// shared by cmdEject (skip marker-stripping, delete separately) and anything
+// else that needs to recognize bp's own bookkeeping file among generated
+// output.
+func isManifestPath(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == filepath.FromSlash(".blueprint/manifest.json")
 }
 
 func cmdDiff(filename, outDir, target string, reactQuery, frontendOnly, genTests, apply, exitOnDiff, noColor bool) int {
@@ -2230,7 +2311,7 @@ func printUsage() {
 	fmt.Println("  lint       <file.bp>                       Lint a .bp file for best practices")
 	fmt.Println("  init       [name]                          Scaffold a new Blueprint project")
 	fmt.Println("  eject      <dir>                           Remove Blueprint markers from generated code")
-	fmt.Println("  deploy     <file.bp> [--tag <image>]       Build and smoke-run Docker image (--target docker default; fly reserved)")
+	fmt.Println("  deploy     <file.bp> [--tag <image>]       Build and smoke-run Docker image (--target docker default; fly reserved for a future release)")
 	fmt.Println("  completion <bash|zsh|fish>                 Generate shell completion script")
 	fmt.Println("  stats      <file.bp> [--json]              Show code statistics")
 	fmt.Println("  explain    <code>                          Print docs for a structured error code (Cxxx/Lxxx/Pxxx)")

@@ -229,10 +229,31 @@ Hint           ::= Identifier "(" Expr ")"
 DefaultValue   ::= "=" Expr
 WhereClause    ::= "where" "(" Expr ")"
 Condition      ::= Expr ComparisonOp Expr
-ComparisonOp   ::= "==" | "!=" | "<" | ">" | "<=" | ">="
+ComparisonOp   ::= "==" | "!=" | "<" | ">" | "<=" | ">=" | "in"
 FieldPath      ::= Identifier ("." Identifier)*
 Backoff        ::= "backoff" "(" Identifier ("," KvPair)* ")"
 ```
+
+`in` tests membership: `left in right` is true when `right` is a list-typed
+input/field or a fetched collection, and `left` matches one of its elements or
+one of a field projected from its elements (e.g. `id in tags.tag_id`). It is
+lexed as its own keyword, parsed at the same precedence as the other
+comparison operators, and translated by both the node target (Drizzle
+`inArray`) and the python target (SQLAlchemy `.in_`).
+
+`where(...)` accepts one `Expr` per the grammar above, but only a restricted
+subset is actually emitted by the generators today: a single `Condition`, or
+several comma-separated `Condition`s, which are combined with **AND** (e.g.
+`where(status == "open", owner_id == user.id)`). Passing an explicit `or`
+between two conditions inside a single `where(...)` argument is not a defined
+composite predicate — the checker does not reject it, but codegen does not
+special-case it, so the emitted code is not guaranteed to behave like a SQL
+`OR`. Prefer `query`-then-filter in application code (or a `pipe`) until `or`
+composition is specified. Substring/fuzzy matching (a `like` operator) is not
+part of the grammar or lexer; the node target's ILIKE search behavior is a
+naming-convention extension (parameters named `q`, `search`, `query`,
+`keyword`, `term`, or `filter` are matched against text columns), not a
+language keyword, pending a spec decision on first-class text search.
 
 ---
 
@@ -303,9 +324,15 @@ Codegen → TypeScript/Node.js project
 
 | Target | Status | Output |
 |--------|--------|--------|
-| JavaScript/TypeScript | ✅ Complete | Hono + Drizzle + Zod |
-| Python/FastAPI | 🚧 Planned | FastAPI + SQLAlchemy + Pydantic |
-| Go/Chi | 🚧 Planned | Chi + sqlc + validator |
+| JavaScript/TypeScript (`--target node`, default) | ✅ Complete — mature, the reference target | Hono + Drizzle + Zod |
+| Python (`--target python`) | 🚧 Advanced — all 5 canonical examples (`examples/*.bp`) compile end-to-end; long-tail constructs are rejected with a specific error rather than silently mis-emitted (see BACKLOG.md, "Python target") | FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic |
+| TypeScript on Effect (`--target effect`) | 🧱 Experimental scaffold, opt-in — emits the project shell and a `Config` secrets module; endpoint/model emission is not yet implemented | `@effect/platform` HttpApi + `@effect/schema` + `@effect/sql` |
+| Go/Chi | 🗺️ Planned, not started | Chi + sqlc + validator |
+
+See [docs/multi-target-codegen.md](https://github.com/abdul-hamid-achik/blueprint/blob/main/docs/multi-target-codegen.md)
+for the full generator contract, per-command `--target` dispatch table, and
+type/naming mappings — this table is a summary, not the source of truth for
+target capability.
 
 ### Generated vs User-Owned Files
 
@@ -317,6 +344,25 @@ Code generators must distinguish managed output from user implementation code:
 - For JavaScript/TypeScript, `impl node { module: "./internal/X" }` maps to a
   generated wrapper under `src/functions/` and a user-owned implementation
   scaffold under `src/impl/functions/internal/X.ts`.
+
+---
+
+# Appendix D: CLI exit codes
+
+Every `bp` subcommand returns one of these four codes (verified against
+`cmd/bp/main.go`'s command dispatch); a new command must keep reusing them
+rather than introducing new ones:
+
+| Code | Meaning | Example |
+|------|---------|---------|
+| `0` | Success | `bp check` found no errors; `bp build`/`Generate` wrote output |
+| `1` | Validation error | Lexer/parser syntax errors; `checker.Check` semantic errors; `include` resolution errors |
+| `2` | Environment/file error | Unreadable input file; unknown/malformed `--target`; an output directory that fails the safety check; a flag combination the target doesn't support (e.g. `--react-query` with `--target python`) |
+| `4` | Codegen error | The target's `Generate`/`Files` returned a non-nil error — most commonly `unsupportedFeatures()` rejecting a construct the target doesn't emit yet |
+
+An AST that fails to check never reaches a generator, so `1` and `4` are
+mutually exclusive in practice: everything a generator itself rejects is a
+`4`, everything the parser/checker rejects is a `1`.
 
 ---
 

@@ -1531,6 +1531,207 @@ GET /api/test {
 	}
 }
 
+// --- Control-Flow Keyword Diagnostics (P002) ---
+//
+// Blueprint has no if/else or loops (SPEC.md "flat by force" / "no if/else" /
+// "no loops"). Writing `|> if cond { ... }` used to degrade into a generic
+// "Expected '}', got 'Ident'" followed by panic-mode recovery that misparsed
+// the *next* step as a top-level `save` schema block (see AGENTS.md /
+// BACKLOG.md). These tests pin the dedicated diagnostic and the bounded
+// recovery that keeps that cascade from happening.
+
+func TestControlFlowIfInEndpointStepGetsDedicatedError(t *testing.T) {
+	src := `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+model todo {
+  id    uuid   primary
+  title string required
+}
+POST /api/todos {
+  <- title string required
+  |> if title == "" {
+    -> 400 "title required"
+  }
+  |> save todo { title: title }
+  -> 200 todo
+}`
+	f, errs := ParseFile("test.bp", []byte(src))
+
+	if len(errs) != 1 {
+		t.Fatalf("expected exactly 1 error, got %d: %v", len(errs), errs)
+	}
+	e := errs[0]
+	if e.Code != CodeControlFlowKeyword {
+		t.Errorf("expected code %q, got %q", CodeControlFlowKeyword, e.Code)
+	}
+	if !strings.Contains(e.Message, "Blueprint has no 'if'") {
+		t.Errorf("expected dedicated if/else message, got %q", e.Message)
+	}
+	if !strings.Contains(e.Hint, "guard") || !strings.Contains(e.Hint, "when") || !strings.Contains(e.Hint, "map") {
+		t.Errorf("expected hint to mention guard/when/map, got %q", e.Hint)
+	}
+	// The offending token itself, not some later token, should be pinpointed.
+	if e.Loc.Line != 12 {
+		t.Errorf("expected error on line 12 (the 'if'), got line %d", e.Loc.Line)
+	}
+
+	// The cascade bug: panic-mode recovery must NOT misparse the following
+	// `|> save todo { ... }` step as a top-level save-schema declaration.
+	for _, ee := range errs {
+		if strings.Contains(ee.Message, "unexpected entry") || strings.Contains(ee.Message, "save block") {
+			t.Errorf("cascade error leaked through: %q", ee.Message)
+		}
+	}
+
+	// The endpoint must still be parsed, and the save/output steps that
+	// follow the bad `if` must have survived recovery intact.
+	var ep *ast.Endpoint
+	for _, b := range f.Blocks {
+		if e, ok := b.(*ast.Endpoint); ok {
+			ep = e
+		}
+	}
+	if ep == nil {
+		t.Fatal("expected the endpoint to still be parsed")
+	}
+	// The input ("<- title"), the save step, and the final output all
+	// survive; only the malformed `if` construct in between is dropped.
+	if len(ep.Stmts) != 3 {
+		t.Fatalf("expected 3 surviving stmts (input + save + output), got %d", len(ep.Stmts))
+	}
+	if _, ok := ep.Stmts[0].(*ast.InputStmt); !ok {
+		t.Errorf("expected first surviving stmt to be the input, got %T", ep.Stmts[0])
+	}
+	if _, ok := ep.Stmts[1].(*ast.StepStmt); !ok {
+		t.Errorf("expected second surviving stmt to be the save StepStmt, got %T", ep.Stmts[1])
+	}
+	out, ok := ep.Stmts[2].(*ast.OutputStmt)
+	if !ok {
+		t.Fatalf("expected third surviving stmt to be the output, got %T", ep.Stmts[2])
+	}
+	if out.Status != "200" {
+		t.Errorf("expected surviving output status 200, got %q", out.Status)
+	}
+}
+
+func TestControlFlowIfElseChainIsOneError(t *testing.T) {
+	src := `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+POST /api/todos {
+  <- title string required
+  |> if title == "" {
+    -> 400 "bad"
+  } else {
+    -> 200 "ok"
+  }
+  -> 200 "fallthrough"
+}`
+	_, errs := ParseFile("test.bp", []byte(src))
+	if len(errs) != 1 {
+		t.Fatalf("expected exactly 1 error for the whole if/else chain, got %d: %v", len(errs), errs)
+	}
+	if errs[0].Code != CodeControlFlowKeyword {
+		t.Errorf("expected code %q, got %q", CodeControlFlowKeyword, errs[0].Code)
+	}
+}
+
+func TestControlFlowInFnLogicBlock(t *testing.T) {
+	src := `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+fn can_afford {
+  <- amount int
+  <- balance int
+  logic {
+    |> for x in amount {
+      |> log "nope"
+    }
+    |> -> balance >= amount
+  }
+}`
+	f, errs := ParseFile("test.bp", []byte(src))
+	if len(errs) != 1 {
+		t.Fatalf("expected exactly 1 error, got %d: %v", len(errs), errs)
+	}
+	if errs[0].Code != CodeControlFlowKeyword {
+		t.Errorf("expected code %q, got %q", CodeControlFlowKeyword, errs[0].Code)
+	}
+	if !strings.Contains(errs[0].Message, "'for'") {
+		t.Errorf("expected message to name 'for', got %q", errs[0].Message)
+	}
+
+	var fn *ast.Fn
+	for _, b := range f.Blocks {
+		if fnb, ok := b.(*ast.Fn); ok {
+			fn = fnb
+		}
+	}
+	if fn == nil || fn.Logic == nil {
+		t.Fatal("expected fn with a logic block to still be parsed")
+	}
+	if len(fn.Logic.Stmts) != 1 {
+		t.Fatalf("expected the trailing return stmt to survive recovery, got %d stmts", len(fn.Logic.Stmts))
+	}
+}
+
+func TestControlFlowWhileAndSwitchAlsoFlagged(t *testing.T) {
+	for _, kw := range []string{"while", "switch"} {
+		t.Run(kw, func(t *testing.T) {
+			src := `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+POST /api/x {
+  |> ` + kw + ` cond {
+    |> log "x"
+  }
+  -> 200 "ok"
+}`
+			_, errs := ParseFile("test.bp", []byte(src))
+			if len(errs) != 1 {
+				t.Fatalf("%s: expected exactly 1 error, got %d: %v", kw, len(errs), errs)
+			}
+			if errs[0].Code != CodeControlFlowKeyword {
+				t.Errorf("%s: expected code %q, got %q", kw, CodeControlFlowKeyword, errs[0].Code)
+			}
+			if !strings.Contains(errs[0].Message, "'"+kw+"'") {
+				t.Errorf("%s: expected message to name the keyword, got %q", kw, errs[0].Message)
+			}
+		})
+	}
+}
+
+// TestControlFlowKeywordDoesNotBreakValidCode is a guard against false
+// positives: "if"/"for"/etc. only trigger the dedicated diagnostic in
+// statement/step position, not throughout the grammar (e.g. this fixture
+// still uses guard/when correctly and must parse clean).
+func TestControlFlowKeywordDoesNotBreakValidCode(t *testing.T) {
+	f := parseString(t, `blueprint "t" {
+  version "0.1.0"
+  port 3000
+  runtime node
+}
+POST /api/todos {
+  <- title string required
+  |> guard title == "" -> 400 "title required"
+  |> when title == "urgent": log "urgent todo"
+  -> 200 "ok"
+}`)
+	ep := f.Blocks[0].(*ast.Endpoint)
+	if len(ep.Stmts) != 4 {
+		t.Fatalf("expected 4 stmts (input, guard, when, output), got %d", len(ep.Stmts))
+	}
+}
+
 func TestErrorMissingPath(t *testing.T) {
 	src := `blueprint "test" {
   version "0.1.0"

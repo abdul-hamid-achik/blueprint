@@ -1185,6 +1185,34 @@ func TestMigrateUnknownTargetRejected(t *testing.T) {
 	}
 }
 
+// TestMigrateEffectTargetRejected guards against --target effect (a valid
+// resolveTarget value) silently falling through to the drizzle-kit path,
+// which used to build a node tree with no drizzle.config.ts and die on a
+// confusing "config not found" error instead of a clear one. The rejection
+// must happen before any build/tooling invocation, so no --out directory
+// should even be created.
+func TestMigrateEffectTargetRejected(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := filepath.Join(t.TempDir(), "effect-migrate-out")
+	_, stderr, code := runBP(t, "migrate", bp, "generate", "--out", outDir, "--target", "effect")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for --target effect migrate")
+	}
+	if strings.Contains(stderr, "unknown --target") {
+		t.Errorf("effect is a valid target — expected a migrations-specific rejection, not 'unknown --target': %q", stderr)
+	}
+	if strings.Contains(stderr, "drizzle.config.ts") {
+		t.Errorf("expected a clear effect-specific error, not the drizzle.config.ts fallthrough: %q", stderr)
+	}
+	if !strings.Contains(stderr, "does not support migrations") {
+		t.Errorf("expected a clear 'does not support migrations' message, got: %q", stderr)
+	}
+	if _, err := os.Stat(outDir); err == nil {
+		t.Errorf("expected --target effect to be rejected before any build, but %s was created", outDir)
+	}
+}
+
 // TestDeployHelpMentionsTarget protects against drift between the actual flag
 // parser and the `bp deploy --help` text — both must mention --target.
 // printCommandHelp writes to stderr, so we read it from there.
@@ -1303,6 +1331,94 @@ func TestMigrateUnknownSubcommandRejected(t *testing.T) {
 	}
 }
 
+// --- copyProjectEnv: refresh bp's own copy, preserve hand edits ---
+
+// TestCopyProjectEnvRefreshesStaleCopyButPreservesHandEdits pins the "bp
+// migrate silently uses a stale .env" bug: copyProjectEnv used to return
+// early forever once outDir/.env existed, even though that file was
+// virtually always bp's OWN earlier copy rather than a hand edit. A later
+// change to the project .env (e.g. a new DATABASE_URL) was then silently
+// ignored on every subsequent bp migrate/run/dev/test invocation.
+//
+// This test drives `bp migrate ... check --target python` (via a `uv` stub
+// so no real alembic/DB is needed) three times:
+//  1. first run — outDir has no .env yet, so it's copied fresh.
+//  2. project .env changes, outDir/.env is untouched since bp copied it —
+//     it must be refreshed to the new content.
+//  3. the user then hand-edits outDir/.env; a further project .env change
+//     must NOT clobber the hand edit, and bp must warn about the drift.
+func TestCopyProjectEnvRefreshesStaleCopyButPreservesHandEdits(t *testing.T) {
+	root := getProjectRoot()
+	srcBP, err := os.ReadFile(filepath.Join(root, "examples", "todo-api.bp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectDir := t.TempDir()
+	bpFile := filepath.Join(projectDir, "todo-api.bp")
+	if err := os.WriteFile(bpFile, srcBP, 0644); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(projectDir, ".env")
+
+	binDir := t.TempDir()
+	uvStub := filepath.Join(binDir, "uv")
+	if err := os.WriteFile(uvStub, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+
+	outDir := t.TempDir()
+	outEnvPath := filepath.Join(outDir, ".env")
+
+	runMigrate := func() (stdout, stderr string, code int) {
+		return runBPEnv(t, env, "migrate", bpFile, "check", "--out", outDir, "--target", "python")
+	}
+
+	// 1. Fresh copy.
+	if err := os.WriteFile(envPath, []byte("DATABASE_URL=postgres://OLD-DB\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runMigrate(); code != 0 {
+		t.Fatalf("initial migrate failed: %d\nstderr: %s", code, stderr)
+	}
+	got, err := os.ReadFile(outEnvPath)
+	if err != nil || string(got) != "DATABASE_URL=postgres://OLD-DB\n" {
+		t.Fatalf("expected fresh .env copy, got %q, err=%v", got, err)
+	}
+
+	// 2. Project .env changes; outDir/.env is still bp's untouched copy, so
+	// it must be refreshed rather than left stale.
+	if err := os.WriteFile(envPath, []byte("DATABASE_URL=postgres://NEW-DB\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runMigrate(); code != 0 {
+		t.Fatalf("second migrate failed: %d\nstderr: %s", code, stderr)
+	}
+	got, err = os.ReadFile(outEnvPath)
+	if err != nil || string(got) != "DATABASE_URL=postgres://NEW-DB\n" {
+		t.Fatalf("stale .env bug: expected outDir/.env refreshed to NEW-DB, got %q, err=%v", got, err)
+	}
+
+	// 3. The user hand-edits outDir/.env directly.
+	if err := os.WriteFile(outEnvPath, []byte("DATABASE_URL=postgres://HAND-EDITED\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte("DATABASE_URL=postgres://NEWER-DB\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code := runMigrate()
+	if code != 0 {
+		t.Fatalf("third migrate failed: %d\nstderr: %s", code, stderr)
+	}
+	got, err = os.ReadFile(outEnvPath)
+	if err != nil || string(got) != "DATABASE_URL=postgres://HAND-EDITED\n" {
+		t.Errorf("hand-edited outDir/.env must be preserved, got %q, err=%v", got, err)
+	}
+	if !strings.Contains(stderr, envPath) {
+		t.Errorf("expected a stderr notice pointing at the drifted project .env, got: %q", stderr)
+	}
+}
+
 // --- bp build --out foreign-directory safety ---
 
 // TestBuildRefusesForeignOutDirWithoutForce pins the "silently clobbers
@@ -1398,6 +1514,111 @@ func TestBuildIntoEmptyOrFreshOutDirNeverRefuses(t *testing.T) {
 			t.Errorf("expected exit 0 for an empty --out dir, got non-zero. stderr: %s", stderr)
 		}
 	})
+}
+
+// --- bp eject ---
+
+// TestEjectRemovesMarkers verifies the core eject behavior: "Generated by
+// Blueprint" / "Do not edit directly" header lines are stripped from .ts
+// files, non-matching content is left alone.
+func TestEjectRemovesMarkers(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	if _, stderr, code := runBP(t, "build", bp, "--out", outDir); code != 0 {
+		t.Fatalf("build failed: %d\nstderr: %s", code, stderr)
+	}
+
+	// Confirm the fixture actually has markers before ejecting, so this test
+	// can't pass vacuously.
+	var markedFile string
+	_ = filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || markedFile != "" || !strings.HasSuffix(path, ".ts") {
+			return nil
+		}
+		data, _ := os.ReadFile(path)
+		if strings.Contains(string(data), "Generated by Blueprint") {
+			markedFile = path
+		}
+		return nil
+	})
+	if markedFile == "" {
+		t.Fatal("no generated .ts file with a Blueprint marker found — test fixture assumption broken")
+	}
+
+	stdout, stderr, code := runBP(t, "eject", outDir)
+	if code != 0 {
+		t.Fatalf("eject failed: %d\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Ejected") {
+		t.Errorf("expected eject summary in stdout, got: %q", stdout)
+	}
+
+	got, err := os.ReadFile(markedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "Generated by Blueprint") || strings.Contains(string(got), "Do not edit directly") {
+		t.Errorf("expected markers stripped from %s, still present: %s", markedFile, got)
+	}
+}
+
+// TestEjectRemovesManifest pins the eject data-loss bug: eject used to strip
+// markers but leave .blueprint/manifest.json intact, so the very next `bp
+// build --out <ejected-dir>` would sail past checkOutDirSafety's foreign-dir
+// guard (which treats "manifest present" as "safe to overwrite, bp made
+// this") and silently clobber every file just handed over to the user.
+func TestEjectRemovesManifest(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	if _, stderr, code := runBP(t, "build", bp, "--out", outDir); code != 0 {
+		t.Fatalf("build failed: %d\nstderr: %s", code, stderr)
+	}
+	manifestPath := filepath.Join(outDir, ".blueprint", "manifest.json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Fatalf("expected manifest.json after build, got err: %v", err)
+	}
+
+	if _, stderr, code := runBP(t, "eject", outDir); code != 0 {
+		t.Fatalf("eject failed: %d\nstderr: %s", code, stderr)
+	}
+
+	if _, err := os.Stat(manifestPath); err == nil {
+		t.Error("expected .blueprint/manifest.json to be removed by eject, but it still exists")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("unexpected error statting manifest after eject: %v", err)
+	}
+}
+
+// TestEjectThenBuildRefusesWithoutForce is the end-to-end version of the
+// manifest-removal fix: build, eject, then build again into the same
+// directory without --force must now refuse (foreign-dir guard), instead of
+// silently overwriting the user's ejected code. --force still works, for
+// users who deliberately want to regenerate over ejected output.
+func TestEjectThenBuildRefusesWithoutForce(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := t.TempDir()
+	if _, stderr, code := runBP(t, "build", bp, "--out", outDir); code != 0 {
+		t.Fatalf("build failed: %d\nstderr: %s", code, stderr)
+	}
+	if _, stderr, code := runBP(t, "eject", outDir); code != 0 {
+		t.Fatalf("eject failed: %d\nstderr: %s", code, stderr)
+	}
+
+	_, stderr, code := runBP(t, "build", bp, "--out", outDir)
+	if code == 0 {
+		t.Fatal("expected rebuild into an ejected directory to refuse without --force")
+	}
+	if !strings.Contains(stderr, "--force") {
+		t.Errorf("expected stderr to mention --force, got: %q", stderr)
+	}
+
+	// --force must still be able to proceed.
+	if _, stderr, code := runBP(t, "build", bp, "--out", outDir, "--force"); code != 0 {
+		t.Fatalf("expected --force rebuild to succeed, got %d\nstderr: %s", code, stderr)
+	}
 }
 
 // --- bp test / bp run install decision logic (needsInstall) ---

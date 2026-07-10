@@ -217,43 +217,52 @@ Internal improvements for maintainability and performance.
 
 ### Codegen Refactoring
 
-**Current state:** `internal/codegen/js/generator.go` is 3,169 lines. `helpers.go` is 1,163 lines. All codegen logic lives in these two files.
+**Current state:** the once-monolithic `generator.go` has already been split by
+concern — `generator.go` (1,276 lines) now holds orchestration, with
+`helpers.go` (1,687 lines), `routes.go` (1,266), `frontend.go` (1,654),
+`static.go`, `schema.go`, `functions.go`, `autotest.go`, `test_gen.go`,
+`imports.go`, and `events.go` covering the rest of `internal/codegen/js`
+(~13,500 lines total across the package, tests included). A shared
+`codegen.Generator` interface already exists in `internal/codegen/codegen.go`
+and is implemented by the js, python, and effect packages alike. Golden/snapshot
+tests already exist (`internal/codegen/js/golden_test.go`).
 
-**What to improve:**
-- Split generator.go into focused files: `static.go` (package.json, tsconfig, Dockerfile), `schema.go` (models, types, validation), `routes.go` (REST/STREAM/WS + index.ts), `functions.go` (fn, pipe, middleware), `workers.go` (workers, schedules, subscriptions), `tests.go` (test codegen), `emit.go` (emitArrowStmts, emitCtx, imports)
-- Extract `emitCtx` into a proper typed struct with methods (currently passed by value but contains maps with shared reference semantics)
-- Eliminate 4 pairs of `X()` / `XWithCtx()` wrapper functions
+**What's still worth doing:**
+- Extract `emitCtx` into a proper typed struct with methods (currently passed by value but contains maps with shared reference semantics) — tracked as IR Slice 5 in BACKLOG.md
+- Eliminate remaining `X()` / `XWithCtx()` wrapper function pairs
 - Deduplicate `genRoute`, `genStreamRoute`, `genWsRoute` import/builder patterns (~100 lines each)
-- Create a shared `codegen` interface package for multi-target support
-- Add golden file (snapshot) tests for generated output
+- Expand golden-file coverage beyond hello-world/todo-api to the remaining canonical examples
 
 ### CLI Refactoring
 
-**Current state:** `cmd/bp/main.go` is 770 lines with repeated parse-check boilerplate across commands.
+**Current state:** `cmd/bp/main.go` has grown to ~2,800 lines (one file, one
+big `switch` in `main()`) as commands were added; parse-check boilerplate is
+still repeated across commands. `--json` output already ships on several
+commands (`check`, `build`, `stats`, ...) and colored, caret-pointing error
+output already ships via `internal/diag` — those two are done, not gaps.
 
 **What to improve:**
-- Extract `parseAndCheck(filename) (*ast.File, []byte, error)` helper
+- Extract a `parseAndCheck(filename) (*ast.File, []byte, error)` helper to remove the repeated read-parse-check boilerplate
 - Split into per-command files or use a subcommand pattern
-- Add `--verbose`, `--quiet`, and `--json` output flags
-- Add colored output for error messages (source line + caret `^`)
+- Add `--verbose`/`--quiet` flags (not yet present)
 
 ### Test Coverage Improvements
 
-**Current state:** the suite covers the main parser, checker, and codegen paths, but critical gaps remain.
+**Current state:** coverage has moved a lot since this table was last measured
+(`go test -cover` per package, re-run against `main`); `internal/generate` and
+`cmd/bp` now have real test suites where this table used to say 0%:
 
 | Module | Coverage | Gap |
 |--------|----------|-----|
-| `internal/generate` | **0%** | No tests at all (266 lines) |
-| `cmd/bp` | **0%** | No CLI integration tests (770 lines) |
-| `internal/linter` | **41%** | Only 3 rules tested |
-| `internal/ast` | **16%** | Printer tested, node methods not |
-| `internal/codegen/js` | **83%** | Low coverage on helpers: `typeToTS` 33%, `typeToZod` 52%, `jsEscapeString` 55% |
+| `cmd/bp` | **~1%** statement coverage, but real CLI integration tests exist | `main_test.go` builds the actual `bp` binary once (`TestMain`) and drives every subcommand as a subprocess (`runBP`/`runBPEnv`), asserting on stdout/stderr/exit code — `go test -cover` just can't attribute a separately-exec'd binary's execution back to the package, so the number understates real coverage rather than reflecting a gap |
+| `internal/ast` | **26%** | Printer tested, most node methods not |
+| `internal/linter` | **60%** | Several rules still untested |
+| `internal/generate` | **75%** | Slot collection and prompt building now covered; LLM call path itself is mocked, not exercised |
+| `internal/codegen/js` | **83%** | Helper coverage has improved (e.g. `typeToTS` ~80%) but `typeToZod` (~50%) and `jsEscapeString` (~55%) are still light |
 
 **What to add:**
 - Fuzz tests for lexer and parser (prevent panics on arbitrary input)
-- CLI integration tests (`bp check`, `bp build`, `bp fmt` as subprocesses)
-- Unit tests for `internal/generate` (slot collection, prompt building)
-- Golden file tests for codegen output (snapshot regression tests)
+- A `GOCOVERDIR`-based build (Go 1.20+ binary instrumentation) for the `cmd/bp` test binary so its subprocess-driven integration tests report real coverage instead of ~1%
 - Add `-race` flag and `-coverprofile` to CI pipeline
 - Enable `t.Parallel()` across independent tests
 

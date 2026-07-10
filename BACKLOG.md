@@ -131,6 +131,45 @@ _(detailed working notes live in the maintainer's Obsidian vault under
   loudly and never claims the dropped logic was preserved. `bp check` is NOT a
   sufficient import-validity gate. _(experiment done 2026-06-16)_
 
+### Iteration-3 queue — reviewer-confirmed defects in the 2026-07-09 batch (fix FIRST)
+
+The adversarial review of commit 882bb5c confirmed these; the fixer agents hit a session
+limit before landing them. Full evidence in the Obsidian handoff note (`projects/blueprint/`).
+
+- [ ] **(python, must-fix)** try/recover nested via `when` inside a transaction-wrapped try
+  emits `db.rollback()`/`db.commit()` inside the outer `with db.begin_nested():` — discards
+  the outer write, returns a phantom 201. Wrap the inner try in its own `begin_nested()` and
+  suppress rollback/commit when `ctx.inTxn` (endpoint_body.go ~:858-885).
+- [ ] **(python, must-fix)** `lastBindingForModel` is position-unaware: `update <model>` can
+  resolve to a binding declared AFTER the statement (or inside recover) → forward-reference
+  NameError. Thread statement position into the lookup (endpoint_body.go ~:109-119).
+- [ ] **(python, must-fix)** `orderedBindings` omits `facts.MapResults` (and middleware/stream
+  ctxs never populate it) — `delete <model>` on a map-produced collection regressed to
+  NameError (endpoint_body.go ~:98).
+- [ ] **(js, must-fix)** worker input named `data` (or `error` in on_fail) collides with the
+  generated function parameters — rename params to `_bpData`/`_bpError` (functions.go ~:371-390).
+- [ ] **(js, must-fix)** auto-added REDIS_URL/DATABASE_URL not deduped against user `env`
+  declarations — duplicate object keys in env.ts, TS1117 (static.go ~:179-209, seed the
+  dedupe set with env names in genEnvTS AND genEnvExample).
+- [ ] **(js, must-fix)** `off()` during `emit()` splices the array emit iterates — a client
+  disconnecting mid-emit makes other SSE subscribers miss the event; iterate a snapshot in
+  the emitted emit() (events.go ~:27-36).
+- [ ] (js) scheduler consumer vs user `trigger queue("scheduler")` collision — namespace to
+  `__bp_scheduler` or reject the reserved name.
+- [ ] (js) WS onOpen close reason >123 UTF-8 bytes throws RangeError in the catch — truncate.
+- [ ] (js) two `on timeout(...)` handlers in one STREAM block emit duplicate `const _interval`
+  — index like the event handlers.
+- [ ] (cli) `checkOutDirSafety` message says "Use --force" but run/dev/test/migrate/deploy/
+  diff --apply don't accept --force — thread it through or make the message command-aware.
+- [ ] (cli) stale-file removal path deletes hand-edited generated files silently — apply the
+  same drift warning before os.Remove (writer.go ~:51-63).
+- [ ] **(python, deferred package P1)** where-predicate long tail: comparison ops (`!=` `<`
+  `>` `<=` `>=`), `in` (SQLAlchemy `.in_`), duration RHS (`N.days.ago` → timedelta), new
+  `testdata/valid/where_predicates.bp` fixture wired into BOTH targets' tests. Full design in
+  the audit findings (task file wqxaat4fz.output) and the Obsidian handoff note.
+- [ ] **(js, deferred package P3)** string-interpolation `{expr}` bodies emitted raw — no
+  camelCase/ctx resolution → TS references to undeclared names for snake_case identifiers.
+
 ### Found in the 2026-07-09 audit (not yet fixed)
 
 - [ ] **`bp migrate --target effect` silently falls through to the node/drizzle path** —

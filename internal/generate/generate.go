@@ -175,6 +175,11 @@ func buildPrompt(slot Slot) string {
 	return sb.String()
 }
 
+// anthropicAPIURL is the Anthropic Messages API endpoint. It is a
+// package-level var (rather than an inline literal) so tests can redirect
+// requests to a local httptest.Server without any network dependency.
+var anthropicAPIURL = "https://api.anthropic.com/v1/messages"
+
 // callAnthropicAPI sends one prompt to the Anthropic Messages API and returns
 // the generated text.
 func callAnthropicAPI(prompt, apiKey string, client *http.Client) (string, error) {
@@ -191,7 +196,7 @@ func callAnthropicAPI(prompt, apiKey string, client *http.Client) (string, error
 		return "", fmt.Errorf("generate: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequest(http.MethodPost, anthropicAPIURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", fmt.Errorf("generate: create request: %w", err)
 	}
