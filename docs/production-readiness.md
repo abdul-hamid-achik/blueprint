@@ -105,7 +105,7 @@ table and the CHANGELOG together.
 | 2 | No `: any` in handler boundaries | ✅ Hono `Variables` typed from middleware-injected model (`typeof schema.M.$inferSelect` with `NonNullable` mapped fields); merged fn scaffolds typed from `fn.Inputs`/`Outputs` instead of `...args: any[]` | 2026-05-29 |
 | 3 | Errors have `Hint:` on every kind | ✅ green (54/54 checker sites) | 2026-05-29 |
 | 3 | Structured error codes | ✅ green (L001, P001, C001–C015 documented + emitted; `bp explain` shipped) | 2026-05-29 |
-| 3 | `bp fmt --check` on all examples | 🟡 hello-world wired in CI; printer round-trip bugs fixed (`not <ident>` data loss, BlockExpr indent, stream/WS shorthand round-trip, ImplBlock inline) so all 5 examples round-trip cleanly; CI gate stays on hello-world until column-alignment + comment-trivia preservation land — see BACKLOG | 2026-05-29 |
+| 3 | `bp fmt --check` on all examples | ✅ green — column alignment shipped (v0.14.0); all 5 examples pass `bp fmt --check`; CI gate extended to all `examples/*.bp` | 2026-07-10 |
 | 3 | LSP feature depth | ✅ diagnostics (parser + checker), `textDocument/definition`, context-aware hover for models/fns/pipes/middleware/fields/@intents wired in `internal/lsp`; 12 unit/roundtrip tests | 2026-05-29 |
 | 3 | `bp doctor` checks every external dep | ✅ probes drizzle-kit, tsc, python3, uv, alembic, pytest in addition to bun/node/postgres/redis/git; version-parser fixed (Redis no longer reports as `redis-cli`, Docker no longer keeps trailing comma) | 2026-05-29 |
 | 3 | `bp lint` produces 0 warnings on every shipped example | ✅ green; two new rules ship in v0.10 (`where-predicate-self-equal`, `unused-input`) | 2026-05-29 |
@@ -133,7 +133,7 @@ work doesn't drift and regress:
 | 3c | `order(...)`, FK access, `when` inline, `try`/`recover`, `map`, `log` | ✅ shipped | 2026-05-29 |
 | 3d/5 | `fn` decls + scaffold, `middleware` → FastAPI Depends, `sum()`, `now` | ✅ shipped — 4/5 examples compile | 2026-05-29 |
 | 5 | STREAM (SSE), WS, `cache redis` | ✅ shipped — **5/5 examples compile** | 2026-05-29 |
-| 3d | Non-`==` `where`, bare-expression steps, partial-commit rollback, structured `log` | 🔴 not started | 2026-05-29 |
+| 3d | Non-`==` `where` (`or`/`and`/`in`/text-search/duration), bare-expression steps, partial-commit rollback | ✅ shipped — `or`/`and`/`in`/text-search/duration RHS shipped v0.13.0; bare BlockExpr steps shipped v0.14.0; structured `log` still `print(f"...")` | 2026-07-10 |
 | 4 | Middleware, fn/pipe (`impl python`), `bp test` with testcontainers | 🟡 `--gen-tests` shipped (pytest + testcontainers harness); middleware / fn impl python still pending | 2026-05-29 |
 
 **The effect target is separate and much earlier.** `--target effect`

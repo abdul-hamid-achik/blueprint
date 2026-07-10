@@ -1245,6 +1245,9 @@ save <model> { field: value, ... }         # insert → inserted record
 update <model> { field: value, ... }       # update bound model variable
 delete <ref>                               # delete record(s)
 count <model> where(...)                   # count matching records
+
+# where(...) predicates support: ==, !=, <, >, <=, >=, in, or, and,
+# and text-search shorthand (bare ident → ILIKE on text columns).
 import_bundle <model>, <items>             # upsert-style bulk import for content/save data
 export_bundle <model>                      # export ordered records for bundle generation
 ```
@@ -1278,8 +1281,9 @@ map <collection>: <expr>          # transform a collection
 ```bp
 call <service> GET /path          # external service call
 call <service> POST /path { body }
-emit <event> { data }             # publish event
+emit <event> { data }             # publish event (in-process)
 emit <event> to(service) { data } # publish to specific service
+enqueue "queue" { data }          # enqueue a job to a BullMQ worker queue
 ```
 
 ### Utility

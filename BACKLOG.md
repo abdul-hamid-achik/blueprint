@@ -81,19 +81,18 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   scheduler consumer Worker added so cron handlers actually run; REDIS_URL/DATABASE_URL
   auto-added to env schema; startup moved inside the VITEST guard; backoff quoting fixed;
   compile gate via all_features.bp worker + worker_basic.bp tests. See CHANGELOG [Unreleased].)_
-- [ ] **Worker producer path (SPEC decision).** Nothing in the language can enqueue a job:
-  `emit` dispatches to the in-process events registry, never BullMQ, so a worker's queue has
-  no in-language producer and the checker never validates emitted event names against worker
-  triggers. Decide: emit dual-dispatch when the event name matches a worker trigger, or an
-  explicit `enqueue` builtin. _(found 2026-07-09 audit)_
+- [x] **Worker producer path.** Shipped v0.13.0: `enqueue "queue_name" { data }`
+  builtin enqueues a job to a BullMQ queue. Lexer/parser/checker/codegen all wired;
+  `tsc`-compiled end-to-end. _(shipped 2026-07-10)_
 - [x] Harden STREAM/WS transport codegen out of preview (roadmap P0). _(shipped 2026-07-09:
   WS handler crash isolation — a failing guard/bad client JSON no longer kills the process;
   SSE subscriptions unsubscribed on abort; STREAM guards run before the 200 is sent; dead-socket
   eviction + broadcast readyState guard; STREAM auth/limit/use meta enforced, WS bare-auth gets
   linter warning `unenforceable-ws-auth`. See CHANGELOG [Unreleased].)_
-- [ ] **STREAM/WS remaining tail:** process-local event bus/rooms break with >1 instance
-  (needs Redis pub/sub backbone); no backpressure on emit fan-out; add STREAM/WS endpoints to
-  all_features.bp so the tsc gate covers them; WS path-param validation. _(found 2026-07-09 audit)_
+- [~] **STREAM/WS remaining tail:** WS rooms now use Redis pub/sub for multi-instance
+  broadcast (shipped v0.14.0); STREAM endpoints still use process-local event subscriptions.
+  Remaining: backpressure on emit fan-out; STREAM/WS endpoints in all_features.bp; WS
+  path-param validation. _(partially shipped 2026-07-10)_
 
 ### Found in the 2026-06-16 deep review
 
@@ -242,8 +241,8 @@ Prep work (must precede the Python generator):
       generated wrapper + user-owned scaffold (`raise NotImplementedError`).
     - [x] `|> total = sum(...)` aggregate — shipped (rewrites to
       `sum(r.x for r in <coll>)`).
-    - [ ] Bare-expression step bindings of pure block literals
-      (`|> filters = { ... }`)
+    - [x] Bare-expression step bindings of pure block literals
+      (`|> filters = { ... }`) — shipped v0.14.0 (iteration-3 polish).
     - [ ] `pipe` declarations (vs `fn`) under Python `impl python` mode
     - [x] Partial-commit handling in `try`/`recover` — shipped 2026-07-09: multi-write
       try bodies wrap in `with db.begin_nested():` + per-mutation `db.flush()` + single

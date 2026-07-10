@@ -68,6 +68,21 @@ A correctness-and-hardening batch driven by a 7-dimension audit (2026-07-09): tw
 - **Python: `where(...)` predicates support comparison operators and `in`** — `!=`, `<`, `>`, `<=`, `>=`, and `col in collection.field` (-> `schema.M.col.in_([r.field for r in coll])`) now translate to SQLAlchemy, matching the node target's coverage. New `testdata/valid/where_predicates.bp` fixture exercises all operators on both targets; generator tests on both targets assert the emitted predicates and `tsc`-compile the output.
 - **Node: string interpolation `{expr}` now converts snake_case identifiers to camelCase** — `{user_id}` in a log/error message previously emitted `${user_id}` (an undeclared name in the JS scope, TS2xxx). `transformInterpolation` now regex-matches snake_case identifiers and applies `toCamelCase`, alongside the existing `.count -> .length` rewrite.
 
+
+### Added (v0.13.0–v0.14.0 batch)
+
+- **`enqueue` builtin** — `enqueue "queue_name" { data }` enqueues a job to a BullMQ worker queue. New `TokenEnqueue` lexer keyword, parser support, checker validation, and node codegen (module-level `Queue` instances, `.add()` calls, `bullmq` in `package.json`). Closes the worker producer path gap — workers now have an in-language way to receive jobs.
+- **Python `where(...)` predicate long tail** — `or`/`and` (→ SQLAlchemy `or_()`/`and_()`, recursive), text-search shorthand `where(q)` (→ conditional ILIKE on text columns), and duration RHS `N.days.ago` (→ `datetime.now(timezone.utc) - timedelta(days=N)`). `or_` and `timedelta` imports auto-detected.
+- **Python bare BlockExpr step bindings** — `|> filters = { status: "active" }` now compiles to a Python dict literal instead of being rejected as a non-data-op step.
+- **`bp fmt` column alignment** — model fields (`name type constraints`), endpoint inputs (`<- name type`), and blueprint block keys (`version port runtime`) are now column-aligned via a two-pass width computation. All 5 examples pass `bp fmt --check`; CI format check extended from `hello-world.bp` only to all `examples/*.bp`.
+- **Multi-instance WS event bus** — WS room management (`join`/`leave`/`broadcast`) now uses Redis pub/sub for multi-instance delivery. Lazy `_ensureRedis()` initialization; falls back to process-local broadcast when `REDIS_URL` is unavailable. `onClose` unsubscribes from Redis channels for emptied rooms.
+
+### Fixed (v0.13.0–v0.14.0 batch)
+
+- **AGENTS.md accuracy** — hyphenated headers (`header.X-API-Key`) are now correctly documented as reassembled by the parser, not "silently dropped". Worker producer path and WS multi-instance limitations updated to reflect shipped status.
+- **`bp fmt` round-trip test coverage** — `TestPrint_RoundtripAllBlockTypes` exercises worker, schedule, stream, WS, try/recover, test, fixture, fn, and middleware blocks via parse→print→parse→print idempotency (previously 0% printer coverage for these block types).
+- **BACKLOG cleanup** — 7 already-fixed audit items marked as shipped with verification dates.
+
 ## [0.11.0] - 2026-06-16
 
 Adds a third codegen target (an Effect-TS scaffold), a one-shot agent/LLM guide command (`bp llms`), two codegen correctness fixes (duplicate `pgEnum`, transactional `try/recover`), a generator-interface refactor that exposes `Files()`, and a full documentation accuracy + learnability pass (the VitePress site builds with every `.bp` snippet `bp check`-clean and zero dead links).
