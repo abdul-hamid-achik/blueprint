@@ -31,7 +31,7 @@ func TestPrint_Blueprint(t *testing.T) {
 	checks := []string{
 		`blueprint "myapp" {`,
 		`version "1.0.0"`,
-		`port 3000`,
+		`port    3000`,
 		`runtime node`,
 		"}",
 	}
@@ -61,10 +61,10 @@ model user {
 
 	checks := []string{
 		"model user {",
-		"id uuid primary",
-		"name string required",
+		"id    uuid   primary",
+		"name  string required",
 		"email string unique",
-		"age int optional",
+		"age   int    optional",
 	}
 	for _, want := range checks {
 		if !strings.Contains(output, want) {
@@ -315,7 +315,7 @@ func TestPrint_RoundtripPreservesBlueprint(t *testing.T) {
 	if !strings.Contains(printed1, `blueprint "my-service"`) {
 		t.Errorf("printed output missing blueprint name: %s", printed1)
 	}
-	if !strings.Contains(printed1, `version "2.3.1"`) {
+	if !strings.Contains(printed1, `version  "2.3.1"`) {
 		t.Errorf("printed output missing version: %s", printed1)
 	}
 }

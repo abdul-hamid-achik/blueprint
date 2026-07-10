@@ -31,7 +31,12 @@ func Print(f *File) string {
 	return p.printFile(f)
 }
 
-type printer struct{}
+type printer struct {
+	// fieldAlign holds column widths for the current group of model fields
+	// or endpoint inputs. Set before printing a group, cleared after.
+	nameWidth int
+	typeWidth int
+}
 
 func (p *printer) printFile(f *File) string {
 	var sb strings.Builder
@@ -138,16 +143,22 @@ func (p *printer) printBlueprint(n *Blueprint) string {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
 	sb.WriteString("blueprint " + blueprintQuote(n.Name) + " {\n")
+	// Align key columns (version, port, runtime, etc.)
+	maxKey := 0
 	for _, kv := range n.Entries {
-		fmt.Fprintf(&sb, "  %s %s\n", kv.Key, p.printExpr(kv.Value))
+		if len(kv.Key) > maxKey {
+			maxKey = len(kv.Key)
+		}
+	}
+	for _, kv := range n.Entries {
+		fmt.Fprintf(&sb, "  %-*s %s\n", maxKey, kv.Key, p.printExpr(kv.Value))
 	}
 	for _, use := range n.Uses {
 		sb.WriteString("  ")
 		sb.WriteString(p.printUseStmt(use))
 		sb.WriteString("\n")
 	}
-	sb.WriteString("}")
-	sb.WriteString("\n")
+	sb.WriteString("}\n")
 	return sb.String()
 }
 
@@ -322,20 +333,29 @@ func (p *printer) printEnum(n *Enum) string {
 	sb.WriteString("}\n")
 	return sb.String()
 }
-
-// --- Model ---
-
 func (p *printer) printModel(n *Model) string {
 	var sb strings.Builder
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
 	fmt.Fprintf(&sb, "model %s {\n", n.Name)
+	// Compute column widths for aligned field output.
+	p.nameWidth, p.typeWidth = 0, 0
+	for _, f := range n.Fields {
+		if w := len(f.Name); w > p.nameWidth {
+			p.nameWidth = w
+		}
+		tw := len(p.printType(f.Type))
+		if tw > p.typeWidth {
+			p.typeWidth = tw
+		}
+	}
 	for _, f := range n.Fields {
 		sb.WriteString("  ")
 		sb.WriteString(p.printField(f))
 		sb.WriteString("\n")
 	}
+	p.nameWidth, p.typeWidth = 0, 0
 	sb.WriteString("}\n")
 	return sb.String()
 }
@@ -346,9 +366,20 @@ func (p *printer) printContent(n *Content) string {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
 	sb.WriteString("content " + n.Name + " {\n")
+	p.nameWidth, p.typeWidth = 0, 0
+	for _, f := range n.Fields {
+		if w := len(f.Name); w > p.nameWidth {
+			p.nameWidth = w
+		}
+		tw := len(p.printType(f.Type))
+		if tw > p.typeWidth {
+			p.typeWidth = tw
+		}
+	}
 	for _, f := range n.Fields {
 		sb.WriteString("  " + p.printField(f) + "\n")
 	}
+	p.nameWidth, p.typeWidth = 0, 0
 	sb.WriteString("}\n")
 	return sb.String()
 }
@@ -357,7 +388,17 @@ func (p *printer) printContent(n *Content) string {
 
 func (p *printer) printField(f *Field) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s %s", f.Name, p.printType(f.Type))
+	// When alignment widths are set (inside printModel/printContent),
+	// pad the name and type columns so fields line up.
+	nameFmt := f.Name
+	typeStr := p.printType(f.Type)
+	if p.nameWidth > 0 {
+		nameFmt = fmt.Sprintf("%-*s", p.nameWidth, f.Name)
+	}
+	if p.typeWidth > 0 {
+		typeStr = fmt.Sprintf("%-*s", p.typeWidth, typeStr)
+	}
+	fmt.Fprintf(&sb, "%s %s", nameFmt, typeStr)
 	for _, c := range f.Constraints {
 		sb.WriteString(" ")
 		sb.WriteString(p.printConstraint(c))
@@ -514,7 +555,21 @@ func (p *printer) printEndpoint(n *Endpoint) string {
 	if len(n.Meta) > 0 {
 		sb.WriteString("\n")
 	}
+	// Compute column widths for aligned input statements.
+	p.nameWidth, p.typeWidth = 0, 0
+	for _, s := range n.Stmts {
+		if inp, ok := s.(*InputStmt); ok {
+			if w := len(inp.Name); w > p.nameWidth {
+				p.nameWidth = w
+			}
+			tw := len(p.printType(inp.Type))
+			if tw > p.typeWidth {
+				p.typeWidth = tw
+			}
+		}
+	}
 	sb.WriteString(p.printArrowStmtsBlock(n.Stmts, "  "))
+	p.nameWidth, p.typeWidth = 0, 0
 	if n.OnError != nil {
 		fmt.Fprintf(&sb, "  on_error -> %s %q\n", n.OnError.Status, n.OnError.Message)
 	}
@@ -901,7 +956,15 @@ func (p *printer) printArrowStmt(stmt ArrowStmt, indent string) string {
 
 func (p *printer) printInputStmt(s *InputStmt) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "<- %s  %s", s.Name, p.printType(s.Type))
+	nameFmt := s.Name
+	typeStr := p.printType(s.Type)
+	if p.nameWidth > 0 {
+		nameFmt = fmt.Sprintf("%-*s", p.nameWidth, s.Name)
+	}
+	if p.typeWidth > 0 {
+		typeStr = fmt.Sprintf("%-*s", p.typeWidth, typeStr)
+	}
+	fmt.Fprintf(&sb, "<- %s  %s", nameFmt, typeStr)
 	for _, c := range s.Constraints {
 		sb.WriteString("  ")
 		sb.WriteString(p.printConstraint(c))

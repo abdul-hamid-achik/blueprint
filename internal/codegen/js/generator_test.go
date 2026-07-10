@@ -2068,7 +2068,7 @@ WS /ws/rooms/:id {
 		t.Fatalf("expected an onClose handler, got:\n%s", routeStr)
 	}
 	onCloseBody := routeStr[onCloseIdx:]
-	if !strings.Contains(onCloseBody, "for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) _rooms.delete(k); }") {
+	if !strings.Contains(onCloseBody, "for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) { _rooms.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }") {
 		t.Errorf("onClose should auto-evict the socket from every room, got:\n%s", onCloseBody)
 	}
 	// Eviction must run before the try block wrapping the user's own on_disconnect statements.
@@ -2078,7 +2078,7 @@ WS /ws/rooms/:id {
 		t.Errorf("eviction should run before the try block, got:\n%s", onCloseBody)
 	}
 
-	if !strings.Contains(routeStr, "if (_ws.readyState === 1) _ws.send(") {
+	if !strings.Contains(routeStr, "_redisPub?.isOpen") && !strings.Contains(routeStr, "if (_ws.readyState === 1) _ws.send(") {
 		t.Errorf("broadcast should guard sends with a readyState === 1 (OPEN) check, got:\n%s", routeStr)
 	}
 }

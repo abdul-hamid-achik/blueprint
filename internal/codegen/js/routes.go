@@ -1002,9 +1002,25 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		toPascalCase(fileKey))
 	fmt.Fprintf(&b, "  const %s = new Hono();\n\n", routeVar)
 
-	// Room management: Map<roomId, Set<WebSocket>>
-	b.WriteString("  // Room management for join/leave/broadcast\n")
-	b.WriteString("  const _rooms = new Map<string, Set<any>>();\n\n")
+	// Room management: Map<roomId, Set<WebSocket>> for local connections,
+	// plus Redis pub/sub for multi-instance broadcast.
+	b.WriteString("  // Room management for join/leave/broadcast (multi-instance via Redis pub/sub)\n")
+	b.WriteString("  const _rooms = new Map<string, Set<any>>();\n")
+	b.WriteString("  let _redisSub: any = null;\n")
+	b.WriteString("  let _redisPub: any = null;\n")
+	b.WriteString("  let _redisInit: Promise<void> | null = null;\n")
+	b.WriteString("  function _ensureRedis(): Promise<void> {\n")
+	b.WriteString("    if (!_redisInit && env.REDIS_URL) {\n")
+	b.WriteString("      _redisInit = (async () => {\n")
+	b.WriteString("        const { createClient } = await import('redis');\n")
+	b.WriteString("        _redisSub = createClient({ url: env.REDIS_URL });\n")
+	b.WriteString("        _redisPub = createClient({ url: env.REDIS_URL });\n")
+	b.WriteString("        await _redisSub.connect();\n")
+	b.WriteString("        await _redisPub.connect();\n")
+	b.WriteString("      })().catch((e: any) => { console.error('Redis pub/sub init failed:', e); });\n")
+	b.WriteString("    }\n")
+	b.WriteString("    return _redisInit ?? Promise.resolve();\n")
+	b.WriteString("  }\n\n")
 
 	// Module-level rate limit store (shared across all handlers in this file)
 	if needsRateLimit {
@@ -1208,7 +1224,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		// (a user `leave` only removes it from one room) so dead sockets and
 		// emptied-out room entries don't accumulate in _rooms forever.
 		b.WriteString("    async onClose(evt: CloseEvent, ws: WSContext) {\n")
-		b.WriteString("      for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) _rooms.delete(k); }\n")
+		b.WriteString("      for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) { _rooms.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }\n")
 		b.WriteString("      try {\n")
 		if len(ep.OnDisconnect) > 0 {
 			onDisconnectCtx := baseCtx

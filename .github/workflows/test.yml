@@ -230,7 +230,9 @@ jobs:
 
       - name: Format check examples
         run: |
-          ./bin/bp fmt examples/hello-world.bp --check
+          for f in examples/*.bp; do
+            ./bin/bp fmt "$f" --check
+          done
 
       - name: Generate docs
         run: |

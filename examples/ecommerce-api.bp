@@ -7,7 +7,8 @@ blueprint "ecommerce-api" {
 }
 
 secret DATABASE_URL required
-secret STRIPE_KEY   required
+
+secret STRIPE_KEY required
 
 enum OrderStatus {
   pending
@@ -37,86 +38,72 @@ model cart_item {
 }
 
 model order {
-  id          uuid      primary
-  session_id  string    required
+  id          uuid                                               primary
+  session_id  string                                             required
   status      enum(pending, paid, shipped, delivered, cancelled) default(pending)
-  total_cents int       required min(0)
-  stripe_pi   string    optional
-  created     timestamp default(now)
+  total_cents int                                                required min(0)
+  stripe_pi   string                                             optional
+  created     timestamp                                          default(now)
 }
 
 model order_item {
   id          uuid primary
-  order_id    uuid ref(order)   required
+  order_id    uuid ref(order) required
   product_id  uuid ref(product) required
   quantity    int  required min(1)
   price_cents int  required min(0)
 }
 
 fn charge_stripe {
-  <- amount_cents int
+  <- amount_cents  int
   <- description  string
+
   -> json
+
   impl node { module: "./internal/stripe", func: "charge" }
 }
 
-# ---- Products ----
-
 @ "List active products"
 GET /api/products {
-  <- page     int    default(1)  min(1)
-  <- per_page int    default(20) min(1) max(100)
-  <- search   string optional
-
+  <- page      int     default(1)  min(1)
+  <- per_page  int     default(20)  min(1)  max(100)
+  <- search    string  optional
   |> products = query product where(active == true) order(name, asc) paginate(page, per_page)
-
-  -> 200 {
-    products: products.items,
-    total:    products.total,
-    page:     page,
-  }
+  -> 200 { products: products.items, total: products.total, page: page }
 }
 
 @ "Get a product by ID"
 GET /api/products/:id {
-  <- id uuid required
-
+  <- id  uuid  required
   |> product = fetch product(id)
-  |> guard product          -> 404 "Product not found"
-  |> guard product.active   -> 404 "Product not found"
-
+  |> guard product -> 404 "Product not found"
+  |> guard product.active -> 404 "Product not found"
   -> 200 {
-    id:          product.id,
-    name:        product.name,
+    id: product.id,
+    name: product.name,
     description: product.description,
     price_cents: product.price_cents,
-    stock:       product.stock,
-    sku:         product.sku,
+    stock: product.stock,
+    sku: product.sku,
   }
 }
 
-# ---- Cart ----
-
 @ "View the cart for a session"
 GET /api/cart {
-  <- session_id string required
-
+  <- session_id  string  required
   |> items = query cart_item where(session_id == session_id)
-
   -> 200 { items: items, count: items.count }
 }
 
 @ "Add a product to the cart"
 POST /api/cart/items {
-  <- session_id string required
-  <- product_id uuid   required
-  <- quantity   int    default(1) min(1)
-
+  <- session_id  string  required
+  <- product_id  uuid    required
+  <- quantity    int     default(1)  min(1)
   |> product = fetch product(product_id)
-  |> guard product           -> 404 "Product not found"
-  |> guard product.active    -> 400 "Product is unavailable"
+  |> guard product -> 404 "Product not found"
+  |> guard product.active -> 400 "Product is unavailable"
   |> guard product.stock >= quantity -> 400 "Not enough stock ({product.stock} available)"
-
   |> existing = query cart_item where(session_id == session_id, product_id == product_id) first
   |> when existing {
     |> update existing { quantity: existing.quantity + quantity }
@@ -124,166 +111,127 @@ POST /api/cart/items {
   |> when not existing {
     |> save cart_item { session_id: session_id, product_id: product_id, quantity: quantity }
   }
-
   -> 200 "Item added to cart"
 }
 
 @ "Update cart item quantity"
 PATCH /api/cart/items/:id {
-  <- id         uuid   required
-  <- session_id string required
-  <- quantity   int    required min(1)
-
+  <- id          uuid    required
+  <- session_id  string  required
+  <- quantity    int     required  min(1)
   |> item = fetch cart_item(id)
-  |> guard item                               -> 404 "Cart item not found"
-  |> guard item.session_id == session_id      -> 403 "Not your cart"
-  |> guard item.product.stock >= quantity     -> 400 "Not enough stock"
+  |> guard item -> 404 "Cart item not found"
+  |> guard item.session_id == session_id -> 403 "Not your cart"
+  |> guard item.product.stock >= quantity -> 400 "Not enough stock"
   |> update item { quantity: quantity }
-
   -> 200 { id: item.id, quantity: quantity }
 }
 
 @ "Remove an item from the cart"
 DELETE /api/cart/items/:id {
-  <- id         uuid   required
-  <- session_id string required
-
+  <- id          uuid    required
+  <- session_id  string  required
   |> item = fetch cart_item(id)
-  |> guard item                          -> 404 "Cart item not found"
+  |> guard item -> 404 "Cart item not found"
   |> guard item.session_id == session_id -> 403 "Not your cart"
   |> delete item
-
   -> 204 "removed"
 }
 
-# ---- Checkout ----
-
 @ "Place an order from the current cart"
 POST /api/orders {
-  <- session_id string required
-
+  <- session_id  string  required
   |> items = query cart_item where(session_id == session_id)
   |> guard items.count > 0 -> 400 "Cart is empty"
-
   |> try {
     |> order = save order { session_id: session_id, total_cents: 0 }
-
     |> map items: save order_item {
-      order_id:    order.id,
-      product_id:  item.product_id,
-      quantity:    item.quantity,
+      order_id: order.id,
+      product_id: item.product_id,
+      quantity: item.quantity,
       price_cents: item.product.price_cents,
     }
-
     |> total = sum(order_items.price_cents * order_items.quantity)
     |> update order { total_cents: total }
-
     |> payment = charge_stripe(total, "Order {order.id}")
     |> update order { status: "paid", stripe_pi: payment.id }
-
     |> map items: update product { stock: item.product.stock - item.quantity }
     |> delete items
-
   } recover {
-    # The DB writes in the try block roll back automatically (the block compiles
-    # to a single transaction). Compensate here only for external effects — e.g.
-    # refunding the charge above — since those are not part of the transaction.
     |> log "Checkout failed: {error.message}" level(error)
     -> 500 { error: "Checkout failed", detail: error.message }
   }
-
-  -> 201 {
-    order_id:    order.id,
-    total_cents: total,
-    status:      "paid",
-  }
+  -> 201 { order_id: order.id, total_cents: total, status: "paid" }
 }
-
-# ---- Orders ----
 
 @ "List orders for a session"
 GET /api/orders {
-  <- session_id string required
-  <- page       int    default(1) min(1)
-
+  <- session_id  string  required
+  <- page        int     default(1)  min(1)
   |> orders = query order where(session_id == session_id) order(created, desc) paginate(page, 10)
-
   -> 200 { orders: orders.items, total: orders.total }
 }
 
 @ "Get order details including line items"
 GET /api/orders/:id {
-  <- id         uuid   required
-  <- session_id string required
-
+  <- id          uuid    required
+  <- session_id  string  required
   |> order = fetch order(id)
-  |> guard order                              -> 404 "Order not found"
-  |> guard order.session_id == session_id    -> 403 "Not your order"
-
+  |> guard order -> 404 "Order not found"
+  |> guard order.session_id == session_id -> 403 "Not your order"
   |> items = query order_item where(order_id == order.id)
-
   -> 200 {
-    id:          order.id,
-    status:      order.status,
+    id: order.id,
+    status: order.status,
     total_cents: order.total_cents,
-    items:       items,
-    created:     order.created,
+    items: items,
+    created: order.created,
   }
 }
 
 @ "Cancel an order (only if not yet shipped)"
 POST /api/orders/:id/cancel {
-  <- id         uuid   required
-  <- session_id string required
-
+  <- id          uuid    required
+  <- session_id  string  required
   |> order = fetch order(id)
-  |> guard order                              -> 404 "Order not found"
-  |> guard order.session_id == session_id    -> 403 "Not your order"
-  |> guard order.status == "paid"            -> 400 "Cannot cancel a {order.status} order"
-
+  |> guard order -> 404 "Order not found"
+  |> guard order.session_id == session_id -> 403 "Not your order"
+  |> guard order.status == "paid" -> 400 "Cannot cancel a {order.status} order"
   |> update order { status: "cancelled" }
-
   -> 200 { id: order.id, status: "cancelled" }
 }
 
-# ---- Admin ----
-
 @ "Add a new product (admin)"
 POST /api/admin/products {
-  <- name        string required
-  <- description string optional
-  <- price_cents int    required min(0)
-  <- stock       int    required min(0)
-  <- sku         string required
-
+  <- name         string  required
+  <- description  string  optional
+  <- price_cents  int     required  min(0)
+  <- stock        int     required  min(0)
+  <- sku          string  required
   |> existing = query product where(sku == sku) first
   |> guard not existing -> 409 "SKU already in use"
-
   |> product = save product {
-    name:        name,
+    name: name,
     description: description,
     price_cents: price_cents,
-    stock:       stock,
-    sku:         sku,
+    stock: stock,
+    sku: sku,
   }
-
   -> 201 {
-    id:          product.id,
-    name:        product.name,
+    id: product.id,
+    name: product.name,
     price_cents: product.price_cents,
-    stock:       product.stock,
-    sku:         product.sku,
+    stock: product.stock,
+    sku: product.sku,
   }
 }
 
 @ "Update product stock (admin)"
 PATCH /api/admin/products/:id/stock {
-  <- id    uuid required
-  <- stock int  required min(0)
-
+  <- id     uuid  required
+  <- stock  int   required  min(0)
   |> product = fetch product(id)
   |> guard product -> 404 "Product not found"
   |> update product { stock: stock }
-
   -> 200 { id: product.id, stock: stock }
 }

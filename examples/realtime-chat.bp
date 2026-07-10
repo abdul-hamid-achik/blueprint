@@ -8,7 +8,8 @@ blueprint "realtime-chat" {
 }
 
 secret DATABASE_URL required
-secret JWT_SECRET   required
+
+secret JWT_SECRET required
 
 model room {
   id          uuid      primary
@@ -26,23 +27,20 @@ model message {
 }
 
 fn verify_jwt {
-  <- token string
+  <- token  string
+
   -> json
+
   impl node { module: "./internal/auth", func: "verifyJwt" }
 }
 
-# ---- Room management ----
-
 @ "Create a new chat room"
 POST /api/rooms {
-  <- name        string required min(1) max(50)
-  <- description string optional max(200)
-
+  <- name         string  required  min(1)  max(50)
+  <- description  string  optional  max(200)
   |> existing = query room where(name == name) first
   |> guard not existing -> 409 "Room name already taken"
-
   |> room = save room { name: name, description: description }
-
   -> 201 { id: room.id, name: room.name, description: room.description }
 }
 
@@ -54,85 +52,67 @@ GET /api/rooms {
 
 @ "Get a room by ID"
 GET /api/rooms/:id {
-  <- id uuid required
-
+  <- id  uuid  required
   |> room = fetch room(id)
   |> guard room -> 404 "Room not found"
-
-  -> 200 { id: room.id, name: room.name, description: room.description, created: room.created }
+  -> 200 {
+    id: room.id,
+    name: room.name,
+    description: room.description,
+    created: room.created,
+  }
 }
 
 @ "Delete a room"
 DELETE /api/rooms/:id {
-  <- id uuid required
-
+  <- id  uuid  required
   |> room = fetch room(id)
   |> guard room -> 404 "Room not found"
-
   |> msgs = query message where(room_id == id)
   |> delete msgs
   |> delete room
-
   -> 204 "deleted"
 }
 
-# ---- Message history ----
-
 @ "Get message history for a room"
 GET /api/rooms/:id/messages {
-  <- id       uuid required
-  <- page     int  default(1)   min(1)
-  <- per_page int  default(50)  min(1) max(200)
-
+  <- id        uuid  required
+  <- page      int   default(1)  min(1)
+  <- per_page  int   default(50)  min(1)  max(200)
   |> room = fetch room(id)
   |> guard room -> 404 "Room not found"
-
   |> messages = query message where(room_id == id) order(created, desc) paginate(page, per_page)
-
-  -> 200 {
-    messages: messages.items,
-    total:    messages.total,
-    page:     page,
-  }
+  -> 200 { messages: messages.items, total: messages.total, page: page }
 }
-
-# ---- WebSocket live chat ----
 
 @ "Join a room and chat in real time"
 WS /ws/rooms/:id {
   auth bearer
-
   on_connect {
     |> room = fetch room(id)
     |> guard room -> 404 "Room not found"
-
     |> payload = verify_jwt(header.Authorization)
     |> guard payload -> 401 "Authentication required"
     |> inject payload.username as sender
-
     |> join room(id)
     |> log "User {sender} joined room {room.name}" level(info)
     |> broadcast room(id) { type: "joined", sender: sender }
-
     -> { type: "connected", room: room.name, sender: sender }
   }
-
   on_message {
-    |> guard message.body              -> 400 "Empty message"
+    |> guard message.body -> 400 "Empty message"
     |> guard message.body.length < 2000 -> 400 "Message too long (max 2000 chars)"
-
     |> when message.type == "message" {
       |> save message { room_id: id, sender: sender, body: message.body }
       |> emit new_message { room_id: id, sender: sender, body: message.body }
       |> broadcast room(id) {
-        type:    "message",
-        sender:  sender,
-        body:    message.body,
+        type: "message",
+        sender: sender,
+        body: message.body,
         created: now,
       }
     }
   }
-
   on_disconnect {
     |> leave room(id)
     |> log "User {sender} left room {room.name}" level(info)
@@ -140,14 +120,11 @@ WS /ws/rooms/:id {
   }
 }
 
-# ---- SSE live stream ----
-
 @ "Stream new messages in a room via Server-Sent Events"
 STREAM /api/rooms/:id/live {
-  tags ["rooms", "streaming"]
+  tags  ["rooms", "streaming"]
 
-  <- id uuid required
-
+  <- id  uuid  required
   |> room = fetch room(id)
   |> guard room -> 404 "Room not found"
 
@@ -164,12 +141,9 @@ STREAM /api/rooms/:id/live {
   }
 }
 
-# ---- Online presence ----
-
 @ "Stream online user count for a room"
 STREAM /api/rooms/:id/presence {
-  <- id uuid required
-
+  <- id  uuid  required
   |> room = fetch room(id)
   |> guard room -> 404 "Room not found"
 

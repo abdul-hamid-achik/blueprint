@@ -7,7 +7,8 @@ blueprint "auth-service" {
 }
 
 secret DATABASE_URL required
-secret JWT_SECRET   required
+
+secret JWT_SECRET required
 
 model user {
   id            uuid      primary
@@ -28,77 +29,75 @@ model session {
 }
 
 fn hash_password {
-  <- password string
+  <- password  string
+
   -> string
+
   impl node { module: "./internal/auth", func: "hashPassword" }
 }
 
 fn verify_password {
-  <- password string
-  <- hash     string
+  <- password  string
+  <- hash  string
+
   -> bool
+
   impl node { module: "./internal/auth", func: "verifyPassword" }
 }
 
 fn sign_jwt {
-  <- user_id string
-  <- ttl     string
+  <- user_id  string
+  <- ttl  string
+
   -> string
+
   impl node { module: "./internal/auth", func: "signJwt" }
 }
 
 fn verify_jwt {
-  <- token string
+  <- token  string
+
   -> json
+
   impl node { module: "./internal/auth", func: "verifyJwt" }
 }
 
 @ "Require a valid Bearer token and attach user to context"
 middleware require_auth {
   before {
-    |> guard header.Authorization    -> 401 "Missing Authorization header"
+    |> guard header.Authorization -> 401 "Missing Authorization header"
     |> payload = verify_jwt(header.Authorization)
-    |> guard payload                 -> 401 "Invalid or expired token"
+    |> guard payload -> 401 "Invalid or expired token"
     |> user = fetch user(payload.sub)
-    |> guard user                    -> 401 "Account not found"
+    |> guard user -> 401 "Account not found"
     |> inject user as current_user
   }
 }
 
 @ "Create a new user account"
 POST /api/auth/register {
-  <- email    string required format(email)
-  <- password string required min(8) max(128)
-  <- name     string required min(1) max(100)
-
+  <- email     string  required  format(email)
+  <- password  string  required  min(8)  max(128)
+  <- name      string  required  min(1)  max(100)
   |> existing = query user where(email == email) first
   |> guard not existing -> 409 "Email already registered"
-
   |> hash = hash_password(password)
   |> user = save user { email: email, password_hash: hash, name: name }
-
   -> 201 { id: user.id, email: user.email, name: user.name }
 }
 
 @ "Authenticate and receive an access token"
 POST /api/auth/login {
-  <- email    string required format(email)
-  <- password string required
-
+  <- email     string  required  format(email)
+  <- password  string  required
   |> user = query user where(email == email) first
   |> guard user -> 401 "Invalid email or password"
-
   |> valid = verify_password(password, user.password_hash)
   |> guard valid -> 401 "Invalid email or password"
-
   |> token = sign_jwt(user.id, "24h")
-  |> hash  = hash_password(token)
+  |> hash = hash_password(token)
   |> save session { user_id: user.id, token_hash: hash, expires_at: now }
-
-  -> 200 {
-    token: token,
-    user: { id: user.id, email: user.email, name: user.name },
-  }
+  -> 200 { token: token, user: { id: user.id, email: user.email, name: user.name } }
 }
 
 @ "Get the current user's profile"
@@ -106,11 +105,11 @@ GET /api/auth/me {
   use require_auth
 
   -> 200 {
-    id:       current_user.id,
-    email:    current_user.email,
-    name:     current_user.name,
+    id: current_user.id,
+    email: current_user.email,
+    name: current_user.name,
     verified: current_user.verified,
-    created:  current_user.created,
+    created: current_user.created,
   }
 }
 
@@ -118,10 +117,8 @@ GET /api/auth/me {
 PATCH /api/auth/me {
   use require_auth
 
-  <- name string required min(1) max(100)
-
+  <- name  string  required  min(1)  max(100)
   |> update current_user { name: name }
-
   -> 200 { id: current_user.id, name: name }
 }
 
@@ -129,18 +126,14 @@ PATCH /api/auth/me {
 POST /api/auth/change-password {
   use require_auth
 
-  <- current_password string required
-  <- new_password     string required min(8) max(128)
-
+  <- current_password  string  required
+  <- new_password      string  required  min(8)  max(128)
   |> valid = verify_password(current_password, current_user.password_hash)
   |> guard valid -> 401 "Current password is incorrect"
-
   |> hash = hash_password(new_password)
   |> update current_user { password_hash: hash }
-
   |> sessions = query session where(user_id == current_user.id, revoked == false)
   |> delete sessions
-
   -> 200 "Password updated. All sessions revoked."
 }
 
@@ -151,46 +144,35 @@ POST /api/auth/logout {
   |> sess = query session where(user_id == current_user.id, revoked == false) first
   |> guard sess -> 400 "No active session"
   |> update sess { revoked: true }
-
   -> 200 "Logged out"
 }
 
 @ "Verify email address using a token"
 POST /api/auth/verify-email {
-  <- token string required
-
+  <- token  string  required
   |> payload = verify_jwt(token)
   |> guard payload -> 400 "Invalid or expired verification link"
-
   |> user = fetch user(payload.sub)
   |> guard user -> 404 "User not found"
   |> guard not user.verified -> 400 "Email already verified"
-
   |> update user { verified: true }
-
   -> 200 "Email verified"
 }
-
-# --- Tests ---
 
 @ "Register should return 201 with id, email, and name"
 test register_success {
   target POST /api/auth/register
 
   request {
-    body {
-      email:    "alice@example.com",
-      password: "supersecret",
-      name:     "Alice",
-    }
+    body { email: "alice@example.com", password: "supersecret", name: "Alice" }
   }
 
   expect {
     status 201
-    body.id is uuid
-    body.email == "alice@example.com"
-    body.name == "Alice"
-    model user where(email == "alice@example.com") exists
+    body . id is uuid
+    body . email == "alice@example.com"
+    body . name == "Alice"
+    model user where ( email == "alice@example.com" ) exists
   }
 }
 
@@ -199,10 +181,7 @@ test login_wrong_password {
   target POST /api/auth/login
 
   request {
-    body {
-      email:    "nobody@example.com",
-      password: "wrongpassword",
-    }
+    body { email: "nobody@example.com", password: "wrongpassword" }
   }
 
   expect {
