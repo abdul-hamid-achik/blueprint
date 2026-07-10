@@ -12,27 +12,24 @@ model job {
 }
 
 fn do_work {
-  <- job job
-  -> result string
+  <- job  job
 
-  impl node {
-    module: "./internal/do-work"
-  }
+  -> string
+
+  impl node { module: "./internal/do-work" }
 }
 
 worker process_job {
-  trigger queue("jobs")
-  retry   3
-  timeout 5min
+  trigger  queue("jobs")
+  retry  3
+  timeout  5min
 
-  <- job_id uuid
-
+  <- job_id  uuid
   |> job = fetch job(job_id)
   |> guard job.status == "pending" -> 200 "Already processed"
   |> update job { status: "processing" }
   |> result = do_work(job)
   |> update job { status: "done" }
-
   on_fail {
     |> update job { status: "failed" }
     |> log "Job failed" level(error)

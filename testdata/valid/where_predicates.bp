@@ -1,22 +1,22 @@
 blueprint "where-predicates" {
-  version "0.1.0"
-  port    3000
-  runtime node
+  version  "0.1.0"
+  port     3000
+  runtime  node
   database postgres
 }
 
 model product {
-  id    int       primary
-  name  string    required
-  price int       required
-  stock int       required
-  status string  required
-  category_id int ref(category)
+  id          int    primary
+  name        string required
+  price       int    required
+  stock       int    required
+  status      string required
+  category_id int    ref(category)
 }
 
 model category {
-  id    int    primary
-  name  string required
+  id   int    primary
+  name string required
 }
 
 GET /api/products/expensive {
@@ -41,7 +41,7 @@ GET /api/categories/active-products {
 }
 
 GET /api/products/by-status {
-  <- status string required
+  <- status  string  required
   |> products = query product where(status == status)
   -> 200 { products: products }
 }

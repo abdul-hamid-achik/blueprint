@@ -18,7 +18,7 @@ model todo {
   created timestamp  default(now)
 }
 
-endpoint GET /api/todos {
+GET /api/todos {
   -> 200 [{ id: string, title: string, done: bool, created: timestamp }]
   |> all = query todo
   |> return all
@@ -38,9 +38,9 @@ endpoint GET /api/todos {
 | `middleware X { before { ... } after { ... } }` | Request middleware. |
 | `fn X(<-input ...) -> output { logic { ... } } [impl ...]` | Pure or impure function. `impl` can be `node`/`python`/`exec`/`http`. |
 | `pipe X { logic { ... } }` | Reusable pipeline. |
-| `endpoint METHOD /path { meta + inputs + steps + outputs }` | HTTP route. |
-| `stream METHOD /path { ... }` | SSE endpoint (uses `EventSourceResponse`). |
-| `ws /path { on_connect { ... } on_message { ... } on_disconnect { ... } }` | WebSocket endpoint. |
+| `METHOD /path { meta + inputs + steps + outputs }` | HTTP route (GET/POST/PUT/PATCH/DELETE). |
+| `STREAM /path { ... }` | SSE endpoint (uses `EventSourceResponse`). |
+| `WS /path { on_connect { ... } on_message { ... } on_disconnect { ... } }` | WebSocket endpoint. |
 | `test "description" { ... }` | Authored Vitest/pytest test. |
 
 ## Type system
@@ -67,7 +67,7 @@ Every endpoint body, middleware `before`/`after`, and fn `logic` is a pipeline o
 | Step | Shape | Meaning |
 |---|---|---|
 | `fetch <M>(id)` | Single record by id. |
-| `query <M> [where(...)] [order(...)] [paginate(p,pp)] [first]` | Collection / single / paginated. |
+| `query <M> [where(...)] [order(...)] [paginate(p,pp)] [first]` | Collection / single / paginated. `where` supports `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `or`, `and`, and text-search shorthand (bare ident). |
 | `save <M> { col: expr, ... }` | Insert. |
 | `update <M> { col: expr, ... }` | Update bound row or all matching. |
 | `delete <var-or-model>` | Delete row(s). |
@@ -79,11 +79,17 @@ Every endpoint body, middleware `before`/`after`, and fn `logic` is a pipeline o
 | `log "msg" [level(error\|info\|warning)]` | Structured log. |
 | `inject <binding> as <name>` | (Middleware) Expose to handler context. |
 | `return <value>` | Explicit return. |
+| `emit "<event>" { data }` | Publish in-process event. |
+| `enqueue "<queue>" { data }` | Enqueue a job to a BullMQ worker queue (multi-instance safe). |
+| `broadcast room(id) { data }` | (WS) Send to all connections in a room (multi-instance via Redis pub/sub). |
+| `join room(id)` / `leave room(id)` | (WS) Join/leave a room. |
+| `call <service> GET /path` | External service call. |
+| `sleep <duration>` | Delay execution. |
 
 ## Endpoint inputs / outputs
 
 ```bp
-endpoint POST /api/todos {
+POST /api/todos {
   <- title string required
   <- done bool default(false)
   -> 201 { id: string, title: string }

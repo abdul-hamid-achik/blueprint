@@ -2745,6 +2745,85 @@ func TestGenWherePredicatesFixture(t *testing.T) {
 	requireTypeScriptCompile(t, outDir)
 }
 
+// TestGenEnqueueBuiltin asserts that `enqueue "queue" { data }` generates
+// a BullMQ Queue import, a module-level Queue instance, and an .add() call
+// in the handler body.
+func TestGenEnqueueBuiltin(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+  queue    redis
+}
+
+secret DATABASE_URL required
+secret REDIS_URL    required
+
+model job {
+  id     uuid   primary
+  status string default("pending")
+}
+
+POST /api/jobs {
+  <- title string required
+  |> job = save job { status: "pending" }
+  |> enqueue "jobs" { job_id: job.id }
+  -> 201 { id: job.id }
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker errors: %v", checkErrs)
+	}
+
+	outDir := t.TempDir()
+	gen := New()
+	if err := gen.Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+
+	jobsContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/jobs.ts"))
+	if err != nil {
+		t.Fatal("src/routes/jobs.ts should exist")
+	}
+	jobsStr := string(jobsContent)
+
+	// Must import Queue from bullmq
+	if !strings.Contains(jobsStr, "import { Queue } from 'bullmq'") {
+		t.Errorf("expected Queue import from bullmq, got:\n%s", jobsStr)
+	}
+
+	// Must create a module-level Queue instance
+	if !strings.Contains(jobsStr, "const _jobsQueue = new Queue('jobs'") {
+		t.Errorf("expected _jobsQueue module-level Queue instance, got:\n%s", jobsStr)
+	}
+
+	// Must call .add() in the handler
+	if !strings.Contains(jobsStr, "await _jobsQueue.add('job'") {
+		t.Errorf("expected _jobsQueue.add() call in handler, got:\n%s", jobsStr)
+	}
+
+	// Must import env (Queue uses env.REDIS_URL)
+	if !strings.Contains(jobsStr, "import { env } from") {
+		t.Errorf("expected env import for Redis URL, got:\n%s", jobsStr)
+	}
+
+	// bullmq must be in package.json
+	pkgContent, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal("package.json should exist")
+	}
+	if !strings.Contains(string(pkgContent), "bullmq") {
+		t.Errorf("expected bullmq in package.json dependencies")
+	}
+
+	requireTypeScriptCompile(t, outDir)
+}
+
 func TestGenerateLocalizationMetadata(t *testing.T) {
 	src := `blueprint "test" {
   version "1.0.0"

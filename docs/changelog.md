@@ -4,6 +4,88 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+
+## [Unreleased]
+
+A correctness-and-hardening batch driven by a 7-dimension audit (2026-07-09): two silent data-corruption bugs in the Python target, workers/schedules made functional end-to-end on the node target, WS/STREAM transport hardening, strict CLI flag parsing with output-directory safety, and a docs accuracy pass.
+
+### Fixed
+
+- **Python target: `update`/`delete` resolved the wrong target variable.** An inverted condition in `emitUpdate` remapped an already-bound variable to an *arbitrary* same-model binding via nondeterministic map iteration — a two-account transfer endpoint wrote the credit to the wrong account in ~11/12 builds and broke build idempotency; `update <model>` with a differently-named binding emitted a Python `NameError`. Target resolution now uses the binding directly when bound and otherwise picks the last preceding binding for the model from the ordered resolve facts (deterministic). Regression tests run the generator 20× to pin determinism.
+
+- **Python target: `try/recover` now compiles to a real transaction.** Multi-write try bodies (≥2 mutations, no in-body guard/output — same predicate as the node target) wrap in `with db.begin_nested():` with `db.flush()` per mutation and a single `db.commit()` after the block, so partial writes roll back on failure. `db.rollback()` now leads every recover branch that touches the DB (previously a failed commit left the session invalidated and any recover-body data op raised `PendingRollbackError`), `get_db()` rolls back on exception as defense in depth, guards inside `try` re-raise `HTTPException` instead of being swallowed into the recover branch (a declared 402 no longer becomes a 500), and `error.message` in recover bodies emits `str(error)` (Python exceptions have no `.message`).
+
+- **Node target: generated workers now compile and run correctly.** Worker inputs are destructured from the BullMQ job payload in both the handler and `on_fail`, async `impl` functions are awaited (jobs were previously marked done before the work ran, and failures never reached `on_fail`/retry), worker guards compile to log-and-return (no more unimported `BpError` throw), and `on_fail` bodies resolve their bindings. Backoff strategy is emitted as a quoted string (was a bare identifier that failed `tsc`), and `on_fail` fires only on the final retry attempt.
+
+- **Node target: schedules actually execute.** `bp build` previously enqueued repeatable BullMQ jobs that nothing consumed — cron handlers were dead code at runtime. `src/index.ts` now emits a `new Worker('scheduler', …)` consumer dispatching each schedule by job name.
+
+- **Node target: `REDIS_URL`/`DATABASE_URL` are auto-added to the generated env schema** when workers/schedules/queue (or the database) require them — worker and schedule projects previously failed `tsc` unless the user hand-declared infra secrets. `.env.example` documents them. Worker/scheduler startup also moved inside the `!process.env.VITEST` guard so generated test suites no longer open real Redis connections.
+
+- **Node target: WS/STREAM transport hardening.** A thrown error in a generated WS handler (a failing guard, malformed client JSON, a DB error) previously crashed the whole server via an unhandled rejection — handler bodies and the client-controlled `JSON.parse` are now wrapped, sending an error frame (and `1008` close on failed `onOpen` guards) instead of dying. SSE `on event` subscriptions are unsubscribed on stream abort (was a permanent per-connection leak); STREAM setup/guards run *before* the SSE response starts so a failing guard returns its declared status instead of an empty 200 stream; dead sockets are evicted from `_rooms` on close and `broadcast` skips non-open sockets; STREAM endpoints now enforce their `auth`/`limit`/`use` meta like REST routes, and unenforceable bare WS `auth` declarations get a linter warning (`unenforceable-ws-auth`).
+
+- **`bp build` refuses to write into a non-empty directory it doesn't own** (no `.blueprint/manifest.json`) unless `--force` is passed — it previously overwrote foreign files silently. Rebuilds that would clobber hand-edited generated files now warn per file (manifest hash comparison). Unknown or malformed flags now error with a suggestion instead of being silently ignored, `--flag=value` form is accepted everywhere, and `bp test`/`bp run`/`bp dev` re-install dependencies when `package.json` changed (fixes the cryptic PGlite failure after `--gen-tests`). `bp dev` installs dependencies before starting and reports a dead server instead of silently "watching".
+
+### Added
+
+- **Dedicated diagnostic for the #1 beginner error (`P002`)**: writing `if`/`else`/`for`/`while`/`switch` in a step now produces "Blueprint has no 'if'…" with guard/when/map hints, and the parser consumes the malformed construct instead of panic-mode recovery misparsing the next step as a top-level declaration (the "game-save" cascade is gone).
+
+- **First tests for `bp generate`'s file-rewriting path** (`internal/generate` was at 0% coverage): Apply splicing (multi-slot, boundaries, unicode), no-op safety, API error handling without file mutation, idempotency — via an injectable API seam, no network.
+
+- **LSP `didChange` fix + first handler tests**: the server applied only `ContentChanges[0]`, dropping subsequent edits in multi-change notifications; all changes now apply in order, covered by JSON-RPC-level tests (didOpen → didChange → hover/definition/diagnostics).
+
+- **`bp eject` no longer sets up silent data loss**: eject now deletes `.blueprint/manifest.json`, so a subsequent `bp build` hits the foreign-directory `--force` guard instead of clobbering ejected files. First `cmdEject` tests added.
+
+### Fixed (second batch)
+
+- **`bp migrate` no longer targets a stale database**: the project-root `.env` copy is refreshed when the output-dir copy is still bp's own (hash-tracked); hand-edited copies are preserved with a warning.
+- **`bp migrate --target effect` is rejected explicitly** instead of falling through to the drizzle-kit path with a confusing error.
+- **SPEC.md truth sync**: Appendix C targets table reflects reality (node mature / python advanced / effect experimental), the `in` predicate operator is in the grammar, `like`/`or` status is stated, and a new Appendix D documents the CLI exit-code contract (AGENTS.md's phantom "§24.2" citation fixed). Roadmap line counts and production-readiness multi-target framing corrected.
+
+### Added
+
+- **Worker coverage in the compile gate**: `testdata/valid/all_features.bp` now declares a realistic worker (input binding, fetch/update, guard, `impl node` fn call, `on_fail`), and generator tests build `testdata/valid/worker_basic.bp` end-to-end, so worker codegen is permanently covered by the `tsc` CI gate.
+
+- **`bp init` prints next steps**; shell completions (bash/zsh/fish) are generated from one shared command table and now include `stats`/`doctor`/`explain`/`llms`/`context`; `.env` discovery is consistent across `run`/`dev`/`test`/`migrate` (project-root `.env` is used when the output dir has none).
+
+### Changed
+
+- **Docs accuracy pass**: `docs/cli-reference.md` reflects the real Python-target coverage (all 5 examples compile), documents `bp explain`, `bp llms`, `bp check --json`, the `effect` target, `--force`, strict flag parsing, and the full exit-code table; `docs/changelog.md` is caught up to v0.11.0; `--target`-per-command claims corrected (deploy's `--target` is a deploy target, not codegen); `docs/testing-guide.md` gains the Python (pytest + testcontainers) testing story; version-anchored "fly reserved for v0.11" claims made version-neutral; `docs/multi-target-codegen.md` now covers the `--gen-tests` builder convention, exit-code contract, and per-command target dispatch; the README middleware example is `bp check`-clean.
+
+
+### Fixed (iteration-3 batch — reviewer-confirmed defects)
+
+- **Python: `orderedBindings` omitted `MapResults`** — a `delete <model>` on a map-produced collection regressed to `NameError` because the binding was never registered. Map-result bindings are now included in the lookup.
+- **Python: `lastBindingForModel` was position-unaware** — `update <model>` could resolve to a binding declared *after* the statement (or inside `recover`), causing a forward-reference `NameError`. Bindings are now registered incrementally after each step is emitted, so the lookup only sees preceding declarations.
+- **Python: nested `try` inside a transaction-wrapped `try` emitted `db.rollback()`/`db.commit()` inside `begin_nested()`** — the rollback discarded the outer write and returned a phantom 201. A nested `try` inside `ctx.inTxn` now gets its own `begin_nested()` savepoint, flushes instead of committing, and suppresses `db.rollback()` (the savepoint handles it).
+- **Node: worker input named `data`/`error` collided with generated function parameters** — a worker with an input named `data` (or an `on_fail` that references `error`) shadowed the BullMQ payload parameter. Worker handler and `on_fail` parameters are now `_bpData`/`_bpError`.
+- **Node: auto-added `REDIS_URL`/`DATABASE_URL` not deduped against user `env` declarations** — a user `env DATABASE_URL { ... }` plus the auto-added infra var produced duplicate Zod schema keys (TS1117). The dedupe set is now seeded with user `env` names before infra vars are added, in both `env.ts` and `.env.example`.
+- **Node: `off()` during `emit()` spliced the array being iterated** — a client disconnecting mid-emit made other SSE subscribers miss the event. `emit()` now iterates a snapshot of the handlers array.
+- **Node: scheduler queue name collided with user `trigger queue("scheduler")`** — the auto-generated consumer used the bare queue name `'scheduler'`. It is now namespaced to `'__bp_scheduler'`.
+- **Node: WS close-reason >123 bytes threw `RangeError`** — the WebSocket spec limits close reasons to 123 UTF-8 bytes. The reason is now truncated via `err.message.slice(0, 123)`.
+- **Node: duplicate `const _interval` when two `on timeout()` handlers exist in one STREAM block** — the interval is now indexed (`_interval0`, `_interval1`, …).
+- **CLI: `--force` not accepted by `run`/`dev`/`test`/`migrate`** — `checkOutDirSafety` said "Use --force" but those commands didn't accept it. `--force` is now threaded through all build-adjacent commands.
+- **CLI: stale-file removal deleted hand-edited generated files silently** — the manifest-tracked writer now warns before removing a previously-generated file that was hand-edited since the last build (hash comparison), matching the existing overwrite-warning.
+
+### Added (iteration-3 batch)
+
+- **Python: `where(...)` predicates support comparison operators and `in`** — `!=`, `<`, `>`, `<=`, `>=`, and `col in collection.field` (-> `schema.M.col.in_([r.field for r in coll])`) now translate to SQLAlchemy, matching the node target's coverage. New `testdata/valid/where_predicates.bp` fixture exercises all operators on both targets; generator tests on both targets assert the emitted predicates and `tsc`-compile the output.
+- **Node: string interpolation `{expr}` now converts snake_case identifiers to camelCase** — `{user_id}` in a log/error message previously emitted `${user_id}` (an undeclared name in the JS scope, TS2xxx). `transformInterpolation` now regex-matches snake_case identifiers and applies `toCamelCase`, alongside the existing `.count -> .length` rewrite.
+
+
+### Added (v0.13.0–v0.14.0 batch)
+
+- **`enqueue` builtin** — `enqueue "queue_name" { data }` enqueues a job to a BullMQ worker queue. New `TokenEnqueue` lexer keyword, parser support, checker validation, and node codegen (module-level `Queue` instances, `.add()` calls, `bullmq` in `package.json`). Closes the worker producer path gap — workers now have an in-language way to receive jobs.
+- **Python `where(...)` predicate long tail** — `or`/`and` (→ SQLAlchemy `or_()`/`and_()`, recursive), text-search shorthand `where(q)` (→ conditional ILIKE on text columns), and duration RHS `N.days.ago` (→ `datetime.now(timezone.utc) - timedelta(days=N)`). `or_` and `timedelta` imports auto-detected.
+- **Python bare BlockExpr step bindings** — `|> filters = { status: "active" }` now compiles to a Python dict literal instead of being rejected as a non-data-op step.
+- **`bp fmt` column alignment** — model fields (`name type constraints`), endpoint inputs (`<- name type`), and blueprint block keys (`version port runtime`) are now column-aligned via a two-pass width computation. All 5 examples pass `bp fmt --check`; CI format check extended from `hello-world.bp` only to all `examples/*.bp`.
+- **Multi-instance WS event bus** — WS room management (`join`/`leave`/`broadcast`) now uses Redis pub/sub for multi-instance delivery. Lazy `_ensureRedis()` initialization; falls back to process-local broadcast when `REDIS_URL` is unavailable. `onClose` unsubscribes from Redis channels for emptied rooms.
+
+### Fixed (v0.13.0–v0.14.0 batch)
+
+- **AGENTS.md accuracy** — hyphenated headers (`header.X-API-Key`) are now correctly documented as reassembled by the parser, not "silently dropped". Worker producer path and WS multi-instance limitations updated to reflect shipped status.
+- **`bp fmt` round-trip test coverage** — `TestPrint_RoundtripAllBlockTypes` exercises worker, schedule, stream, WS, try/recover, test, fixture, fn, and middleware blocks via parse→print→parse→print idempotency (previously 0% printer coverage for these block types).
+- **BACKLOG cleanup** — 7 already-fixed audit items marked as shipped with verification dates.
+
 ## [0.11.0] - 2026-06-16
 
 Adds a third codegen target (an Effect-TS scaffold), a one-shot agent/LLM guide command (`bp llms`), two codegen correctness fixes (duplicate `pgEnum`, transactional `try/recover`), a generator-interface refactor that exposes `Files()`, and a full documentation accuracy + learnability pass (the VitePress site builds with every `.bp` snippet `bp check`-clean and zero dead links).
