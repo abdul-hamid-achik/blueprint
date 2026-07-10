@@ -207,6 +207,11 @@ func emitFKAliases(b *strings.Builder, stmt ast.ArrowStmt, ctx *bodyCtx, indent 
 // and `where`/`order`/`paginate` markers on `query`. Step calls to user-defined
 // fn/pipe names are still rejected upstream.
 func emitStep(b *strings.Builder, s *ast.StepStmt, ctx *bodyCtx, indent string) {
+	// Bare BlockExpr step: `|> filters = { status: "active" }` → Python dict.
+	if blk, ok := s.Expr.(*ast.BlockExpr); ok && s.Binding != "" {
+		fmt.Fprintf(b, "%s%s = %s\n", indent, s.Binding, blockExprToPyDict(blk))
+		return
+	}
 	fn, ok := s.Expr.(*ast.FnCall)
 	if !ok {
 		fmt.Fprintf(b, "%s# TODO(python): non-data-op step %T\n", indent, s.Expr)

@@ -175,7 +175,7 @@ scaffolded only when missing and must not be overwritten on later builds.
 These are acknowledged gaps between spec and current implementation:
 
 ### Lexer/Parser
-- `header.X-API-Key` — hyphenated header names fail lexing. The lexer tokenizes `X-API-Key` as `X`, `-`, `API`, `-`, `Key`. Workaround: the parser handles `header.X` as a special two-token sequence; hyphen suffix is currently silently dropped.
+- `header.X-API-Key` — hyphenated header names are reassembled by the parser (`parsePostfixExpr` consumes `-` and following identifier segments after `header.`), and codegen emits `c.req.header('X-API-Key')` (JS) / `x_api_key` (Python). The lexer still tokenizes the hyphens as `TokenMinus`; the parser-level reassembly is the workaround.
 - `using(secret.KEY)` syntax (SPEC §7.11 `auth webhook_sig using(...)`) — parsed but `secret.` prefix resolution not implemented in codegen.
 - `@>` generate directives — parsed into AST but not resolved (M6 feature).
 

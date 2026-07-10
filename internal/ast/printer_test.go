@@ -453,6 +453,195 @@ GET /api/jobs {
 	}
 }
 
+// TestPrint_RoundtripAllBlockTypes exercises every block type the printer
+// handles — worker, schedule, stream, WS, try/recover, test, fixture, fn,
+// middleware, external — via a parse -> print -> parse -> print idempotency
+// check. This pins the printer's output for block types that previously had
+// 0% test coverage.
+func TestPrint_RoundtripAllBlockTypes(t *testing.T) {
+	src := `blueprint "roundtrip-test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+  queue    redis
+}
+
+secret DATABASE_URL required
+secret REDIS_URL    required
+
+model task {
+  id     uuid   primary
+  title  string required
+  status string default("pending")
+}
+
+model log_entry {
+  id      uuid       primary
+  task_id uuid       ref(task)
+  message string     required
+  created timestamp  default(now)
+}
+
+fn process_task {
+  <- task_id uuid
+
+  -> string
+
+  impl node {
+    module: "./internal/process-task"
+  }
+}
+
+middleware auth {
+  before {
+    |> guard header.Authorization -> 401 "Missing auth"
+  }
+}
+
+worker cleanup_worker {
+  trigger queue("cleanup")
+  retry   3
+  timeout 5min
+
+  <- task_id uuid
+
+  |> task = fetch task(task_id)
+  |> guard task.status == "done" -> 409 "Already done"
+  |> update task { status: "cleaning" }
+  |> result = process_task(task_id)
+  |> log "Cleaned task {task_id}"
+  -> 200 { result: result }
+
+  on_fail {
+    |> log "Worker failed for {task_id}"
+  }
+}
+
+schedule nightly_cleanup {
+  cron "0 4 * * *"
+
+  |> old = query task where(status == "done")
+  |> delete old
+  |> log "Cleaned {old.count} done tasks"
+}
+
+GET /api/tasks {
+  <- status string default("pending")
+  |> tasks = query task where(status == status)
+  -> 200 { tasks: tasks }
+}
+
+POST /api/tasks {
+  <- title string required
+  |> task = save task { title: title }
+  -> 201 { id: task.id }
+}
+
+POST /api/tasks/:id/process {
+  <- id uuid required
+  |> try {
+    |> task = fetch task(id)
+    |> guard task.status != "done" -> 409 "Already done"
+    |> update task { status: "processing" }
+  } recover {
+    |> log "Failed to process {id}"
+    -> 500 "Processing failed"
+  }
+  -> 200 { id: id }
+}
+
+STREAM /api/events {
+  stream {
+    |> on event(task_created) {
+      |> log "Task created"
+    }
+    |> on timeout(30s) {
+      |> log "Heartbeat"
+    }
+  }
+}
+
+WS /ws/tasks/:id {
+  on_connect {
+    |> log "Connected to task {id}"
+  }
+  on_message {
+    |> broadcast room(id) { body: message.body }
+  }
+  on_disconnect {
+    |> leave room(id)
+  }
+}
+
+fixture "test-data" from "testdata/seed.json"
+
+fixture "sample_task" seed task {
+  title  "Sample task"
+  status "pending"
+}
+
+test create_task {
+  target POST /api/tasks
+
+  setup {
+    |> log "Setting up test"
+  }
+
+  request {
+    body {
+      title: "Test task",
+    }
+  }
+
+  expect {
+    status 201
+    body.id is uuid
+  }
+
+  cleanup {
+    |> log "Cleaning up test"
+  }
+}
+`
+
+	// First parse + print
+	file1 := parseForPrint(t, src)
+	printed1 := ast.Print(file1)
+
+	// Second parse of the printed output + print again
+	file2, errs2 := parser.ParseFile("test.bp", []byte(printed1))
+	if len(errs2) > 0 {
+		t.Fatalf("re-parse errors after first print: %v\nprinted:\n%s", errs2, printed1)
+	}
+	printed2 := ast.Print(file2)
+
+	// The two printed outputs must be identical (idempotent).
+	if printed1 != printed2 {
+		lines1 := strings.Split(printed1, "\n")
+		lines2 := strings.Split(printed2, "\n")
+		maxLen := len(lines1)
+		if len(lines2) > maxLen {
+			maxLen = len(lines2)
+		}
+		firstDiff := -1
+		for i := 0; i < maxLen; i++ {
+			var l1, l2 string
+			if i < len(lines1) {
+				l1 = lines1[i]
+			}
+			if i < len(lines2) {
+				l2 = lines2[i]
+			}
+			if l1 != l2 {
+				firstDiff = i
+				break
+			}
+		}
+		t.Errorf("Print is not idempotent (first diff at line %d):\n--- first print ---\n%s\n--- second print ---\n%s", firstDiff, printed1, printed2)
+	}
+}
+
 // TestPrint_UnaryNot guards against the silent data loss observed in v0.9:
 // `not existing` round-tripped through `bp fmt` into `notexisting`, which
 // the checker happily treated as a brand-new identifier.

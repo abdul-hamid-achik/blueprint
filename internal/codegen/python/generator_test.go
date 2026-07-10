@@ -637,21 +637,37 @@ GET /api/categories/active {
 	}
 }
 
-func TestPython_Phase3cRejectsBareBlockStep(t *testing.T) {
-	src := `blueprint "x" { version "1.0" port 3000 runtime node }
-GET /api/x {
-  <- q string optional
-  |> filters = {}
-  -> 200 "ok"
+// Bare BlockExpr step expressions (`|> filters = { key: val }`) now compile
+// to Python dict literals — previously rejected as non-data-op steps.
+func TestPython_BareBlockStepBinding(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model task { id int primary  title string required  status string required }
+GET /api/tasks {
+  <- status string optional
+  |> filters = { status: status }
+  |> tasks = query task where(status == status)
+  -> 200 { tasks: tasks }
 }
 `
 	file, errs := parser.ParseFile("t.bp", []byte(src))
 	if len(errs) > 0 {
 		t.Fatalf("parse: %v", errs)
 	}
-	err := python.New().Generate(file, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "step expressions") {
-		t.Errorf("expected bare-block step rejection, got: %v", err)
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("checker: %v", checkErrs)
+	}
+	outDir := t.TempDir()
+	if err := python.New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	routeContent, err := os.ReadFile(filepath.Join(outDir, "src/routes/tasks.py"))
+	if err != nil {
+		t.Fatal("src/routes/tasks.py should exist")
+	}
+	routeStr := string(routeContent)
+	if !strings.Contains(routeStr, "filters =") {
+		t.Errorf("expected filters dict literal assignment, got:\n%s", routeStr)
 	}
 }
 

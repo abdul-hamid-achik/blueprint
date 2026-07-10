@@ -381,6 +381,11 @@ func (g *Generator) complexStmtFeatures(s ast.ArrowStmt) []string {
 // remaining rejections (non-`==` predicates, `or`/`in` predicates, step calls
 // to user-defined fn/pipe names) are tracked under Phase 3d in BACKLOG.md.
 func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
+	// A bare BlockExpr step (`|> filters = { status: "active" }`) is a dict
+	// literal binding — emitStep handles it as a Python dict assignment.
+	if _, ok := s.Expr.(*ast.BlockExpr); ok && s.Binding != "" {
+		return nil
+	}
 	fn, ok := s.Expr.(*ast.FnCall)
 	if !ok {
 		return []string{"step expressions that aren't data operations"}

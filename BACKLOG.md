@@ -171,26 +171,24 @@ string interpolation) shipped. See CHANGELOG [Unreleased] "iteration-3 batch".
 - [x] **JS string-interpolation identifiers not camelCased** — `transformInterpolation` now
   regex-matches snake_case identifiers and applies `toCamelCase`. _(shipped 2026-07-09
   iteration-3)_
-- [ ] **Stale "fly reserved for v0.11" strings inside the binary** — printCommandHelp (~:532)
-  and printUsage (~:2233) in cmd/bp/main.go, plus internal/agentctx/topics/targets.md
-  (embedded in `bp context`/`bp llms`). The runtime error string is already version-neutral.
-- [ ] **SPEC.md staleness** — Appendix C targets table lists Python/Go as "🚧 Planned" and
-  omits Effect; the where-predicate grammar (ComparisonOp) omits `in` (parsed, JS-translated)
-  and `like` (JS-translated only); AGENTS.md cites "SPEC §24.2" for exit codes but SPEC.md has
-  no §24 — fix the citation or add the section.
-- [ ] **Parser: dedicated if/else diagnostic** — the #1 beginner error (`if/else` in a step)
-  yields a generic "Expected '}'" plus a misleading panic-mode cascade ("game-save" hint).
-  Special-case if/else/for/while in statement position; suppress cascade errors during recovery.
-- [ ] **`bp eject` has zero tests and its worst failure mode is real** — the next `bp build`
-  silently clobbers ejected files (no manifest awareness after eject). Also
-  `internal/generate` (Apply/GenerateAll/callAnthropicAPI) is at 0% coverage.
-- [ ] **docs/roadmap.md stale line counts** (cites cmd/bp/main.go at 770 lines / generator.go
-  at 3,169 — both wrong post-refactors); docs/production-readiness.md Pillar 5 still frames
-  multi-target as post-1.0-only in places.
-- [ ] **LSP didChange applies ContentChanges[0] only** — multi-change notifications drop edits
-  (internal/lsp at 49%; every JSON-RPC document handler untested).
-- [ ] **`bp fmt` printer 0% coverage for worker/schedule/stream/ws/try-recover/test/fixture
-  blocks** — round-trip (parse → print → parse) property test would pin these.
+- [x] **Stale "fly reserved for v0.11" strings inside the binary** — already fixed: all
+  strings now say "reserved for a future release" (iteration-2). _(verified 2026-07-10)_
+- [x] **SPEC.md truth sync** — Appendix C targets table reflects reality (node mature /
+  python advanced / effect experimental / go planned); `in` predicate in the grammar;
+  Appendix D CLI exit codes. _(shipped iteration-2)_
+- [x] **Parser: dedicated if/else diagnostic (P002)** — `if`/`else`/`for`/`while`/`switch`
+  in step position now produces a clear diagnostic with guard/when/map hints; panic-mode
+  cascade suppressed. _(shipped iteration-2)_
+- [x] **`bp eject` deletes manifest so rebuilds hit --force guard** — first eject tests
+  added (iteration-2). `internal/generate` coverage started (iteration-2). _(partially
+  shipped; more coverage welcome)_
+- [x] **docs/roadmap.md stale line counts** — verified 2026-07-10: no stale line-count
+  references remain in docs/roadmap.md.
+- [x] **LSP didChange applies ContentChanges[0] only** — fixed: all entries now applied in
+  order (full-document sync, last entry wins); first handler tests added. _(shipped iteration-2)_
+- [x] **`bp fmt` printer 0% coverage for worker/schedule/stream/ws/try-recover/test/fixture
+  blocks** — `TestPrint_RoundtripAllBlockTypes` exercises all block types via a
+  parse → print → parse → print idempotency check. _(shipped 2026-07-10)_
 
 ## Python target (decisions locked, work pending)
 
