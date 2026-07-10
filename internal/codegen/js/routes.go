@@ -993,6 +993,8 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	if needsWebhookAuth {
 		ic.needsEnv = true
 	}
+	// Redis pub/sub backbone always references env.REDIS_URL
+	ic.needsEnv = true
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
 
