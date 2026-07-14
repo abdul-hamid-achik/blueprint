@@ -195,33 +195,67 @@
   transform: translateY(-2px);
 }
 
+.bp-install-block {
+  max-width: 500px;
+  margin-top: 26px;
+}
+
+.bp-install-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin: 0 2px 8px;
+  color: var(--bp-ink-faint);
+  font: 700 10px/1.4 var(--vp-font-family-mono);
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.bp-install-heading span:first-child {
+  color: var(--bp-ink-soft);
+}
+
 .bp-install {
+  position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  max-width: 540px;
   min-height: 54px;
-  gap: 12px;
-  margin-top: 24px;
-  padding: 5px 5px 5px 16px;
-  border: 1px solid var(--bp-line-strong);
-  border-radius: 12px;
-  background: var(--bp-surface);
-  box-shadow: 0 10px 30px rgba(20, 31, 50, 0.05);
+  gap: 11px;
+  padding: 5px 5px 5px 15px;
+  border: 1px solid rgba(137, 152, 177, 0.3);
+  border-radius: 10px;
+  background: var(--bp-code-bg);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 12px 28px rgba(13, 17, 24, 0.12);
+}
+
+.bp-install::before {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--bp-accent);
+  content: "";
 }
 
 .bp-terminal-mark {
   color: var(--bp-accent);
   font-family: var(--vp-font-family-mono);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
 }
 
 .bp-install > code {
   overflow-x: auto;
-  color: var(--bp-ink);
-  font-size: 12px;
+  color: var(--bp-code-text);
+  font-size: 11.5px;
   font-weight: 600;
+  letter-spacing: -0.01em;
   line-height: 1.5;
   scrollbar-width: none;
   white-space: nowrap;
@@ -233,22 +267,40 @@
 
 .bp-copy-button {
   display: inline-flex;
-  min-width: 86px;
+  min-width: 72px;
   min-height: 44px;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--bp-accent-soft);
-  color: var(--bp-accent);
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid rgba(137, 152, 177, 0.22);
+  border-radius: 7px;
+  background: var(--bp-code-surface);
+  color: var(--bp-code-text);
   cursor: pointer;
   font: 700 12px/1 var(--vp-font-family-base);
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease;
 }
 
 .bp-copy-button:hover {
-  background: var(--vp-c-brand-soft);
+  border-color: color-mix(in srgb, var(--bp-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--bp-code-surface) 78%, var(--bp-accent));
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.bp-copy-button:active {
+  transform: scale(0.98);
+}
+
+.bp-copy-button.is-copied {
+  border-color: color-mix(in srgb, var(--bp-success) 55%, transparent);
+  background: color-mix(in srgb, var(--bp-code-surface) 82%, var(--bp-success));
+  color: #ffffff;
 }
 
 .bp-copy-button svg {
@@ -265,7 +317,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px 22px;
-  margin: 18px 0 0;
+  margin: 16px 0 0;
   padding: 0;
   color: var(--bp-ink-faint);
   font-size: 12px;
@@ -1156,16 +1208,21 @@
     justify-content: center;
   }
 
-  .bp-install {
-    padding-left: 12px;
+  .bp-install-block {
+    max-width: none;
+    margin-top: 24px;
+  }
+
+  .bp-install-heading {
+    margin-inline: 1px;
   }
 
   .bp-copy-button {
     min-width: 44px;
-    padding: 0 10px;
+    padding: 0 9px;
   }
 
-  .bp-copy-button span {
+  .bp-copy-label {
     display: none;
   }
 
@@ -1258,6 +1315,12 @@
 
   .bp-install {
     gap: 8px;
+    min-height: 64px;
+  }
+
+  .bp-install > code {
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .bp-output-card {
@@ -1268,6 +1331,13 @@
 @media (hover: none), (pointer: coarse) {
   .bp-button:hover,
   .bp-capability:hover {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bp-copy-button:hover,
+  .bp-copy-button:active {
     transform: none;
   }
 }

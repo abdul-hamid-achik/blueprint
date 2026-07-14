@@ -83,27 +83,35 @@ onBeforeUnmount(() => {
             </a>
           </div>
 
-          <div class="bp-install" role="group" aria-label="Install Blueprint with Homebrew">
-            <span class="bp-terminal-mark" aria-hidden="true">$</span>
-            <code tabindex="0">{{ installCommand }}</code>
-            <button
-              class="bp-copy-button"
-              type="button"
-              :aria-label="copied ? 'Install command copied' : copyMessage ? 'Copy failed. Try again' : 'Copy install command'"
-              @click="copyInstallCommand"
-            >
-              <svg v-if="!copied" viewBox="0 0 20 20" aria-hidden="true">
-                <rect x="7" y="7" width="9" height="9" rx="2" />
-                <path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
-              </svg>
-              <svg v-else viewBox="0 0 20 20" aria-hidden="true">
-                <path d="m4 10 4 4 8-9" />
-              </svg>
-              <span>{{ copied ? 'Copied' : 'Copy' }}</span>
-            </button>
-            <span class="bp-sr-only" aria-live="polite" aria-atomic="true">
-              {{ copyMessage }}
-            </span>
+          <div class="bp-install-block">
+            <div class="bp-install-heading">
+              <span id="bp-install-title">Install with Homebrew</span>
+              <span aria-hidden="true">macOS + Linux</span>
+            </div>
+            <div class="bp-install" role="group" aria-labelledby="bp-install-title">
+              <span class="bp-terminal-mark" aria-hidden="true">$</span>
+              <code tabindex="0">{{ installCommand }}</code>
+              <button
+                class="bp-copy-button"
+                :class="{ 'is-copied': copied }"
+                type="button"
+                :title="copied ? 'Copied' : 'Copy install command'"
+                :aria-label="copied ? 'Install command copied' : copyMessage ? 'Copy failed. Try again' : 'Copy install command'"
+                @click="copyInstallCommand"
+              >
+                <svg v-if="!copied" viewBox="0 0 20 20" aria-hidden="true">
+                  <rect x="7" y="7" width="9" height="9" rx="2" />
+                  <path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
+                </svg>
+                <svg v-else viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="m4 10 4 4 8-9" />
+                </svg>
+                <span class="bp-copy-label">{{ copied ? 'Copied' : 'Copy' }}</span>
+              </button>
+              <span class="bp-sr-only" aria-live="polite" aria-atomic="true">
+                {{ copyMessage }}
+              </span>
+            </div>
           </div>
 
           <ul class="bp-hero-proof" aria-label="Blueprint project qualities">
