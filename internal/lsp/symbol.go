@@ -1,6 +1,8 @@
 package lsp
 
 import (
+	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
@@ -80,14 +82,16 @@ func buildIndex(uri, text string) *docIndex {
 }
 
 func uriToFilename(uri string) string {
-	if strings.HasPrefix(uri, "file://") {
-		return strings.TrimPrefix(uri, "file://")
+	u, err := url.Parse(uri)
+	if err == nil && u.Scheme == "file" && (u.Host == "" || u.Host == "localhost") {
+		return filepath.FromSlash(u.Path)
 	}
 	return uri
 }
 
-// extractWordAtPos returns the word at (line, char) in text and the (line, col)
-// of its start, all 0-indexed by line and 0-indexed by char as LSP requires.
+// extractWordAtPos returns the word at an LSP (line, UTF-16 character)
+// position. The returned start column is a byte offset because lexer.Loc and
+// the source slicing performed by findSymbolAt are byte-based.
 // Returns ("", 0, 0) when no word is found.
 func extractWordAtPos(text string, line, char int) (word string, startLine, startChar int) {
 	lines := strings.Split(text, "\n")
@@ -98,9 +102,7 @@ func extractWordAtPos(text string, line, char int) (word string, startLine, star
 	if char < 0 {
 		char = 0
 	}
-	if char > len(src) {
-		char = len(src)
-	}
+	char = byteOffsetForUTF16(src, char)
 	start := char
 	for start > 0 && isWordByte(src[start-1]) {
 		start--
@@ -208,7 +210,11 @@ func isAtIntentPrefix(text string, line, char int) bool {
 		return false
 	}
 	src := lines[line]
-	if char < 0 || char >= len(src) {
+	if char < 0 {
+		return false
+	}
+	char = byteOffsetForUTF16(src, char)
+	if char >= len(src) {
 		return false
 	}
 	return src[char] == '@'
@@ -248,12 +254,29 @@ func findField(m *ast.Model, fieldName string) (*ast.Field, bool) {
 	return nil, false
 }
 
+func findComputedField(m *ast.Model, fieldName string) (*ast.ComputedField, bool) {
+	if m == nil {
+		return nil, false
+	}
+	for _, field := range m.ComputedFields {
+		if field != nil && field.Name == fieldName {
+			return field, true
+		}
+	}
+	return nil, false
+}
+
 // findIntentAt returns the *ast.Intent whose `@` is at (line, char).
 // Currently only used to classify intent hover; other handlers don't need it.
-func findIntentAt(file *ast.File, line, char int) *ast.Intent {
+func findIntentAt(file *ast.File, text string, line, char int) *ast.Intent {
 	if file == nil {
 		return nil
 	}
+	lines := strings.Split(text, "\n")
+	if line < 0 || line >= len(lines) || char < 0 {
+		return nil
+	}
+	char = byteOffsetForUTF16(lines[line], char)
 	var found *ast.Intent
 	check := func(it *ast.Intent) {
 		if it == nil {

@@ -478,11 +478,11 @@ func buildComponents(f *ast.File) map[string]any {
 		switch b := block.(type) {
 		case *ast.Model:
 			name := toPascalCase(b.Name)
-			schemas[name] = modelToSchema(b.Fields)
+			schemas[name] = modelToSchema(b)
 
 		case *ast.Content:
 			name := toPascalCase(b.Name)
-			schemas[name] = modelToSchema(b.AsModel().Fields)
+			schemas[name] = modelToSchema(b.AsModel())
 
 		case *ast.TypeDecl:
 			name := toPascalCase(b.Name)
@@ -542,9 +542,22 @@ func buildComponents(f *ast.File) map[string]any {
 	}
 }
 
-// modelToSchema builds a JSON Schema object from model fields.
-func modelToSchema(fields []*ast.Field) map[string]any {
-	return fieldsToSchema(fields)
+// modelToSchema builds a JSON Schema object from persisted and read-only
+// computed model fields.
+func modelToSchema(model *ast.Model) map[string]any {
+	result := fieldsToSchema(model.Fields)
+	properties := result["properties"].(map[string]any)
+	required, _ := result["required"].([]string)
+	for _, field := range model.ComputedFields {
+		schema := typeToJSONSchema(field.Type, nil)
+		schema["readOnly"] = true
+		properties[field.Name] = schema
+		required = append(required, field.Name)
+	}
+	if len(required) > 0 {
+		result["required"] = required
+	}
+	return result
 }
 
 // fieldsToSchema builds a JSON Schema object from a list of fields.

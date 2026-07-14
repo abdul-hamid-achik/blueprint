@@ -209,12 +209,79 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 		}
 		b.WriteString("});\n\n")
 
-		// Emit TypeScript type from model
-		fmt.Fprintf(&b, "export type %s = typeof %s.$inferSelect;\n", toPascalCase(m.Name), toCamelCase(m.Name))
-		fmt.Fprintf(&b, "export type New%s = typeof %s.$inferInsert;\n\n", toPascalCase(m.Name), toCamelCase(m.Name))
+		// Emit TypeScript types. Computed fields extend the selected record but
+		// never the insert shape because they are not persisted columns.
+		fmt.Fprintf(&b, "export type %s = typeof %s.$inferSelect", toPascalCase(m.Name), toCamelCase(m.Name))
+		if len(m.ComputedFields) > 0 {
+			b.WriteString(" & {\n")
+			for _, field := range m.ComputedFields {
+				fmt.Fprintf(&b, "  %s: %s;\n", toCamelCase(field.Name), typeToTS(field.Type))
+			}
+			b.WriteString("}")
+		}
+		b.WriteString(";\n")
+		fmt.Fprintf(&b, "export type New%s = typeof %s.$inferInsert;\n", toPascalCase(m.Name), toCamelCase(m.Name))
+		if len(m.ComputedFields) > 0 {
+			fmt.Fprintf(&b, "export function compute%s(row: typeof %s.$inferSelect): %s;\n", toPascalCase(m.Name), toCamelCase(m.Name), toPascalCase(m.Name))
+			fmt.Fprintf(&b, "export function compute%s(row: null): null;\n", toPascalCase(m.Name))
+			fmt.Fprintf(&b, "export function compute%s(row: undefined): undefined;\n", toPascalCase(m.Name))
+			fmt.Fprintf(&b, "export function compute%s(row: typeof %s.$inferSelect | null | undefined): %s | null | undefined {\n", toPascalCase(m.Name), toCamelCase(m.Name), toPascalCase(m.Name))
+			b.WriteString("  if (row == null) return row;\n")
+			b.WriteString("  const result: any = { ...row };\n")
+			for _, field := range m.ComputedFields {
+				fmt.Fprintf(&b, "  Object.defineProperty(result, %q, { enumerable: true, get: () => %s });\n", toCamelCase(field.Name), computedExprToJS(field.Expr, "result"))
+			}
+			fmt.Fprintf(&b, "  return result as %s;\n", toPascalCase(m.Name))
+			b.WriteString("}\n")
+		}
+		b.WriteString("\n")
 	}
 
 	return codegen.OutputFile{Path: "src/models/schema.ts", Content: []byte(b.String())}
+}
+
+// computedExprToJS renders the pure expression subset accepted by the
+// checker. Identifiers always refer to properties already present on result
+// (persisted fields or an earlier computed field).
+func computedExprToJS(expr ast.Expr, row string) string {
+	switch value := expr.(type) {
+	case *ast.StringLit:
+		return fmt.Sprintf(`"%s"`, jsEscapeString(value.Value))
+	case *ast.IntLit:
+		return value.Value
+	case *ast.FloatLit:
+		return value.Value
+	case *ast.BoolLit:
+		if value.Value {
+			return "true"
+		}
+		return "false"
+	case *ast.Ident:
+		return row + "." + toCamelCase(value.Name)
+	case *ast.ParenExpr:
+		return "(" + computedExprToJS(value.Expr, row) + ")"
+	case *ast.UnaryExpr:
+		op := value.Op
+		if op == "not" {
+			op = "!"
+		}
+		return op + computedExprToJS(value.Operand, row)
+	case *ast.BinaryExpr:
+		op := value.Op
+		switch op {
+		case "and":
+			op = "&&"
+		case "or":
+			op = "||"
+		case "==":
+			op = "==="
+		case "!=":
+			op = "!=="
+		}
+		return fmt.Sprintf("%s %s %s", computedExprToJS(value.Left, row), op, computedExprToJS(value.Right, row))
+	default:
+		return "undefined /* checker rejected unsupported computed expression */"
+	}
 }
 
 func collectNamedTypesFromModels(models []*ast.Model) []string {

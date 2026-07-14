@@ -311,6 +311,9 @@ func extractSumCollection(e ast.Expr) (string, bool) {
 func rewriteSumBody(e ast.Expr, collection string, ctx *bodyCtx) string {
 	switch v := e.(type) {
 	case *ast.FieldAccess:
+		if baseIdent, ok := v.Base.(*ast.Ident); ok && baseIdent.Name == "env" {
+			return "env." + v.Field
+		}
 		if id, ok := v.Base.(*ast.Ident); ok && id.Name == collection {
 			return "r." + v.Field
 		}
@@ -1148,6 +1151,14 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 		return "False"
 	case *ast.NullLit:
 		return "None"
+	case *ast.NowLit:
+		return "datetime.now(timezone.utc)"
+	case *ast.DurationLit:
+		return durationLiteralToPy(v.Value)
+	case *ast.SizeLit:
+		return sizeLiteralToPy(v.Value)
+	case *ast.RateLit:
+		return pyStringLiteral(v.Value)
 	case *ast.Ident:
 		return v.Name
 	case *ast.FieldAccess:
@@ -1180,7 +1191,7 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 		// We don't gate this on a middleware-only flag because endpoint
 		// bodies never legitimately reference `header.X` directly.
 		if baseIdent, ok := v.Base.(*ast.Ident); ok && baseIdent.Name == "header" {
-			return common.SnakeCase(v.Field)
+			return pythonHeaderParamName(v.Field)
 		}
 		// Two-level FK access: `var.fkField.x` → `alias.x` when the alias
 		// has been pre-emitted. Single-level `var.field` is left alone.
@@ -1203,6 +1214,8 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 			}
 		}
 		return exprToPyWithCtx(v.Base, ctx) + "." + v.Field
+	case *ast.IndexAccess:
+		return exprToPyWithCtx(v.Base, ctx) + "[" + exprToPyWithCtx(v.Index, ctx) + "]"
 	case *ast.BinaryExpr:
 		return fmt.Sprintf("(%s %s %s)",
 			exprToPyWithCtx(v.Left, ctx),
@@ -1212,6 +1225,26 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 		return translateUnaryOp(v.Op) + " " + exprToPyWithCtx(v.Operand, ctx)
 	case *ast.ParenExpr:
 		return "(" + exprToPyWithCtx(v.Expr, ctx) + ")"
+	case *ast.ListExpr:
+		parts := make([]string, len(v.Elements))
+		for i, el := range v.Elements {
+			parts[i] = exprToPyWithCtx(el, ctx)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case *ast.BlockExpr:
+		parts := make([]string, 0, len(v.Entries))
+		for _, kv := range v.Entries {
+			parts = append(parts, fmt.Sprintf("%q: %s", kv.Key, exprToPyWithCtx(kv.Value, ctx)))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	case *ast.FnCall:
+		args := make([]string, len(v.Args))
+		for i, arg := range v.Args {
+			args[i] = exprToPyWithCtx(arg, ctx)
+		}
+		return v.Name + "(" + strings.Join(args, ", ") + ")"
+	case *ast.PathExpr:
+		return pyStringLiteral(v.Value)
 	}
 	return exprToPy(e)
 }

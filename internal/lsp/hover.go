@@ -18,7 +18,7 @@ func computeHover(idx *docIndex, line, char int) string {
 
 	switch sym.Kind {
 	case SymbolIntent:
-		if it := findIntentAt(idx.file, line, char); it != nil {
+		if it := findIntentAt(idx.file, idx.text, line, char); it != nil {
 			return fmt.Sprintf("**Intent**\n\n%s", it.Text)
 		}
 		return "**@intent** — natural-language description attached to the next block. The compiler treats this as documentation; codegen may use it for OpenAPI summaries."
@@ -47,6 +47,9 @@ func computeHover(idx *docIndex, line, char int) string {
 		if m, ok := findModel(idx.file, sym.Parent); ok {
 			if f, ok := findField(m, sym.Name); ok {
 				return fieldHover(sym.Parent, f)
+			}
+			if f, ok := findComputedField(m, sym.Name); ok {
+				return computedFieldHover(sym.Parent, f)
 			}
 		}
 
@@ -79,6 +82,15 @@ func modelHover(m *ast.Model) string {
 				continue
 			}
 			fmt.Fprintf(&b, "- `%s` %s%s\n", f.Name, typeString(f.Type), constraintsString(f.Constraints))
+		}
+	}
+	if len(m.ComputedFields) > 0 {
+		b.WriteString("\nComputed fields:\n")
+		for _, f := range m.ComputedFields {
+			if f == nil {
+				continue
+			}
+			fmt.Fprintf(&b, "- `%s` %s *(computed)*\n", f.Name, typeString(f.Type))
 		}
 	}
 	return b.String()
@@ -121,6 +133,10 @@ func middlewareHover(m *ast.Middleware) string {
 
 func fieldHover(modelName string, f *ast.Field) string {
 	return fmt.Sprintf("**`%s.%s`** %s%s", modelName, f.Name, typeString(f.Type), constraintsString(f.Constraints))
+}
+
+func computedFieldHover(modelName string, f *ast.ComputedField) string {
+	return fmt.Sprintf("**`%s.%s`** %s *(computed, read-only)*", modelName, f.Name, typeString(f.Type))
 }
 
 // inputsFromFn / inputsFromPipe collect input statements from a block. Pipes

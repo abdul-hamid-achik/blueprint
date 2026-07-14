@@ -118,10 +118,9 @@ jobs:
             ls drizzle/*.sql >/dev/null 2>&1 || (echo "no SQL migration emitted in $dir"; ls -la drizzle/; exit 1)
           done
 
-      - name: Build with --target python (phase 1 smoke)
-        # Phase 1 supports static endpoints only. hello-world is the canonical
-        # spec; idempotency is enforced so non-determinism in the Python
-        # generator is caught here.
+      - name: Build with --target python (smoke)
+        # hello-world is the smallest canonical Python target spec;
+        # idempotency is enforced so generator non-determinism is caught here.
         run: |
           rm -rf /tmp/py-hello
           ./bin/bp build examples/hello-world.bp --out /tmp/py-hello --target python
@@ -146,15 +145,13 @@ jobs:
           PY
           echo "--target python output OK"
 
-      - name: Build with --target python on all 5 examples
-        # CHANGELOG[0.9.0] claims "5/5 examples compile on --target python".
-        # The Phase 1 smoke above only proves it for hello-world; this step
-        # proves the claim by building every example, AST-parsing all emitted
-        # .py files, and enforcing idempotency via bp diff --exit-code.
-        # Without this gate, a regression in stream.go/ws.go/cache.go/
-        # middleware.go (today 0% unit-test covered) would ship silently.
+      - name: Build supported Python examples and enforce fail-closed behavior
+        # Build every canonical example whose semantics the Python target can
+        # currently preserve, AST-parse the emitted .py files, and enforce
+        # idempotency. Canonical examples with semantics the target cannot yet
+        # preserve must fail before any partial project is presented as valid.
         run: |
-          for pair in "examples/hello-world.bp /tmp/py-hello-all" "examples/todo-api.bp /tmp/py-todo" "examples/auth-service.bp /tmp/py-auth" "examples/ecommerce-api.bp /tmp/py-ecommerce" "examples/realtime-chat.bp /tmp/py-chat"; do
+          for pair in "examples/hello-world.bp /tmp/py-hello-all" "examples/todo-api.bp /tmp/py-todo"; do
             src="${pair% *}"; dir="${pair#* }"
             echo "=== --target python: $src -> $dir ==="
             rm -rf "$dir"
@@ -177,7 +174,22 @@ jobs:
           sys.exit(err)
           PY
           done
-          echo "5/5 Python examples build + parse + idempotent"
+          if output=$(./bin/bp build examples/auth-service.bp --out /tmp/py-auth --target python 2>&1); then
+            echo "auth-service unexpectedly built despite unsupported authored tests"
+            exit 1
+          fi
+          echo "$output" | grep -q "authored tests and fixtures"
+          if output=$(./bin/bp build examples/ecommerce-api.bp --out /tmp/py-ecommerce --target python 2>&1); then
+            echo "ecommerce-api unexpectedly built despite unsupported named enum semantics"
+            exit 1
+          fi
+          echo "$output" | grep -q 'named `enum` declarations'
+          if output=$(./bin/bp build examples/realtime-chat.bp --out /tmp/py-chat --target python 2>&1); then
+            echo "realtime-chat unexpectedly built despite unsupported STREAM/WS semantics"
+            exit 1
+          fi
+          echo "$output" | grep -Eq '`STREAM` endpoints|`WS` endpoints'
+          echo "Supported Python examples build + parse + idempotent; unsupported semantics fail closed"
 
       - name: Build with --gen-tests (verify harness emits cleanly)
         # Exercises the contract-test + PGlite harness path so a regression in

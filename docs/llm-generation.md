@@ -1,280 +1,218 @@
 # LLM Generation
 
-Blueprint is designed to be **LLM-native**. The `@>` generation slot and `bp generate` command let you describe what code should do in natural language, and an LLM fills in the implementation.
+`bp generate` turns a quoted natural-language slot into Blueprint arrow
+statements. It is an opt-in source-rewrite tool: it updates `.bp` source, then
+the normal checker and code generators take over.
 
-## How It Works
+It does **not** generate a TypeScript/Python implementation file. Use a native
+`impl node` function or a declared external service when the work belongs in
+target-language code or another process.
 
-1. You write `@>` slots in `fn` blocks describing what the function should do
-2. Run `bp generate my-service.bp` to resolve all slots via the Anthropic API
-3. The LLM generates TypeScript implementations that match the function signature
-4. Use `--write` to write the resolved code back to your generated output
+## The workflow
 
----
+```text
+.bp with @> slot
+  -> bp generate (Anthropic returns Blueprint statements)
+  -> review the proposed source
+  -> bp generate --write (replace the slot in the .bp file)
+  -> bp check
+  -> bp diff / bp build
+```
 
-## Intent Annotations (`@`)
+Each slot is sent to the Anthropic Messages API. The request identifies the
+containing block and asks for a short sequence of valid Blueprint statements,
+such as `|>`, `guard`, `when`, or `->` lines.
 
-Every block can have an `@` intent annotation describing its purpose. These serve two roles:
+## Slot syntax
 
-1. **Human documentation** -- they explain what a block does
-2. **LLM context** -- they give the AI model context when generating code
+A slot is a direct arrow statement with a required quoted, single-line prompt:
 
 ```bp
-@ "Authenticate via API key and enforce monthly quota"
-middleware require_auth {
-  before {
-    |> guard header.X-API-Key -> 401 "Missing API key"
-    |> key = query api_key where(key_hash == hash(header.X-API-Key)) first
-    |> guard key -> 401 "Invalid API key"
-    |> inject key as auth
+@> "validate the input format and reject values longer than 200 characters"
+```
+
+Do not prefix it with `|>`, and do not write an unquoted multiline prompt.
+
+Optional hints follow the string using function-like syntax:
+
+```bp
+@> "load the user and reject suspended accounts" using(user) max_lines(3)
+```
+
+Hints are passed to the model as additional prompt text. They do not change the
+checker or code generator by themselves.
+
+### Where slots can appear
+
+`@>` is valid anywhere the parser expects an arrow statement, including:
+
+- HTTP, STREAM, and WebSocket handler bodies
+- pipe and middleware bodies
+- schedule, worker, and subscription bodies
+- test setup and cleanup bodies
+- a function's `logic { ... }` body
+
+A function cannot contain `@>` directly after its signature. Functions choose
+an implementation form (`impl ...`) or a `logic` body, so put the slot inside
+`logic`:
+
+```bp
+fn normalize_name {
+  <- value string
+  -> string
+
+  logic {
+    @> "trim whitespace and return the value in lowercase"
   }
 }
 ```
 
-Intent annotations are included in the generated code as comments and in OpenAPI descriptions.
-
----
-
-## Generation Slots (`@>`)
-
-The `@>` arrow marks a spot where the LLM should generate an implementation. Use it inside `fn` blocks:
+## Complete example
 
 ```bp
-fn summarize {
-  <- text string
+@ "A small service with two generation slots"
+blueprint "generation-demo" {
+  version "0.1.0"
+  port    3000
+  runtime node
+}
+
+fn normalize_name {
+  <- value string
   -> string
 
-  @> Summarize the given text in 2-3 sentences.
-     Use clear, professional language.
-     Preserve key facts and numbers.
+  logic {
+    @> "trim whitespace and return the value in lowercase"
+  }
+}
+
+POST /api/names {
+  <- name string required
+
+  @> "reject names longer than 200 characters with status 400"
+  |> normalized = normalize_name(name)
+
+  -> 200 { name: normalized }
 }
 ```
 
-The `@>` block is free-form text -- write a clear prompt describing the desired behavior.
+The generated response is expected to contain Blueprint statements, for
+example a `guard` replacing the endpoint slot and an output statement replacing
+the function slot. The exact response is nondeterministic and must be reviewed.
 
-### Guidelines for Good Generation Prompts
+## Preview without changing the file
 
-**Be specific about inputs and outputs:**
-
-```bp
-fn calculate_price {
-  <- plan       string
-  <- operations int
-  -> money
-
-  @> Calculate the price based on plan tier:
-     - free: always $0
-     - pro: $0.01 per operation
-     - enterprise: $0.005 per operation with $50 minimum
-     Return the total as a decimal number.
-}
-```
-
-**Include edge cases:**
-
-```bp
-fn parse_csv {
-  <- content string
-  -> json
-
-  @> Parse the CSV content into an array of objects.
-     The first row contains headers.
-     Handle quoted fields with commas inside them.
-     Return empty array if content is empty.
-     Trim whitespace from all values.
-}
-```
-
-**Reference the function signature:**
-
-The LLM receives the full function signature (inputs, output type) along with your prompt, so it knows the expected types.
-
----
-
-## Using `bp generate`
-
-### Prerequisites
-
-Set your Anthropic API key:
+Set the API key, then run the command without `--write`:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-api03-...
+export ANTHROPIC_API_KEY=sk-ant-...
+bp generate generation-demo.bp
 ```
 
-### Preview Mode (default)
+Blueprint reports how many slots it found, calls Anthropic once per slot, and
+prints the candidate updated Blueprint source. The input file is not modified.
+
+Preview mode is for human review. Its stdout includes progress text as well as
+the proposed source, so do not treat a simple shell redirect as a clean `.bp`
+file.
+
+## Write the replacements to source
 
 ```bash
-bp generate my-service.bp
+bp generate generation-demo.bp --write
 ```
 
-Prints the resolved implementations to stdout without modifying any files. Use this to review what the LLM generates before committing.
+`--write` replaces each source line containing an `@>` slot in
+`generation-demo.bp`. It does not write to `generated/` and does not create a
+file under `src/functions/`.
 
-### Write Mode
+Preview and write are separate model calls, so the write result may differ from
+the earlier preview. Keep the source under version control and inspect the
+actual edit.
+
+## Check, review, and build
+
+Treat generated statements like any other untrusted code change:
 
 ```bash
-bp generate my-service.bp --write
+# Validate the rewritten Blueprint
+bp check generation-demo.bp
+
+# Review the source edit
+git diff -- generation-demo.bp
+
+# Preview and then write generated-project changes
+bp diff generation-demo.bp --target node --out generated
+bp build generation-demo.bp --target node --out generated
+
+# Run generated tests when the service has them
+bp test generation-demo.bp --target node --out generated
 ```
 
-Writes the resolved code back to the generated output files. The implementation replaces the `@>` slot content in the corresponding `src/functions/<name>.ts` file.
+For Python output, use `--target python` with `bp diff`, `bp build`, or
+`bp test`. Generation itself is target-agnostic because it edits Blueprint
+source rather than target-language files.
 
-### What Gets Generated
+## Prompt-writing guidance
 
-For a function like:
+The generator asks the model for at most a few concise arrow statements. Prompts
+work best when they describe one Blueprint-level operation.
+
+Good prompts state:
+
+- the condition or data operation to express
+- the expected binding or output
+- an HTTP status and message for guard failures
+- relevant names already in scope
 
 ```bp
-fn watermark {
-  <- file     image/*
-  <- text     string
-  <- position string
-  <- opacity  float
-  -> file image/*
-
-  @> Apply a text watermark to the image at the given position
-     with the specified opacity. Use sharp or canvas.
-}
+@> "fetch the user by user_id and return 404 with message User not found when absent"
 ```
 
-The LLM generates a TypeScript implementation in `src/functions/watermark-impl.ts`:
-
-```typescript
-import sharp from 'sharp';
-
-export async function apply(
-  file: Buffer,
-  text: string,
-  position: string,
-  opacity: number,
-): Promise<Buffer> {
-  // LLM-generated implementation here
-}
-```
-
-The wrapper file `src/functions/watermark.ts` imports and calls this implementation.
-
----
-
-## Combining `@` and `@>`
-
-Use `@` for documentation and `@>` for generation together:
+Avoid prompts that require importing a library, inventing a new dependency, or
+writing a large algorithm:
 
 ```bp
-@ "Convert currency using live exchange rates"
-fn convert_currency {
-  <- amount   money
-  <- from     string
-  <- to       string
-  -> money
-
-  @> Fetch the current exchange rate from a free API
-     (e.g., exchangerate-api.com) and convert the amount.
-     Handle API errors gracefully.
-     Round the result to 2 decimal places.
-}
+@> "use Sharp to resize, watermark, optimize, upload, and index this image"
 ```
 
-The `@` annotation appears in OpenAPI docs and generated comments. The `@>` slot tells the LLM how to implement it.
-
----
-
-## Best Practices
-
-### 1. Keep Functions Focused
-
-One function, one job. Don't ask the LLM to generate a function that does 5 things.
+That work belongs behind a declared native function:
 
 ```bp
-# Good: focused function
-fn resize_image {
-  <- file   image/*
-  <- width  int
-  <- height int
-  -> file image/*
-
-  @> Resize the image to the target dimensions using sharp.
-     Maintain aspect ratio using "cover" fit.
-}
-
-# Bad: too many responsibilities
 fn process_image {
-  <- file image/*
-  -> json
-
-  @> Resize, watermark, compress, upload to S3, generate thumbnail,
-     and return metadata for all versions.
-}
-```
-
-### 2. Specify Libraries When Relevant
-
-```bp
-fn generate_pdf {
-  <- html string
-  -> file application/pdf
-
-  @> Convert the HTML to a PDF using puppeteer.
-     Use A4 paper size with 1cm margins.
-}
-```
-
-### 3. Define Error Behavior
-
-```bp
-fn validate_address {
-  <- address json
-  -> json
-
-  @> Validate the address using a geocoding API.
-     If the address is invalid, throw an error with message "Invalid address".
-     Return the normalized address with lat/lng coordinates.
-}
-```
-
-### 4. Use `impl` for Deterministic Logic
-
-If the logic is straightforward and doesn't need AI:
-
-```bp
-# Use impl for deterministic code
-fn hash_password {
-  <- password string
-  -> string
+  <- source file
+  -> result json
 
   impl node {
-    module: "./internal/auth"
-    func:   "hashPassword"
+    module: "./internal/images"
+    func:   "processImage"
   }
 }
-
-# Use @> for complex/creative logic
-fn generate_summary {
-  <- text string
-  -> string
-
-  @> Summarize the text in 2-3 clear sentences.
-}
 ```
 
----
+## Intent annotations are separate
 
-## LLM-Native Workflow
+`@ "..."` documents a block and can appear in generated comments or OpenAPI
+descriptions. `@> "..."` is a replaceable generation step. An intent annotation
+does not itself call the model, and the current generation prompt is built from
+the slot text, hints, and a short containing-block label rather than the entire
+source file.
 
-A typical workflow combining Blueprint's LLM features:
+## Current limitations
 
-```bash
-# 1. Write your service with @> slots for complex functions
-vim my-service.bp
+- `ANTHROPIC_API_KEY` is required; there is no offline generation mode.
+- The Anthropic model is selected by the tool; the CLI does not expose model or
+  temperature flags.
+- A slot occupies one source line. `--write` replaces that line with the model's
+  returned statements while preserving its leading indentation.
+- `bp check` can validate a source file that still contains a slot, but every
+  target's `bp build`/`bp diff` path rejects unresolved `@>` slots with codegen
+  exit code 4. Resolve them before generating a project.
+- Model output is not guaranteed to parse, pass semantic checks, or preserve
+  business intent. Always run `bp check` after writing.
+- Re-running generation on an unchanged file only processes `@>` slots that are
+  still present. Once a slot is replaced, it is no longer discoverable.
 
-# 2. Check for syntax/semantic errors
-bp check my-service.bp
-
-# 3. Build the base project
-bp build my-service.bp
-
-# 4. Generate implementations for @> slots
-bp generate my-service.bp --write
-
-# 5. Run and test
-bp test my-service.bp
-bp run my-service.bp
-```
-
-This workflow lets you declare the **what** (Blueprint syntax) and let the LLM fill in the **how** (TypeScript implementations).
+For deterministic native behavior, use `impl`. For target-neutral declarative
+behavior you can express directly, prefer writing a `logic` body yourself. Use
+`@>` when a reviewed, one-shot Blueprint source transformation is useful.

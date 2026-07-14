@@ -1,29 +1,66 @@
 # CLAUDE.md — orientation for Claude Code
 
-Blueprint is a Go toolchain that compiles a declarative `.bp` DSL into web-service
-projects (JS/Node via Hono+Drizzle+Zod; Python via FastAPI; an `effect` target is
-an early scaffold). Pipeline: Lexer → Parser → AST → Checker → resolve IR → Codegen.
+Blueprint is a Go compiler and developer toolchain for declarative `.bp`
+service definitions.
 
-## Read these first
-- **[AGENTS.md](./AGENTS.md)** — the canonical agent guide (architecture, codegen
-  patterns, known gaps, how to add commands/targets/tests).
-- **[SPEC.md](./SPEC.md)** — the language spec; the single source of truth.
-- **[BACKLOG.md](./BACKLOG.md)** — in-flight and planned work.
+```text
+.bp -> lexer -> parser/AST -> checker -> resolve facts
+    -> node | python | effect generator
+    -> OutputFile set -> manifest-aware writer
+```
 
-## Where things go (important)
-- **`docs/` is the published website.** `docs/.vitepress/` deploys to
-  **blueprint-lang.dev**, and every `.md` under `docs/` becomes a public page.
-  Put **user-facing reference docs** there — nothing else.
-- **Internal notes, reviews, experiments, and design spikes do NOT go in `docs/`**
-  (they would ship as public pages) and generally do **not** go in the repo at
-  all. They live in the maintainer's **Obsidian vault**. Use the `obsidian-cli`
-  skill to read/write them; organize under a `Blueprint/` folder there.
+The default Node target emits Hono + Drizzle + Zod. The Python target emits
+FastAPI + SQLAlchemy + Pydantic/Alembic and is an advanced beta. The Effect
+target is an experimental project/config scaffold and does not yet emit models
+or endpoints.
 
-## Verify before you call it done
+`bp generate` is separate from codegen: it asks Anthropic for Blueprint arrow
+statements and optionally replaces quoted `@> "..."` lines in the source `.bp`
+file. It does not generate TypeScript implementation files.
+
+## Read first
+
+- [AGENTS.md](./AGENTS.md) — architecture, output ownership, verified
+  limitations, and change workflows.
+- [docs/language-reference.md](./docs/language-reference.md) — published
+  language contract.
+- [docs/cli-reference.md](./docs/cli-reference.md) — command and exit-code
+  contract.
+- [BACKLOG.md](./BACKLOG.md) — in-flight and planned work.
+- `bp context [topic]` or `bp llms` — the command's embedded agent-facing
+  language, CLI, target, and workflow guidance.
+
+## Documentation boundary
+
+`docs/` is the source for the public site at **blueprint-lang.dev**. Put only
+user-facing tutorials, guides, reference, explanations, and public release
+notes there. Internal reviews, audit logs, experiments, and design spikes do
+not belong in that directory.
+
+The maintainer may keep internal notes in an Obsidian vault. Use an Obsidian
+integration only when it is available in the current environment and the
+maintainer has placed that vault in scope; otherwise ask where the note should
+go.
+
+## Verification
+
+Start with the affected package, then run the project gate:
+
 ```bash
-go test ./...                                   # all packages must pass
+go test ./...
 go build -o bin/bp ./cmd/bp
 ./bin/bp check testdata/valid/all_features.bp
-./bin/bp build testdata/valid/all_features.bp --out generated
-cd generated && bun install && bun run build    # generated TS must have 0 tsc errors
 ```
+
+For Node generator changes, also build and type-check the reference fixture:
+
+```bash
+./bin/bp build testdata/valid/all_features.bp --target node --out /tmp/blueprint-node
+cd /tmp/blueprint-node
+bun install
+bun run build
+```
+
+For Python or Effect changes, run the corresponding generator tests and build
+representative fixtures with `--target python` or `--target effect`. Preserve
+unrelated worktree changes and never overwrite user-owned generated stubs.

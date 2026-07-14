@@ -12,11 +12,12 @@ model item {
 }
 
 GET /api/items/:id {
-  <- id uuid required
+  <- id              uuid required
+  <- current_user_id uuid required
 
   |> item = fetch item(id)
-  |> guard item                       -> 404 "Item not found"
-  |> guard item.user_id == auth.id    -> 403 "Not your item"
+  |> guard item                            -> 404 "Item not found"
+  |> guard item.user_id == current_user_id -> 403 "Not your item"
 
   -> 200 {
     id:   item.id,

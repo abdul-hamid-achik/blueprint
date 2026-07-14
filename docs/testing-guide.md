@@ -1,11 +1,148 @@
-# Testing Guide
+# Testing Blueprint Services
 
-Blueprint has first-class support for integration tests. Write `test` blocks in your `.bp` file, and `bp test` compiles them to Vitest test files and runs them.
+Blueprint provides three complementary test paths:
 
-## Quick Start
+1. **Generated contract tests** come from endpoint declarations. They check
+   that routes boot, accept a representative request, and return a declared
+   status and response shape.
+2. **Authored `test { }` blocks** describe specific examples in `.bp` source.
+   The Node target emits them as Vitest files. The Python target rejects them
+   until it can translate them faithfully.
+3. **Generated property tests** are an opt-in Node layer. They use fast-check to
+   send deterministic, generated valid requests through supported REST routes
+   and accept only statuses the route can declare.
+
+| Target | Command | Runner | Database | Authored tests | Properties |
+|---|---|---|---|---|---|
+| Node (default) | `bp test service.bp` | Vitest | In-process PGlite | Supported subset described below | Opt in with `--gen-property-tests` |
+| Python | `bp test service.bp --target python` | pytest | Postgres testcontainer | Rejected; not translated yet | Rejected |
+
+## Quick start
+
+You do not need to write a test block to get a first signal. `bp test` enables
+contract-test generation automatically:
+
+```bash
+# Node: no external database or Docker required
+bp test examples/todo-api.bp
+
+# Python: requires uv and a running Docker daemon
+bp test examples/todo-api.bp --target python
+```
+
+To generate tests without running them, use `bp build --gen-tests`:
+
+```bash
+bp build service.bp --gen-tests
+bp build service.bp --target python --gen-tests
+bp build service.bp --gen-property-tests # Node; also emits contract tests
+```
+
+`bp diff` also accepts `--gen-tests` and `--gen-property-tests`, which is useful
+when reviewing how a source change affects generated suites.
+
+## Generated contract tests
+
+Blueprint creates one happy-path contract case per endpoint. Each case:
+
+- builds a representative request from the endpoint inputs;
+- seeds foreign-key parents and path-parameter records when needed;
+- calls the application without opening a network port;
+- accepts only statuses declared by the endpoint, its guards, and standard
+  validation/error fallbacks; and
+- checks the keys of successful object responses.
+
+These tests are deliberately structural. They catch broken routing,
+validation, imports, database wiring, and response contracts; they cannot infer
+all business rules. Add authored tests or hand-written tests for behavior that
+matters to your application.
+
+### Node harness
+
+```text
+generated/
+├── vitest.config.ts
+└── test/
+    ├── _harness/
+    │   ├── db.ts
+    │   ├── ddl.ts
+    │   └── setup.ts
+    └── generated/
+        └── <resource>.test.ts
+```
+
+The harness mocks `src/lib/db` with PGlite and resets every table between
+tests. `bp test service.bp` therefore needs neither `DATABASE_URL` nor a live
+Postgres server.
+
+### Python harness
+
+```text
+generated/
+└── tests/
+    ├── conftest.py
+    └── test_<resource>.py
+```
+
+The pytest harness starts `postgres:16-alpine` through
+`testcontainers[postgresql]`, creates the SQLAlchemy metadata once, and
+truncates tables between cases. Docker is required. `uv run` resolves the
+generated development dependencies before invoking pytest.
+
+Python contract tests cover generated endpoint contracts only. Blueprint
+`test`, `fixture`, and `test_group` declarations currently make Python codegen
+fail with an unsupported-feature error, which prevents a successful build from
+silently omitting them. Keep Python-specific tests in an external application
+test suite; generated output remains manifest-owned and may be replaced.
+
+## Generated property tests (Node)
+
+Use the same flag with `build`, `diff`, or `test`:
+
+```bash
+bp build service.bp --gen-property-tests
+bp diff service.bp --gen-property-tests
+bp test service.bp --gen-property-tests
+```
+
+The flag is Node-only, cannot be combined with `--frontend-only`, and implies
+`--gen-tests`. It adds `fast-check` and emits one
+`test/generated/<resource>.property.test.ts` file per REST resource. Each route
+uses a stable method/path-derived seed, runs 32 generated valid requests, and
+reports fast-check's seed/path for replay on failure. Database-backed projects
+reset PGlite before every generated request; database-free projects omit the DB
+harness and PGlite dependency.
+
+Arbitraries honor supported types and declared bounds: string/text/int/uuid
+path values; scalar or enum query values (including aliases resolving to
+those); and JSON-body primitives,
+named enums/aliases/structural types, lists, maps with string keys, and optional
+values. The assertion admits only
+statuses reachable from the route, guards, middleware, and `on_error`; it does
+not add a blanket 400 or 500 success case.
+
+Property mode fails closed for the whole source rather than silently omitting a
+route. Current unsupported surfaces include optional or unsupported path types,
+constraints with no generated valid value (including impossible path,
+email, or URL lengths), structural query values,
+file/MIME transport, auth/rate-limit/header-aware routes, ref-backed fields in
+`save`/`seed`/`update` blocks, reachable recursive inline `fn`/`pipe` call
+graphs, native or user implementation calls, and non-hermetic external HTTP,
+queue, storage, analytics, event, realtime, sleep, or wall-clock behavior.
+Ref-backed writes reject because each run starts from an empty database and the
+generator does not synthesize referenced parent rows. A source also needs at
+least one REST endpoint. This makes the generated suite an honest valid-request
+boundary check, not proof of business correctness or an adversarial
+invalid-input fuzzer.
+
+## Authored tests on the Node target
+
+An authored test has a target, an optional setup, one request, and expectations.
+The grammar also reserves a cleanup block, but the generated Node runner rejects
+nonempty cleanup until it can emit teardown faithfully:
 
 ```bp
-@ "Creating a todo returns 201"
+@ "Creating a todo returns its title"
 test create_todo {
   target POST /api/todos
 
@@ -23,616 +160,234 @@ test create_todo {
 }
 ```
 
+Run authored tests together with the generated contract suite:
+
 ```bash
-bp test todo-api.bp
-# Built todo-api.bp -> generated/
-# ✓ test/create-todo.test.ts (1)
-# Test Files 1 passed (1)
+bp test service.bp
 ```
 
----
+Before it builds, installs packages, or starts Vitest, `bp test` preflights
+every authored Node test. If a test uses a surface below that the emitter cannot
+preserve, the command exits with an actionable diagnostic and leaves the output
+directory untouched. `bp build --gen-tests` remains available when you intend
+to replace or supplement the emitted case with hand-written Vitest.
 
-## Test Block Structure
+### Current support boundary
+
+The parser accepts more test syntax than the Node generator implements. Use
+this table as the runtime contract:
+
+| Surface | Status in generated Vitest |
+|---|---|
+| `target METHOD /literal/path` | Supported |
+| `setup { ... }` | Only `seed`/`save` data writes and a simple unbound `log` are supported; all other statements/calls reject |
+| JSON `request { body { ... } }` | Supported for non-GET/HEAD targets; the lowercase `body` key may appear once |
+| `auth api_key(expr)` | Emits `X-API-Key` |
+| `auth bearer(expr)` / `auth jwt(expr)` | Emits `Authorization: Bearer …` |
+| `auth basic(expr)` | Emits the expression after `Basic`; Blueprint does not encode username/password pairs |
+| Request keys | Only lowercase `body` and `auth`, at most once each; calls and interpolation reject |
+| `request repeat(N)` | Supported only for positive `N`; `repeat(0)` rejects |
+| Custom request headers | `bp test` rejects before build; use hand-written Vitest |
+| Multipart/form-data, file inputs, or `fixture(...)` request values | `bp test` rejects before build; emitted authored bodies are JSON-only |
+| A target containing `:path` placeholders | `bp test` rejects; use a literal target path |
+| `cleanup { ... }` | `bp test` rejects because cleanup is not emitted yet |
+| `test_group` | Name grouping is accepted; nonempty `shared_setup` is rejected because it is not emitted |
+| `duration < …` | `bp test` rejects because no timing assertion is emitted |
+| Assertion forms | Must map to an executable emitter form with safe literal RHS values; see the table below |
+| Native `impl node`/`impl exec` dependency | Every dependency referenced by any app-loaded route, realtime/background/subscription, or middleware module must exist and be implemented; the check is not limited to the target route |
+
+Unsupported rows are fail-closed boundaries, not no-ops to rely on. Prefer a
+hand-written Vitest file when a case needs custom headers, multipart bodies, dynamic path
+parameters, per-test teardown, or precise timing.
+
+## Setup and database assertions
+
+Setup uses a deliberately narrow arrow subset: `seed`/`save` data writes may
+bind rows, and a simple unbound `log` is allowed. Those row bindings are hoisted
+so the request body and expectations can reference scalar fields. Every other
+setup statement or call is rejected before generation:
 
 ```bp
-@ "Description of what is being tested"
-test test_name {
-  target METHOD /path
+test create_second_item {
+  target POST /api/items
 
   setup {
-    # seed test data
+    |> existing = save item { name: "First" }
   }
 
   request {
-    # define the HTTP request
-  }
-
-  expect {
-    # assert on the response
-  }
-
-  cleanup {
-    # tear down test data
-  }
-}
-```
-
-### Sections
-
-| Section | Required | Purpose |
-|---------|----------|---------|
-| `target` | Yes | HTTP method and path to test |
-| `setup` | No | Seed data before the request |
-| `request` | Yes | Define the HTTP request (body, headers, auth) |
-| `expect` | Yes | Assert on response status, body, headers, timing, and database state |
-| `cleanup` | No | Remove seeded data after the test |
-
----
-
-## Seeding Test Data
-
-Use `seed` in the `setup` block to insert records before the test runs:
-
-```bp
-test update_user {
-  target PATCH /api/users/:id
-
-  setup {
-    |> user = seed user { name: "Alice", email: "alice@test.com" }
-  }
-
-  request {
-    body {
-      name: "Alice Updated",
-    }
-  }
-
-  expect {
-    status 200
-    body.name == "Alice Updated"
-  }
-
-  cleanup {
-    |> delete_all user
-  }
-}
-```
-
-Seeded variables (like `user`) are available in `request` and `expect` blocks. For example, the path `/api/users/:id` is resolved using the seeded `user.id`.
-
----
-
-## Request Configuration
-
-### Body
-
-```bp
-request {
-  body {
-    title: "My Item",
-    price: 999,
-    tags:  ["sale", "new"],
-  }
-}
-```
-
-### Authentication
-
-```bp
-# API key auth
-request {
-  auth api_key(key.key_hash)
-  body { ... }
-}
-
-# Bearer token
-request {
-  auth bearer(token.value)
-  body { ... }
-}
-
-# Basic auth
-request {
-  auth basic(user.name, user.password)
-  body { ... }
-}
-```
-
-### Custom Headers
-
-```bp
-request {
-  headers {
-    X-Custom-Header: "my-value",
-    Accept-Language: "en-US",
-  }
-  body { ... }
-}
-```
-
-### File Uploads
-
-Use `fixture()` to include files in the request:
-
-```bp
-fixture "sample.png" from "testdata/sample.png"
-
-test upload_image {
-  target POST /api/uploads
-
-  request {
-    body {
-      file:     fixture("sample.png"),
-      filename: "test-image.png",
-    }
+    body { name: "Second" }
   }
 
   expect {
     status 201
-    body.url is string
+    model item where(name == "Second") exists
   }
 }
 ```
 
----
+Do not use `delete_all`; it is not a Blueprint operation. The PGlite contract
+harness already truncates its tables between tests. `cleanup` syntax is
+reserved for future emitted teardown and should not be used as the only source
+of test isolation today.
 
-## Assertions
+## Request bodies and authentication
 
-### Status Code
+Authored requests currently emit JSON bodies:
 
 ```bp
-expect {
-  status 200          # exact match
-  status 201
-  status 4xx          # any 400-499
+request {
+  auth bearer(token)
+  body {
+    name: "Widget",
+    price: 999,
+  }
 }
 ```
 
-### Body Fields
+Request keys are case-sensitive: use lowercase `body` and `auth`, no more than
+once each. GET and HEAD targets cannot carry a body. Request values may not use
+function calls or string interpolation. Auth accepts a scalar literal or a
+scalar field such as `key.key_hash`; passing the entire setup row (`auth
+bearer(key)`) is rejected.
+
+For API-key middleware, a setup binding can feed the generated header:
 
 ```bp
-expect {
-  body.id is uuid           # type check
-  body.name is string
-  body.count is int
-  body.active is bool
-  body.url exists            # not null/undefined
+setup {
+  |> key = save api_key { key_hash: "test-key" }
+}
 
-  body.name == "Widget"      # equality
-  body.name != "wrong"       # inequality
-  body.count == 5
+request {
+  auth api_key(key.key_hash)
+  body { title: "Private item" }
 }
 ```
 
-### Headers
+This only configures the test request. Whether the application enforces that
+authentication depends on the middleware generated for the endpoint; see the
+[Language Reference](/language-reference) support notes.
+
+## Assertion reference
+
+| Blueprint assertion | Generated Vitest behavior |
+|---|---|
+| `status 200` | Exact status equality |
+| `status 4xx` | Status is between 400 and 499 |
+| `body.name == "value"` | Strict equality |
+| `body.name != "value"` | Strict inequality |
+| `body.id is uuid` | UUID-shaped string |
+| `body.name is string` | JavaScript type check |
+| `body.count is int` | JavaScript number check |
+| `body.active is bool` | JavaScript boolean check |
+| `body.value exists` | Value is defined |
+| `body.value not exists` | Value is undefined (`not_exists` is rejected) |
+| `header.Location == "/items/1"` | Response-header equality; hyphenated names such as `Content-Type` reject |
+| `model item where(name == "x") exists` | Drizzle query returns at least one row |
+| `model item where(name == "x") not exists` | Drizzle query returns no rows |
+| `last_status 429` | Last response from a repeated request has status 429 |
+| `duration < 2s` | `bp test` rejects; ordinary generated output contains only a TODO marker |
+
+Equality and inequality assertions require a literal RHS. String literals that
+contain an apostrophe, backslash, or newline are rejected because the current
+emitter cannot escape them safely. A test may contain at most one model
+assertion; additional model assertions would redeclare the generated `_row`
+binding and therefore fail preflight.
+
+## Repeated requests
+
+Use `repeat` for a small deterministic sequence, such as a rate-limit test:
 
 ```bp
-expect {
-  header.Content-Type == "application/json"
+test rate_limit {
+  target POST /api/items
+
+  request repeat(15) {
+    body { name: "Repeated" }
+  }
+
+  expect {
+    last_status 429
+  }
 }
 ```
 
-### Response Timing
+The count must be positive; `repeat(0)` is rejected.
 
-```bp
-expect {
-  duration < 2s       # parsed today; codegen emits a TODO marker
-}
-```
-
-### Database Side Effects
-
-Verify that a request created or modified database records:
-
-```bp
-expect {
-  # Check that a record matching the conditions exists
-  model job where(status == "done") exists
-  model job where(id == body.job_id, status == "done") exists
-}
-```
-
-This generates a database query that asserts at least one matching row exists.
-
----
+The generator sends requests sequentially and retains the final response for
+`last_status`.
 
 ## Fixtures
 
-Declare test data files for use in requests.
-
-### File Fixtures
+Blueprint parses file and generated fixtures:
 
 ```bp
-# Reference an actual file on disk
 fixture "sample.png" from "testdata/sample.png"
-```
-
-### Generated Fixtures
-
-```bp
-# Generate a binary blob of a specific type and size
 fixture "large.png" generated { type: "image/png", size: 15mb }
 ```
 
-### Usage
+The parser and ordinary `bp build --gen-tests` can represent file fixtures, but
+`bp test` rejects a `fixture(...)` request value because Blueprint neither
+copies source assets into the output tree nor emits multipart `FormData`.
+For file-upload tests today, write a Vitest test that constructs `FormData` and
+manages the fixture path explicitly.
 
-```bp
-request {
-  body {
-    file: fixture("sample.png"),
-  }
-}
-```
-
----
-
-## Load Testing
-
-Use `repeat` to run a test multiple times:
-
-```bp
-test load_test_create {
-  target POST /api/items
-
-  request repeat(100) {
-    body { title: "Load test item" }
-  }
-
-  expect {
-    status 201
-  }
-}
-```
-
-This generates a `for` loop that sends the request 100 times.
-
----
-
-## Test Strategies
-
-### Testing CRUD Endpoints
-
-Write a test for each operation:
-
-```bp
-@ "Create returns 201 with generated ID"
-test create_item {
-  target POST /api/items
-  request { body { name: "Widget", price: 999 } }
-  expect {
-    status 201
-    body.id is uuid
-    body.name == "Widget"
-  }
-}
-
-@ "Get returns 404 for non-existent item"
-test get_missing_item {
-  target GET /api/items/00000000-0000-0000-0000-000000000000
-  request {}
-  expect { status 404 }
-}
-
-@ "Delete removes the item"
-test delete_item {
-  target DELETE /api/items/:id
-  setup { |> item = seed item { name: "Temp", price: 100 } }
-  request {}
-  expect { status 204 }
-}
-```
-
-### Testing Authentication
-
-```bp
-@ "Unauthenticated request returns 401"
-test missing_auth {
-  target POST /api/process
-  request { body { input: "test" } }
-  expect { status 401 }
-}
-
-@ "Valid API key succeeds"
-test valid_auth {
-  target POST /api/process
-  setup { |> key = seed api_key { plan: "pro" } }
-  request {
-    auth api_key(key.key_hash)
-    body { input: "test" }
-  }
-  expect { status 200 }
-  cleanup { |> delete_all api_key }
-}
-```
-
-### Testing Validation
-
-```bp
-@ "Missing required field returns 400"
-test missing_title {
-  target POST /api/todos
-  request { body {} }
-  expect { status 4xx }
-}
-
-@ "Invalid email format rejected"
-test bad_email {
-  target POST /api/users
-  request { body { name: "Test", email: "not-an-email" } }
-  expect { status 4xx }
-}
-```
-
----
-
-## Auto-Generated Contract Tests
-
-You don't have to write a single `test` block to get coverage. Blueprint can
-emit a self-contained contract test suite directly from your endpoint
-definitions — one Vitest case per endpoint, grouped by resource.
-
-`bp test` always generates and runs this suite, and `bp build --gen-tests`
-writes it to disk so you can read or commit it.
+## Running the generated suites directly
 
 ```bash
-# Generate the suite (and the rest of the project) without running it
-bp build my-service.bp --gen-tests
-
-# Generate + run everything (this is what `bp test` does under the hood)
-bp test my-service.bp
-```
-
-The generated files are:
-
-```
-generated/
-  vitest.config.ts                  # registers the harness setup file
-  test/
-    _harness/
-      ddl.ts                        # CREATE TABLE DDL mirroring your models
-      db.ts                         # PGlite-backed drizzle db + resetDb()
-      setup.ts                      # dummy env so the app imports cleanly
-    generated/
-      <resource>.test.ts            # one describe block per route group
-```
-
-Each generated case:
-
-1. Mocks `src/lib/db` with an **in-memory Postgres (PGlite)** — no external
-   database, no Docker, nothing to start. `resetDb()` truncates every table
-   before each test for isolation.
-2. Seeds any rows a path param needs (e.g. it inserts a `todo` before hitting
-   `GET /api/todos/:id`), seeding `ref()` parents first.
-3. Sends the request with `app.request()` and asserts the response status is
-   **one of the statuses the endpoint and its middleware can declare** — its
-   outputs, guards, `400`/`500` fallbacks, and `401` when the route requires
-   auth.
-4. For `2xx` object responses, checks the body has every key your output block
-   declares.
-
-Assertions are deliberately lenient — a contract suite that never flakes is
-worth more than one that asserts business logic it can't predict. Use it as a
-safety net (every route boots, routes, validates, and returns a declared shape),
-and add hand-written `test` blocks for the behavior that matters.
-
-> The `--gen-tests` flag is available on `bp build` and `bp diff`. `bp test`
-> turns it on automatically, so you never pass it there.
-
----
-
-## Testing the Python Target
-
-`bp build --target python --gen-tests` emits a separate, runnable pytest suite
-backed by a real Postgres container (`testcontainers[postgresql]`) instead of
-the node target's in-memory PGlite harness — SQLite/PGlite's dialect drifts too
-far from Postgres FK/JSON/enum semantics to trust for contract-test signal, so
-the Python suite uses the real thing.
-
-```bash
-bp build my-service.bp --target python --gen-tests
-```
-
-### Suite layout
-
-```
-generated/
-  tests/
-    __init__.py
-    _harness/
-      __init__.py
-    conftest.py                # pg_container / engine / db / client fixtures
-    test_<resource>.py         # one contract test per endpoint, grouped by resource
-```
-
-`tests/conftest.py` provides four fixtures, each depending on the last:
-
-| Fixture | Scope | Purpose |
-|---------|-------|---------|
-| `pg_container` | session | Starts one `PostgresContainer("postgres:16-alpine")` for the whole run |
-| `engine` | session | A SQLAlchemy engine pointed at the container, with `Base.metadata.create_all` run once (bypasses Alembic so the suite is hermetic) |
-| `db` | function | A `Session` that `TRUNCATE`s every table before each test, for isolation |
-| `client` | function | A FastAPI `TestClient` with `get_db` overridden via `app.dependency_overrides` so every route uses the test session |
-
-Each generated `test_<resource>.py` case follows the same contract as the node
-suite: it seeds any FK parents a path param needs, sends the request, and
-asserts the response status is one of the statuses the endpoint (and its
-guards) can declare — deliberately lenient, the same "route stopped responding
-entirely" safety net described above.
-
-### Requirements and running it
-
-- **Docker is required** — `pg_container` needs a running Docker daemon to
-  start the Postgres container.
-- Run with:
-
-  ```bash
-  cd generated
-  uv sync && uv run pytest
-  ```
-
-### `bp test` is node-only
-
-Unlike `bp build`, which accepts `--target` for both `--gen-tests` paths,
-**`bp test` has no `--target` flag at all** — it always builds and runs the
-node/Vitest path. To run the Python suite, use `bp build --target python
---gen-tests` followed by `uv run pytest` directly as shown above; there is no
-`bp test --target python` shortcut today.
-
----
-
-## Running Tests
-
-### Run All Tests
-
-```bash
-bp test my-service.bp
-```
-
-`bp test` builds the project (with the auto-generated contract suite enabled),
-runs `bun install` if needed, then runs `bun run test`. That executes **both**
-your authored `test` blocks and the generated contract suite. Because the whole
-harness runs on in-memory PGlite, `bp test` needs **no `DATABASE_URL` and no
-running Postgres**.
-
-### Run from Generated Directory
-
-If you've already built **with the test harness** (`bp build --gen-tests`):
-
-```bash
+# Node contract suite (use --gen-property-tests for contract + properties)
+bp build service.bp --gen-tests
 cd generated
+bun install
 bun run test
-```
 
-### Watch Mode
-
-From the generated directory:
-
-```bash
+# Python
+bp build service.bp --target python --gen-tests
 cd generated
-bunx vitest --watch
+uv run pytest
 ```
 
----
-
-## Test Groups
-
-Group related tests together using `test_group`:
-
-```bp
-test_group auth_tests {
-  tests [login_success, login_wrong_password, missing_auth_header]
-}
-
-test_group crud_tests {
-  tests [create_item, get_item, update_item, delete_item]
-}
-```
-
-All referenced tests must be defined in the same file. The checker validates that every test name in the list exists.
-
----
-
-## Assertion Reference
-
-| Blueprint Assertion | Generated Vitest | Description |
-|---|---|---|
-| `status 200` | `expect(res.status).toBe(200)` | Exact status code |
-| `status 4xx` | `expect(res.status).toBeGreaterThanOrEqual(400)` | Status code range |
-| `body.name == "val"` | `expect(body.name).toBe('val')` | String equality |
-| `body.count == 5` | `expect(body.count).toBe(5)` | Numeric equality |
-| `body.name != "val"` | `expect(body.name).not.toBe('val')` | Inequality |
-| `body.id is uuid` | `expect(body.id).toMatch(/^[0-9a-f]{8}-...$/i)` | UUID format check |
-| `body.url is string` | `expect(typeof body.url).toBe('string')` | String type check |
-| `body.count is int` | `expect(typeof body.count).toBe('number')` | Number type check |
-| `body.active is bool` | `expect(typeof body.active).toBe('boolean')` | Boolean type check |
-| `body.url exists` | `expect(body.url).toBeDefined()` | Existence check |
-| `header.X == "val"` | `expect(res.headers.get('X')).toBe('val')` | Header check |
-| `duration < 2s` | TODO marker | Timing checks are not generated yet |
-| `model X where(...) exists` | Drizzle select + `toBeGreaterThan(0)` | Database record exists |
-| `last_status 429` | `expect(lastRes.status).toBe(429)` | Last status (with `repeat`) |
-
----
+Use `bunx vitest --watch` from a Node output directory for watch mode.
 
 ## Troubleshooting
 
-### Tests fail with "Cannot find module"
+### Node cannot find PGlite or Vitest
 
-Make sure you've installed dependencies in the generated directory:
+Rebuild with the harness and reinstall after `package.json` changes:
 
 ```bash
+bp build service.bp --gen-tests
 cd generated
 bun install
-```
-
-### Do my tests need a real Postgres?
-
-No. Under `bp test`, every test — both your authored `test` blocks and the
-auto-generated contract suite — runs against an **in-memory PGlite database**.
-Their `setup`, `seed`, `cleanup`, and `model ... exists` queries are routed to
-PGlite by mocking `src/lib/db`, so you don't need `DATABASE_URL` set or a
-Postgres server running.
-
-A real `DATABASE_URL` only matters when you run the *application* (`bun run
-dev`, `bun run start`) or run migrations against an actual database — not when
-you run tests.
-
-### Database tests fail with connection errors
-
-If you're running Vitest directly (`bunx vitest`) rather than through `bp test`,
-make sure you built **with the test harness**, otherwise the generated tests are
-absent and any DB import points at the real `src/lib/db`:
-
-```bash
-bp build my-service.bp --gen-tests
-cd generated
 bun run test
 ```
 
-### Seeded data persists between tests
+The `bp test` command performs this install check automatically.
 
-The PGlite harness truncates every table before each test, so the generated
-suite is always isolated. For your authored `test` blocks, add `cleanup` blocks
-to remove anything you seeded that another test might observe.
+### Python tests cannot connect to Docker
 
-### Fixture files not found
+Confirm Docker is running and that `docker ps` succeeds, then rerun:
 
-Fixture paths are relative to the `.bp` file. Ensure the testdata directory exists:
-
-```
-my-service.bp
-testdata/
-  sample.png
-  config.json
+```bash
+bp test service.bp --target python
 ```
 
----
+### A generated contract case accepts several statuses
 
-## How Tests Are Generated
+That is intentional. Contract tests verify declared behavior and response
+shape, not one inferred business outcome. Add an authored Node test or a
+hand-written target-specific test when one exact status is required.
 
-Each `test` block in your `.bp` file becomes a separate Vitest file in `test/<name>.test.ts`. The generated test:
+### Property generation rejects a route
 
-1. Imports the Hono app from `src/index.ts`
-2. Uses `app.request()` to send HTTP requests (no real server needed)
-3. Asserts on the response using Vitest's `expect()`
-4. Runs setup/cleanup and `model ... exists` queries against the database — under `bp test` that database is the in-memory PGlite harness, because the suite mocks `src/lib/db` (see [Auto-Generated Contract Tests](#auto-generated-contract-tests))
+The rejection is intentional: property mode will not claim coverage while
+skipping a route or invoking unproven external state. Remove
+`--gen-property-tests`, isolate the unsupported behavior behind a separately
+tested boundary, or add a hand-written property suite that supplies the
+required credentials and mocks.
 
-Example generated output:
+## Next steps
 
-```typescript
-import { describe, it, expect } from 'vitest';
-import app from '../src/index.js';
-
-describe('createTodo', () => {
-  it('create_todo', async () => {
-    const res = await app.request('/api/todos', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Buy milk' }),
-    });
-    const body = await res.json() as any;
-    expect(res.status).toBe(201);
-    expect(typeof body.id).toBe('string');
-    expect(body.title).toBe('Buy milk');
-  });
-});
-```
+- [CLI Reference](/cli-reference#bp-test) for command flags
+- [Generated Output](/generated-output) for the emitted project layout
+- [Production Readiness](/production-readiness) for current release gates

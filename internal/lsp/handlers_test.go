@@ -397,7 +397,7 @@ model widget {
 // TestServer_UnknownMethod_SendsMethodNotFoundError exercises the
 // "method not found" default branch of handleMessage/sendError.
 func TestServer_UnknownMethod_SendsMethodNotFoundError(t *testing.T) {
-	unknownMsg := jsonRPCMessage{JSONRPC: "2.0", ID: idPtr(1), Method: "textDocument/completion"}
+	unknownMsg := jsonRPCMessage{JSONRPC: "2.0", ID: idPtr(1), Method: "textDocument/doesNotExist"}
 	exitMsg := jsonRPCMessage{JSONRPC: "2.0", Method: "exit"}
 
 	var input strings.Builder

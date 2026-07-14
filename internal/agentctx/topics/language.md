@@ -16,6 +16,7 @@ model todo {
   title   string     required
   done    bool       default(false)
   created timestamp  default(now)
+  computed label string = title + "!"
 }
 
 GET /api/todos {
@@ -33,15 +34,15 @@ GET /api/todos {
 | `secret NAME required` | Declares an env-var dependency. Project fails to start if missing. |
 | `model X { fields }` | Database table. Generates schema + migration. |
 | `enum X { variant_a, variant_b }` | Named enum type. |
-| `type X = ...` | Type alias. |
-| `external "name" { ... }` | Declares an external service for `call` steps. |
+| `type X { fields }` | Named structured type. Use `alias X = ...` for an alias. |
+| `external "name" { ... }` | Declares an external service for `call` steps; Node supports env-backed auth and bounded immediate retries. |
 | `middleware X { before { ... } after { ... } }` | Request middleware. |
 | `fn X(<-input ...) -> output { logic { ... } } [impl ...]` | Pure or impure function. `impl` can be `node`/`python`/`exec`/`http`. |
 | `pipe X { logic { ... } }` | Reusable pipeline. |
 | `METHOD /path { meta + inputs + steps + outputs }` | HTTP route (GET/POST/PUT/PATCH/DELETE). |
-| `STREAM /path { ... }` | SSE endpoint (uses `EventSourceResponse`). |
-| `WS /path { on_connect { ... } on_message { ... } on_disconnect { ... } }` | WebSocket endpoint. |
-| `test "description" { ... }` | Authored Vitest/pytest test. |
+| `STREAM /path { ... }` | SSE endpoint on Node; currently rejected by Python codegen. |
+| `WS /path { on_connect { ... } on_message { ... } on_disconnect { ... } }` | WebSocket endpoint on Node; currently rejected by Python codegen. |
+| `test name { ... }` | Authored Node/Vitest test; Python rejects authored test blocks. |
 
 ## Type system
 
@@ -60,6 +61,14 @@ Primitives: `uuid`, `string`, `text`, `int`, `float`, `bool`, `timestamp`, `json
 | `auto` | Auto-bump on `update` (timestamp convention). |
 | `index` | Add an index. |
 
+Computed model fields use
+`computed <name> <string|text|int|float|money|bool> = <pure expression>`. They
+may reference required supported persisted fields and earlier computed fields
+through type-compatible literals/unary/binary operators. They are read-only
+and non-persisted; calls, optional fields, forward refs, assignment, computed
+keys in `save`/`seed`/`update`, and computed `where`/`order` columns reject.
+Node materializes them after DB operations, while Python and Effect reject them.
+
 ## Pipeline steps (`|>`)
 
 Every endpoint body, middleware `before`/`after`, and fn `logic` is a pipeline of `|>` steps.
@@ -67,7 +76,7 @@ Every endpoint body, middleware `before`/`after`, and fn `logic` is a pipeline o
 | Step | Shape | Meaning |
 |---|---|---|
 | `fetch <M>(id)` | Single record by id. |
-| `query <M> [where(...)] [order(...)] [paginate(p,pp)] [first]` | Collection / single / paginated. `where` supports `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `or`, `and`, and text-search shorthand (bare ident). |
+| `query <M> [where(...)] [with(...)] [order(...)] [paginate(p,pp)] [first]` | Collection / single / paginated. `where` supports `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `or`, `and`, and text-search shorthand. Node `with(author)` loads one level through `author_id ref(target)`. |
 | `save <M> { col: expr, ... }` | Insert. |
 | `update <M> { col: expr, ... }` | Update bound row or all matching. |
 | `delete <var-or-model>` | Delete row(s). |
@@ -85,6 +94,35 @@ Every endpoint body, middleware `before`/`after`, and fn `logic` is a pipeline o
 | `join room(id)` / `leave room(id)` | (WS) Join/leave a room. |
 | `call <service> GET /path` | External service call. |
 | `sleep <duration>` | Delay execution. |
+
+For Node external services, `auth` supports `bearer`, `jwt`, `basic`, or
+`api_key` with exactly one declared `secret.NAME` or `env.NAME`; generated code
+sets `Authorization` or `X-API-Key`. `retry N` means N additional immediate
+attempts for network/timeout failures and HTTP 408/429/5xx, with a fresh timeout
+for each attempt. Other 4xx responses are not retried, and malformed config
+fails before files are returned.
+
+On Python routes, supported GET/DELETE inputs become FastAPI `Query`,
+POST/PUT/PATCH inputs become embedded `Body`, and `header.X-Name` becomes an
+aliased `Header` parameter. `env.FIELD` must be backed by a declared secret or
+generated infrastructure setting. The target remains fail-closed for its
+documented unsupported declarations and expression/middleware shapes. Bare
+`query model where(q)` is text search only for a string/text endpoint input;
+dynamic filter accumulators and other bound values there are rejected. Field
+access on JSON/map inputs or JSON-returning function results also fails closed
+until Python can emit dictionary indexing. Direct header/env expressions work,
+but raw interpolation of header/env or dictionary-backed values rejects.
+
+Across Node and Python, declaring any model activates the full Postgres layer;
+`database postgres` with no models still emits an importable empty schema/Base.
+Blueprint settings are unique, and the checker validates the version/port and
+runtime/database/cache/storage value shapes before codegen.
+
+Node relationship loading is a nullable one-level LEFT JOIN on `query` only.
+Aliases, self joins, repeated target models, nested eager loading, dynamic or
+duplicate relationship names, field collisions, legacy positional/block query
+arguments, and `fetch ... with(...)` reject. Python and Effect reject
+`with(...)` before output.
 
 ## Endpoint inputs / outputs
 

@@ -162,7 +162,11 @@ func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache bool) codege
 		if s.Required {
 			fmt.Fprintf(&b, "    %s: str\n", s.Name)
 		} else {
-			fmt.Fprintf(&b, "    %s: Optional[str] = None\n", s.Name)
+			defaultValue := "None"
+			if value, ok := s.Default.(*ast.StringLit); ok {
+				defaultValue = pyStringLiteral(value.Value)
+			}
+			fmt.Fprintf(&b, "    %s: Optional[str] = %s\n", s.Name, defaultValue)
 		}
 	}
 	if hasDB && !declared["DATABASE_URL"] {

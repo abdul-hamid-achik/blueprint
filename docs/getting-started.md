@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Go 1.22+ (for building from source)
+- Go 1.25.5+ (only when building Blueprint from source)
 - Node.js 20+ (for running generated output)
 - [Bun 1.x](https://bun.sh) — `bp run`, `bp dev`, and the generated tooling use Bun by default (the Docker image is `oven/bun`). The generated `start` script is `tsx src/index.ts`, so you can also run it with `npm install && npm start` if you prefer Node.
 - PostgreSQL (for services with a database)
@@ -17,17 +17,11 @@ brew install abdul-hamid-achik/tap/bp
 
 ### Download a Release Binary
 
-Download the latest binary for your platform from the [releases page](https://github.com/abdul-hamid-achik/blueprint/releases), then move it to your PATH:
-
-```bash
-# macOS (Apple Silicon)
-curl -L https://github.com/abdul-hamid-achik/blueprint/releases/latest/download/bp_darwin_arm64.tar.gz | tar xz
-sudo mv bp /usr/local/bin/
-
-# Linux (amd64)
-curl -L https://github.com/abdul-hamid-achik/blueprint/releases/latest/download/bp_linux_amd64.tar.gz | tar xz
-sudo mv bp /usr/local/bin/
-```
+Download the archive for your release, operating system, and architecture from
+the [releases page](https://github.com/abdul-hamid-achik/blueprint/releases),
+extract `bp`, and place it on your `PATH`. Archive names include the release
+version (for example, `bp_<version>_Darwin_arm64`), so use the asset link shown
+on the release rather than a hard-coded `latest/download` URL.
 
 ### Build from Source
 
@@ -42,7 +36,6 @@ sudo mv bin/bp /usr/local/bin/
 
 ```bash
 bp version
-# bp version 0.11.0
 ```
 
 ## Your First Service

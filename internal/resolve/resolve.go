@@ -5,9 +5,10 @@
 // This is the first slice of the resolver/typed-IR work tracked in BACKLOG.md.
 // Today it produces per-block variable facts: for each ArrowStmt that binds a
 // variable from a data operation (or `map`), the resolver records the target
-// model and the result's cardinality (Single from `fetch`, Collection from
-// `query` without `paginate()` or from `map`, Paginated from `query` with
-// `paginate()`). Subsequent slices will move FK access, async-ness, and
+// model and the result's cardinality (Single from record-returning operations
+// such as `fetch`/`save`/`update`, Collection from `query` without
+// `paginate()` or from `map`, Paginated from `query` with `paginate()`).
+// Subsequent slices will move FK access, async-ness, and
 // `let`/`const` decisions out of the codegen heuristics into this package.
 //
 // Design constraints:
@@ -27,7 +28,8 @@ type Cardinality int
 const (
 	// UnknownCard means the resolver could not determine cardinality.
 	UnknownCard Cardinality = iota
-	// SingleCard is one record — produced by `fetch`.
+	// SingleCard is one record — produced by `fetch`, `save`, `seed`, and
+	// `update`, plus `query ... first`.
 	SingleCard
 	// CollectionCard is an unordered list of records — produced by `query`
 	// without `paginate()` and by `map(...)` aggregates.
@@ -45,6 +47,10 @@ type StepFact struct {
 	Model string
 	// Cardinality of the binding's value.
 	Cardinality Cardinality
+	// Relationships lists ref-backed names requested by query with(...), in
+	// source order. Their targets are validated by the checker and resolved by
+	// the target generator against the model declarations.
+	Relationships []string
 }
 
 // BlockFacts holds the resolved facts for a block of ArrowStmts (an endpoint
@@ -125,16 +131,47 @@ func recordStepFact(s *ast.StepStmt, b *BlockFacts) {
 	}
 	card := CollectionCard
 	switch {
-	case fn.Name == "fetch":
+	case fn.Name == "fetch" || fn.Name == "save" || fn.Name == "seed" || fn.Name == "update":
+		card = SingleCard
+	case fn.Name == "query" && queryIsFirst(fn):
 		card = SingleCard
 	case fn.Name == "query" && queryIsPaginated(fn):
 		card = PaginatedCard
 	}
 	b.DataOps = append(b.DataOps, StepFact{
-		Name:        s.Binding,
-		Model:       id.Name,
-		Cardinality: card,
+		Name:          s.Binding,
+		Model:         id.Name,
+		Cardinality:   card,
+		Relationships: queryRelationships(fn),
 	})
+}
+
+func queryIsFirst(fn *ast.FnCall) bool {
+	for _, arg := range fn.Args[1:] {
+		if ident, ok := arg.(*ast.Ident); ok && ident.Name == "first" {
+			return true
+		}
+	}
+	return false
+}
+
+func queryRelationships(fn *ast.FnCall) []string {
+	if fn.Name != "query" || len(fn.Args) < 2 {
+		return nil
+	}
+	var relationships []string
+	for _, arg := range fn.Args[1:] {
+		marker, ok := arg.(*ast.FnCall)
+		if !ok || marker.Name != "with" {
+			continue
+		}
+		for _, relationExpr := range marker.Args {
+			if relation, ok := relationExpr.(*ast.Ident); ok {
+				relationships = append(relationships, relation.Name)
+			}
+		}
+	}
+	return relationships
 }
 
 // isDataOp reports whether name is a Blueprint data operation. Kept in sync

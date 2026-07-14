@@ -83,7 +83,7 @@ func schemaImports(models []*ast.Model) []string {
 	sort.Strings(cols)
 	if needsForeignKey {
 		set["from sqlalchemy import "+strings.Join(append(cols, "ForeignKey"), ", ")] = true
-	} else {
+	} else if len(cols) > 0 {
 		set["from sqlalchemy import "+strings.Join(cols, ", ")] = true
 	}
 	if needsUUIDDefault {

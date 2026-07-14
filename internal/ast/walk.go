@@ -77,6 +77,10 @@ func Walk(node Node, v Visitor) {
 			return
 		}
 		walkFields(n.Fields, v)
+		for _, field := range n.ComputedFields {
+			walkTypeExpr(field.Type, v)
+			walkExpr(field.Expr, v)
+		}
 	case *Content:
 		if !v.VisitContent(n) {
 			return
@@ -165,9 +169,20 @@ func Walk(node Node, v Visitor) {
 		walkArrowStmts(n.Cleanup, v)
 
 	case *TestGroup:
-		v.VisitTestGroup(n)
+		if !v.VisitTestGroup(n) {
+			return
+		}
+		walkArrowStmts(n.SharedSetup, v)
 	case *Fixture:
-		v.VisitFixture(n)
+		if !v.VisitFixture(n) {
+			return
+		}
+		if n.Generated != nil {
+			walkBlockBody(n.Generated, v)
+		}
+		if n.SeedBody != nil {
+			walkBlockBody(n.SeedBody, v)
+		}
 
 	// Arrow statements
 	case *InputStmt:

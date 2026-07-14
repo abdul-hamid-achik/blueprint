@@ -59,7 +59,7 @@ bp check my-service.bp --json
 Compile a `.bp` file to a runnable project.
 
 ```bash
-bp build <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query] [--frontend-only] [--gen-tests] [--force]
+bp build <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--force]
 ```
 
 **Flags:**
@@ -67,10 +67,11 @@ bp build <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <dir>` | `generated/` | Output directory |
-| `--target <name>` | `node` | Codegen target. `node` emits Hono + Drizzle + Zod (production-ready, all examples). `python` emits FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (advanced — see "Python target status" below). `effect` emits TypeScript on Effect (experimental scaffold — project shell + secrets module; endpoint/model emit is still in design) |
+| `--target <name>` | `node` | Codegen target. `node` emits the Hono + Drizzle + Zod reference project. `python` emits FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (advanced beta — see "Python target status" below). `effect` emits TypeScript on Effect (experimental scaffold — project shell + secrets module; endpoint/model emit is still in design) |
 | `--react-query` | off | Generate `src/types/react-query.ts` and add TanStack React Query deps (node target only) |
 | `--frontend-only` | off | Emit only the standalone frontend contract package (node target only) |
 | `--gen-tests` | off | Generate contract + happy-path tests. **Node target:** Vitest suite under `test/generated/` with an in-memory (PGlite) database harness — runs with no external Postgres. **Python target:** pytest suite under `tests/` backed by `testcontainers[postgresql]` — Docker required, real Postgres per session, function-scoped TRUNCATE between tests |
+| `--gen-property-tests` | off | Node only. Generate deterministic fast-check valid-request properties and the contract suite (`--gen-tests` is implied). Unsupported or non-hermetic routes reject the whole build; nothing is silently skipped. Cannot be combined with `--frontend-only` |
 | `--force` | off | Overwrite a non-empty `--out` directory even if it has no `.blueprint/manifest.json`. Without it, `bp build` refuses to write into a foreign, non-empty directory it didn't create — see [Output directory safety](#output-directory-safety) below |
 
 ### Output directory safety
@@ -96,43 +97,64 @@ overwrite a foreign directory anyway.
 
 `--target python` is an advanced (not yet 1.0-gated) target tracked under the
 "Multi-target codegen progress" table in
-[docs/production-readiness.md](./production-readiness.md). All 5 shipped
-examples (`hello-world`, `todo-api`, `auth-service`, `ecommerce-api`,
-`realtime-chat`) compile end-to-end on `--target python` today.
+[docs/production-readiness.md](./production-readiness.md). Unsupported
+constructs fail codegen rather than being silently omitted; this includes the
+authored test blocks in `examples/auth-service.bp`.
 
 **Supported:**
 - Models, `database postgres` → SQLAlchemy 2.0 + Pydantic v2 + a full Alembic
-  skeleton.
+  skeleton. Like Node, Python follows the shared database-activation rule: a
+  model implies this layer even when `database` is omitted, and an explicit
+  database with no models still emits an importable empty `Base`.
 - Endpoint bodies: `save` / `fetch` / `update` / `delete` / `query` (with
-  `paginate(page, per_page)`, `first`, `order(col, dir)`, `where(col == val, ...)`
-  `==`-only predicates), `guard`, `when` block + inline form, `try`/`recover`,
+  `paginate(page, per_page)`, `first`, `order(col, dir)`, and `where(...)`
+  comparison/`in`/`or`/`and`/text-search/duration predicates), `guard`,
+  `when` block + inline form, `try`/`recover`,
   `map items: save M { ... }` (bound + unbound), `map items: update M { ... }`,
   FK access (`item.product.x` via cached `db.get` lookups), `log "msg"` →
   `print(f"...")`, `sum(...)`.
+- REST inputs preserve transport and validation: GET/DELETE values use FastAPI
+  `Query(...)`; POST/PUT/PATCH values use embedded JSON `Body(...)`; scalar
+  defaults and supported `min`/`max` constraints are emitted. Direct
+  `header.X-Name` references become valid `Header(..., alias="X-Name")`
+  parameters.
+- `secret` declarations generate Pydantic settings, including optional
+  defaults. `env.FIELD` expressions import those settings and are accepted only
+  when backed by a declared secret or a generated infrastructure setting such
+  as `DATABASE_URL`/`REDIS_URL`.
 - `fn` declarations (the same `impl node { module: ..., func: ... }` block used
   by the node target — there is no separate `impl python` syntax; the module
   path is reinterpreted under `src/impl/functions/` and the user fills in the
   Python side) and step calls to them.
-- `middleware` declarations → FastAPI `Depends(...)` dependencies.
-- `STREAM` endpoints (SSE via `sse-starlette`) and `WS` endpoints (FastAPI
-  WebSocket handshake) generate real routing/handshake code with a guarded
-  fetch prelude; the event body itself (message parsing, `on event(...)
-  where(...)` predicates, broadcast) emits as a commented TODO placeholder to
-  be filled in by hand. `cache redis` emits a working `src/lib/cache.py`.
+- `middleware` declarations → FastAPI `Depends(...)` dependencies for the
+  `fetch`, `log`, declared-function, `inject`, and `guard` step subset.
+- `cache redis` emits a working `src/lib/cache.py`.
 - `--gen-tests` — a pytest suite under `tests/` backed by
   `testcontainers[postgresql]` (Docker required). See
-  [Testing Guide](./testing-guide.md#testing-the-python-target).
+  [Testing Guide](./testing-guide.md#python-harness).
 
 **Still rejected** with a specific, actionable message (tracked under
 "Python target" in BACKLOG.md):
-- Top-level `storage`, `content`, `pipe`, `worker`, `schedule`, `subscribe`,
-  `external`, `state`, `analytics`, `save` (versioned save schemas),
-  `translation`, and `locale` declarations. None of the 5 shipped examples use
-  these, which is why all 5 still compile.
-- `query ... where(...)` predicates that aren't `==` (text search, `!=`, `<`,
-  `>`, `in`, function calls).
-- Step statements that aren't a data-op call — a bare expression or block
-  literal on the left of `|>` isn't translated.
+- Top-level `env`, named `type`/`alias`/`enum`, `storage`, `content`, `pipe`,
+  `worker`, `schedule`, `subscribe`, `external`, `state`, `analytics`, `save`
+  (versioned save schemas), `translation`, and `locale` declarations.
+- Authored `test`, `test_group`, and `fixture` declarations, plus inline
+  `fn logic` bodies. These are rejected until Python can preserve their
+  behavior; generated contract tests remain available through `--gen-tests`.
+- `STREAM` and `WS` endpoints, file/MIME and named endpoint inputs, middleware
+  configuration/`after` bodies, blueprint-level middleware, endpoint metadata
+  other than `use`, endpoint `on_error`, non-native fn implementation
+  strategies, richer middleware steps, explicit `like` predicates,
+  attribute access on JSON/map endpoint inputs or JSON-returning function
+  results, unknown value calls, unsafe or malformed native implementation
+  configuration, mismatched defaults or
+  constraints, Python-keyword generated names, bare `where(q)` where `q` is not
+  a string/text endpoint input (including dynamic filter accumulators), and any
+  raw string interpolation of header/env or dictionary-backed values. Direct
+  `header.X`/declared `env.X` expressions remain supported. Any future
+  expression shape without an explicit Python translation also rejects.
+- Model `computed` fields and `query ... with(...)` relationship loading. These
+  currently have a Node emitter only.
 
 Generated layout: `pyproject.toml` (uv), `src/app.py`, `src/lib/{env,db}.py`
 (plus `src/lib/cache.py` when `cache redis` is declared),
@@ -156,6 +178,9 @@ bp build my-service.bp --react-query
 
 bp build my-service.bp --frontend-only --react-query --out web-contract
 # Emits only the standalone frontend package in web-contract/
+
+bp build my-service.bp --gen-property-tests
+# Emits contract tests plus deterministic *.property.test.ts suites (Node only)
 ```
 
 Runs `check` first — exits on errors before generating any output.
@@ -265,19 +290,38 @@ bp dev my-service.bp --out generated
 
 ## `bp test`
 
-Build and run the Vitest test suite.
+Build and run the generated contract test suite for Node or Python.
 
 ```bash
-bp test <file.bp> [--out <dir>] [--force]
+bp test <file.bp> [--out <dir>] [--target <name>] [--gen-property-tests] [--force]
 ```
 
-Compiles the service (including test files), then runs `bun run test` in the output directory.
+`node` is the default: Blueprint compiles the service, enables the generated
+PGlite harness, installs dependencies when needed, and runs `bun run test`.
+With `--target python`, Blueprint emits the pytest/testcontainers harness and
+runs `uv run pytest` in the output directory.
 
-`bp test` enables `--gen-tests` automatically, so every endpoint gets a contract +
-happy-path test backed by an in-memory PGlite database. Tests run with **no external
-Postgres** — the generated harness mocks `src/lib/db` with an in-process instance and
-seeds foreign-key parents as needed. Hand-written `test { }` blocks run alongside the
-generated suite.
+`bp test` enables contract-test generation automatically. On Node, every
+endpoint gets a happy-path test backed by in-process PGlite, so no external
+Postgres is required; supported authored `test { }` blocks run alongside it.
+Before building or installing anything, Node preflights authored tests and
+rejects unimplemented cleanup, multipart/file fixtures, custom request entries,
+dynamic target paths, duration assertions, ignored shared setup, and missing
+reachable native implementations. Python uses a real Postgres testcontainer
+for dialect fidelity, so Docker must be running.
+Python currently runs the generated contract suite only. Because authored
+Blueprint `test`, `test_group`, and `fixture` declarations are not translated,
+the Python generator rejects a source file containing them instead of silently
+dropping the tests.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out <dir>` | `generated/` | Generated project directory |
+| `--target <name>` | `node` | `node` (Vitest + PGlite) or `python` (pytest + testcontainers) |
+| `--gen-property-tests` | false | Node only. Also emit and run deterministic fast-check properties; implies the generated contract suite and fails closed on unsupported routes |
+| `--force` | false | Allow a non-empty output directory without a Blueprint manifest |
 
 **Example:**
 
@@ -287,6 +331,13 @@ bp test my-service.bp
 # ✓ test/generated/todos.test.ts (5)
 # ✓ test/watermark-success.test.ts (1)
 # Test Files 2 passed (2)
+
+# Node contract tests plus deterministic valid-request properties
+bp test my-service.bp --gen-property-tests
+
+# Python (requires uv and Docker)
+bp test my-service.bp --target python
+# Running pytest in generated (Docker required for Postgres testcontainers)...
 ```
 
 ---
@@ -502,13 +553,55 @@ If `name` is omitted, uses the current directory name.
 
 ---
 
+## `bp import`
+
+Create a review scaffold from static TypeScript structure.
+
+```bash
+bp import [path] --from ts [--out <file.bp>] [--name <name>] [--force]
+```
+
+`path` defaults to the current directory and may be one TypeScript file or a
+directory. The only supported source kind is `ts`/`typescript`. The scaffolder
+recognizes conservative, static forms of:
+
+- Drizzle `pgTable` and inline `pgEnum` declarations;
+- Hono `GET`/`POST`/`PUT`/`PATCH`/`DELETE` route calls and static `basePath`;
+- named inline Zod object schemas referenced by static, transport-compatible
+  `zValidator` calls on those routes.
+
+It is not a transpiler. No handler body is inspected or lifted into Blueprint
+steps. Every imported route contains an explicit `TODO(import)` and returns
+501; stderr prints a per-handler fidelity report plus warnings for skipped,
+renamed, dynamic, duplicate, or otherwise unsupported structure. Hono router
+mounts are not flattened, and dynamic/wildcard routes are skipped. Nullable or
+type-changing Zod fields are skipped because Blueprint cannot preserve their
+semantics. Static SQL column names are retained when representable; SQL/property
+renames, dynamic SQL names, and dropped Drizzle builder/table/reference options
+are reported as fidelity warnings.
+
+Without `--out`, the `.bp` scaffold is printed to stdout. `--out` writes a file
+atomically and refuses to replace it unless `--force` is present. Directory
+scans ignore dependency/build folders and `.d.ts` files.
+
+```bash
+bp import ./src --from ts --name "Billing API" --out billing.bp
+bp check billing.bp
+```
+
+Passing `bp check` confirms only that the scaffold is valid Blueprint. It does
+not prove that the original service behavior was preserved; restore and test
+every TODO manually.
+
+---
+
 ## `bp version`
 
 Print the installed Blueprint version.
 
 ```bash
 bp version
-# bp version 0.11.0
+# bp version <installed-version>
 ```
 
 ---
@@ -558,7 +651,7 @@ line-level unified diff per modified file (`---`/`+++`/`@@` hunks), plus
 new and deleted file summaries.
 
 ```bash
-bp diff <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query] [--frontend-only] [--gen-tests] [--apply] [--exit-code] [--no-color]
+bp diff <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply] [--exit-code] [--no-color]
 ```
 
 The codegen manifest (`.blueprint/manifest.json`) is suppressed from output — its
@@ -576,6 +669,7 @@ Shells out to `diff -u` for the unified patch.
 | `--react-query` | off | Compare as if `bp build --react-query` were used |
 | `--frontend-only` | off | Compare as if `bp build --frontend-only` were used |
 | `--gen-tests` | off | Compare as if `bp build --gen-tests` were used |
+| `--gen-property-tests` | off | Node only. Compare output including deterministic property and implied contract suites; rejects unsupported routes just like `bp build` |
 | `--apply` | off | After showing the diff, actually write the changes (equivalent to running `bp build` afterwards) |
 | `--exit-code` | off | Exit `1` if there are any changes — useful in CI / pre-commit hooks |
 | `--no-color` | off | Disable ANSI color in diff output |
@@ -669,17 +763,20 @@ bp doctor
 ```
 
 Verifies that required tools are installed and accessible:
-- Go (for building from source)
-- Node.js and Bun
-- Docker (optional)
-- PostgreSQL client (optional)
-- Redis client (optional)
+- Go and Git
+- Node.js, npm, Bun, TypeScript, and Drizzle Kit
+- Python, uv, Alembic, and pytest
+- Docker, PostgreSQL client, and Redis client
+
+Most probes are informational because the exact requirements depend on the
+selected target. The command exits successfully when it finds either Bun or
+Node.js plus npm for the default Node workflow.
 
 **Example:**
 
 ```bash
 bp doctor
-# ✓ Go 1.22.0
+# ✓ Go 1.25.5
 # ✓ Node.js 20.5.0
 # ✓ Bun 1.2.0
 # ✓ Docker 24.0.7
@@ -720,21 +817,29 @@ bp lsp
 ```
 
 Provides IDE support for Blueprint files:
+
 - Syntax + semantic error diagnostics (`publishDiagnostics`, with structured codes)
 - Context-aware hover (models, `fn`/`pipe`/`middleware`, fields, `@` intents, data-op steps)
 - Go-to-definition (`textDocument/definition` — model, `fn`/`pipe`/`middleware`, and `<model>.<field>` references)
-- Autocomplete (planned)
+- Context-aware completion for declarations, types, constraints, settings,
+  middleware, data operations, local bindings, fields, env/secret names,
+  computed expressions, and ref-backed `with(...)` relationships
+- Workspace symbol search across local `.bp` files in initialized workspace
+  folders
 
-Configure your editor to use `bp lsp` for `.bp` files.
+Configure an LSP-capable editor client to launch `bp lsp` for `.bp` files over
+standard input/output. The packaged client in `editors/vscode-blueprint`
+launches it automatically and exposes `blueprint.server.path`,
+`blueprint.server.args`, and **Blueprint: Restart Language Server**. Neovim and
+other editors that support custom stdio language servers can point their client
+command directly at `bp lsp`.
 
-**Example (VS Code settings.json):**
-
-```json
-{
-  "blueprint.languageServer.path": "bp",
-  "blueprint.languageServer.args": ["lsp"]
-}
-```
+Current limits are deliberate: synchronization is full-document, completion
+uses the open document's parser/source context and has no resolve request,
+workspace symbols scan local `file:` roots only, and rename/references/code
+actions are not implemented. Workspace scanning ignores common dependency,
+generated, build, virtual-environment, and VCS directories; an unsaved open
+document takes precedence over its on-disk copy.
 
 ---
 

@@ -4,6 +4,7 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const siteUrl = 'https://blueprint-lang.dev'
 
 // Load the custom Blueprint TextMate grammar for syntax highlighting
 const bpGrammar = JSON.parse(
@@ -11,21 +12,49 @@ const bpGrammar = JSON.parse(
 )
 
 export default defineConfig({
+  lang: 'en-US',
   title: 'Blueprint',
-  description: 'A declarative language for web services',
+  description: 'Describe a web service once, then compile it into a typed, runnable project you can inspect, extend, and own.',
 
   // Clean URLs without .html extension
   cleanUrls: true,
+  lastUpdated: true,
+  router: {
+    // The reference pages are large; avoid fetching them before a reader asks.
+    prefetchLinks: false,
+  },
+  sitemap: {
+    hostname: siteUrl,
+  },
 
   // Head metadata
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
-    ['meta', { name: 'theme-color', content: '#2563EB' }],
-    ['meta', { name: 'og:type', content: 'website' }],
-    ['meta', { name: 'og:title', content: 'Blueprint' }],
-    ['meta', { name: 'og:description', content: 'A declarative language for web services' }],
-    ['meta', { name: 'og:image', content: '/logo.svg' }],
+    ['meta', { name: 'theme-color', media: '(prefers-color-scheme: light)', content: '#F6F7F4' }],
+    ['meta', { name: 'theme-color', media: '(prefers-color-scheme: dark)', content: '#11141A' }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:site_name', content: 'Blueprint' }],
+    ['meta', { property: 'og:image', content: `${siteUrl}/logo.svg` }],
+    ['meta', { property: 'og:image:alt', content: 'Blueprint directional pipe mark' }],
+    ['meta', { name: 'twitter:card', content: 'summary' }],
+    ['meta', { name: 'twitter:image', content: `${siteUrl}/logo.svg` }],
   ],
+
+  transformHead({ pageData, title, description }) {
+    const path = pageData.relativePath
+      .replace(/(^|\/)index\.md$/, '$1')
+      .replace(/\.md$/, '')
+    const canonicalUrl = `${siteUrl}/${path}`
+
+    return [
+      ['link', { rel: 'canonical', href: canonicalUrl }],
+      ['meta', { property: 'og:url', content: canonicalUrl }],
+      ['meta', { property: 'og:title', content: title }],
+      ['meta', { property: 'og:description', content: description }],
+      ['meta', { name: 'twitter:title', content: title }],
+      ['meta', { name: 'twitter:description', content: description }],
+    ]
+  },
 
   // Markdown configuration
   markdown: {
@@ -43,7 +72,8 @@ export default defineConfig({
     logo: {
       light: '/logo.svg',
       dark: '/logo-dark.svg',
-      alt: 'Blueprint',
+      // The visible site title already names this home link.
+      alt: '',
     },
     siteTitle: 'Blueprint',
 
@@ -72,6 +102,8 @@ export default defineConfig({
         items: [
           { text: 'Language Reference', link: '/language-reference' },
           { text: 'CLI Reference', link: '/cli-reference' },
+          { text: 'Error Codes', link: '/error-codes' },
+          { text: 'Codegen Targets', link: '/multi-target-codegen' },
         ],
       },
       {
@@ -86,9 +118,11 @@ export default defineConfig({
         ],
       },
       {
-        text: 'Contributing',
+        text: 'Project',
         items: [
+          { text: 'Production Readiness', link: '/production-readiness' },
           { text: 'Architecture', link: '/architecture' },
+          { text: 'Package Registry (RFC)', link: '/package-registry' },
           { text: 'Roadmap', link: '/roadmap' },
           { text: 'Changelog', link: '/changelog' },
         ],
@@ -109,6 +143,13 @@ export default defineConfig({
     footer: {
       message: 'Released under the MIT License.',
       copyright: 'Copyright 2024-2026 Blueprint contributors',
+    },
+
+    lastUpdated: {
+      text: 'Last updated',
+      formatOptions: {
+        dateStyle: 'medium',
+      },
     },
 
     // Edit link

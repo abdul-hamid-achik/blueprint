@@ -85,9 +85,8 @@ top-level constructs at all (empty file).
 
 ### P002 — control-flow keyword in step position
 
-Blueprint has no `if`/`else`, `for`, `while`, or `switch` — the "flat by
-force" / "no if/else" / "no loops" rules in SPEC.md §1.3 replace branching
-with `guard`/`when` and iteration with `map`. Using one of these keywords as
+Blueprint has no `if`/`else`, `for`, `while`, or `switch` — its flat control-flow
+rules replace branching with `guard`/`when` and iteration with `map`. Using one of these keywords as
 the first token of a step (right after `|>`) is the most common mistake for
 anyone coming from JS/Python, so it gets a dedicated diagnostic instead of a
 generic syntax error:

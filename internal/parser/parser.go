@@ -23,8 +23,7 @@ const (
 	CodeMissingBlueprint = "P001"
 
 	// CodeControlFlowKeyword flags an if/else/for/while/switch keyword found
-	// in statement/step position. Blueprint has neither if/else nor loops
-	// (SPEC.md's "flat by force" / "no if/else" / "no loops" rules) — use
+	// in statement/step position. Blueprint has neither if/else nor loops — use
 	// guard/when for branching and map for iteration instead. See P002 in
 	// docs/error-codes.md.
 	CodeControlFlowKeyword = "P002"
@@ -669,12 +668,36 @@ func (p *Parser) parseModel(intent *ast.Intent) *ast.Model {
 	m := &ast.Model{Loc: loc, Intent: intent, Name: name}
 
 	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
+		if p.check(lexer.TokenIdent) && p.peek().Value == "computed" {
+			if !p.computedFieldHasAssignment() {
+				panic(ParseError{
+					Loc:     p.peek().Loc,
+					Message: "model field name 'computed' is reserved for computed declarations",
+					Hint:    "Rename the persisted field, or use: computed <name> <type> = <expression>",
+				})
+			}
+			m.ComputedFields = append(m.ComputedFields, p.parseComputedField())
+			continue
+		}
 		f := p.parseField()
 		m.Fields = append(m.Fields, f)
 	}
 
 	p.expect(lexer.TokenRBrace)
 	return m
+}
+
+func (p *Parser) computedFieldHasAssignment() bool {
+	line := p.peek().Loc.Line
+	for offset := 1; ; offset++ {
+		token := p.peekAt(offset)
+		if token.Kind == lexer.TokenEOF || token.Kind == lexer.TokenRBrace || token.Loc.Line != line {
+			return false
+		}
+		if token.Kind == lexer.TokenAssign {
+			return true
+		}
+	}
 }
 
 func (p *Parser) parseContent(intent *ast.Intent) *ast.Content {
@@ -1551,61 +1574,40 @@ func (p *Parser) parseDataOperation() ast.Expr {
 		args = append(args, block)
 	}
 
-	// Optional where(...) — wrapped in a marker FnCall for codegen
-	if p.check(lexer.TokenWhere) {
-		whereLoc := p.peek().Loc
-		p.advance()
-		p.expect(lexer.TokenLParen)
-		var whereArgs []ast.Expr
-		for !p.check(lexer.TokenRParen) && !p.atEnd() {
-			whereArgs = append(whereArgs, p.parseExpr())
-			if p.check(lexer.TokenComma) {
-				p.advance()
-			}
+	// Data-operation modifiers are order-independent. The checker owns
+	// duplicate/operation-specific validation; the parser preserves source
+	// order so formatting and downstream resolution remain deterministic.
+	for {
+		switch {
+		case p.check(lexer.TokenWhere):
+			args = append(args, p.parseDataOperationMarker("where"))
+		case p.check(lexer.TokenOrder):
+			args = append(args, p.parseDataOperationMarker("order"))
+		case p.check(lexer.TokenPaginate):
+			args = append(args, p.parseDataOperationMarker("paginate"))
+		case p.check(lexer.TokenIdent) && p.peek().Value == "with" && p.peekAt(1).Kind == lexer.TokenLParen:
+			args = append(args, p.parseDataOperationMarker("with"))
+		case p.check(lexer.TokenFirst):
+			firstLoc := p.advance().Loc
+			args = append(args, &ast.Ident{Loc: firstLoc, Name: "first"})
+		default:
+			return &ast.FnCall{Loc: loc, Name: op, Args: args[1:]}
 		}
-		p.expect(lexer.TokenRParen)
-		args = append(args, &ast.FnCall{Loc: whereLoc, Name: "where", Args: whereArgs})
 	}
+}
 
-	// Optional order(...) — wrapped in a marker FnCall for codegen
-	if p.check(lexer.TokenOrder) {
-		orderLoc := p.peek().Loc
-		p.advance()
-		p.expect(lexer.TokenLParen)
-		var orderArgs []ast.Expr
-		for !p.check(lexer.TokenRParen) && !p.atEnd() {
-			orderArgs = append(orderArgs, p.parseExpr())
-			if p.check(lexer.TokenComma) {
-				p.advance()
-			}
+func (p *Parser) parseDataOperationMarker(name string) *ast.FnCall {
+	loc := p.advance().Loc
+	p.expect(lexer.TokenLParen)
+	var markerArgs []ast.Expr
+	for !p.check(lexer.TokenRParen) && !p.atEnd() {
+		markerArgs = append(markerArgs, p.parseExpr())
+		if p.check(lexer.TokenComma) {
+			p.advance()
 		}
-		p.expect(lexer.TokenRParen)
-		args = append(args, &ast.FnCall{Loc: orderLoc, Name: "order", Args: orderArgs})
 	}
-
-	// Optional paginate(...) — wrapped in a marker FnCall for codegen
-	if p.check(lexer.TokenPaginate) {
-		pagLoc := p.peek().Loc
-		p.advance()
-		p.expect(lexer.TokenLParen)
-		var pagArgs []ast.Expr
-		for !p.check(lexer.TokenRParen) && !p.atEnd() {
-			pagArgs = append(pagArgs, p.parseExpr())
-			if p.check(lexer.TokenComma) {
-				p.advance()
-			}
-		}
-		p.expect(lexer.TokenRParen)
-		args = append(args, &ast.FnCall{Loc: pagLoc, Name: "paginate", Args: pagArgs})
-	}
-
-	// Optional first
-	if p.check(lexer.TokenFirst) {
-		p.advance()
-		args = append(args, &ast.Ident{Loc: p.peek().Loc, Name: "first"})
-	}
-
-	return &ast.FnCall{Loc: loc, Name: op, Args: args[1:]}
+	p.expect(lexer.TokenRParen)
+	return &ast.FnCall{Loc: loc, Name: name, Args: markerArgs}
 }
 
 func (p *Parser) parseCallOperation() ast.Expr {
@@ -2214,6 +2216,14 @@ func (p *Parser) parseField() *ast.Field {
 	}
 
 	return f
+}
+
+func (p *Parser) parseComputedField() *ast.ComputedField {
+	loc := p.advance().Loc // contextual `computed` keyword
+	name := p.expectIdent()
+	typ := p.parseTypeExpr()
+	p.expect(lexer.TokenAssign)
+	return &ast.ComputedField{Loc: loc, Name: name, Type: typ, Expr: p.parseExpr()}
 }
 
 func (p *Parser) parseConstraint() *ast.Constraint_ {

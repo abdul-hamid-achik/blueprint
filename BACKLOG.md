@@ -9,6 +9,71 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
 
 ## Now
 
+- [~] **Checker soundness.** Unbound/use-before-bind names, unknown data models,
+  invalid lexical-scope leaks, accidental runtime globals, interpolation roots,
+  duplicate declarations/local bindings/inputs, callable arity, reserved
+  builtin names, direct model-field typos, and duplicate enum variants now fail
+  with source diagnostics. Duplicate blueprint settings, non-string versions,
+  invalid ports, and malformed runtime/database/cache/storage values also fail
+  before generators can fall back to defaults. Valid query fields, explicit
+  REST/realtime path values, local middleware injections, input reassignment,
+  and implicit map results remain accepted. Remaining: deeper nested JSON/FK
+  leaf typing and general assignability. _(partially shipped 2026-07-14)_
+- [x] **Fail closed when a target cannot preserve semantics.** Effect rejects
+  every unimplemented top-level AST kind. Python now uses an exhaustive
+  declaration allowlist, rejects authored tests/fixtures, inline `fn logic`,
+  STREAM/WS handler bodies, unsupported blueprint/endpoint metadata and input
+  types, and middleware configuration/`after` bodies, and translates every
+  currently parsed expression literal instead of emitting TODO fallbacks.
+  It also rejects undeclared env access and attribute access on JSON/map
+  endpoint inputs or JSON-returning function results, plus unknown value calls,
+  unsafe native implementation configuration, mismatched defaults/constraints,
+  Python-keyword generated names, and bare `where(q)` values that are not
+  string/text endpoint inputs (dynamic filter accumulators are not translated
+  yet). Raw interpolation of `header.X`, `env.X`, or dictionary-backed values
+  is rejected even though direct header/env expressions are supported. Invalid
+  `sum(...)` shapes fail before files are returned. _(shipped
+  2026-07-14)_
+- [x] **Keep database activation consistent across targets.** On both Node and
+  Python, declaring any model now activates the complete Postgres dependency,
+  env, schema, and migration layer even when `database` is omitted. An explicit
+  `database postgres` with zero models emits an importable empty schema/Base
+  instead of broken migration imports. _(shipped 2026-07-14)_
+- [x] **External auth/retry correctness.** Node external services now accept
+  `bearer`/`jwt`/`basic`/`api_key` auth with exactly one declared
+  `secret.NAME` or `env.NAME`, emit the appropriate env-backed request header,
+  and reject malformed or undeclared credentials before returning files.
+  `retry N` means N additional immediate attempts, each with a fresh timeout,
+  for network/timeout failures and HTTP 408/429/5xx; other 4xx responses are not
+  retried. Compile-shape and mocked-fetch runtime tests cover the boundary.
+  _(shipped 2026-07-14)_
+- [x] **Reject unresolved `@>` slots during ordinary builds.** Every generator's
+  `Files` entrypoint now returns an actionable error before emitting files and
+  points to `bp generate --write`; `bp build` exits with codegen status 4.
+  Shared AST walking now includes test-group setup and fixture bodies.
+  _(shipped 2026-07-14)_
+- [x] **Reject `subscribe ... from(service)` until a transport exists.** Node
+  codegen now returns an actionable error and no files when `from(service)` is
+  present. Source-less `subscribe "event" { ... }` remains the supported
+  in-process event-bus form. _(shipped 2026-07-14)_
+- [x] **Preflight unsupported authored Node tests before running.** `bp test`
+  now accepts only executable emitter shapes before build/install/Vitest: setup
+  is `seed`/`save` plus simple unbound `log`; request entries are unique lowercase
+  `body`/`auth`, repeats are positive, GET/HEAD bodies and calls/interpolation
+  reject; assertion syntax/literals are strict and only one model assertion is
+  allowed. Dynamic targets, cleanup/shared setup, custom or multipart/file
+  requests, and unsupported auth/timing forms also reject. Native preflight
+  covers dependencies from every app-loaded route, realtime/background/
+  subscription, and middleware module, not only the test target. Ordinary
+  `bp build` remains available for hand-written Vitest workflows. _(shipped
+  2026-07-14)_
+- [x] **Save migration hooks are user-owned.** `src/saves/*.ts` implementation
+  scaffolds now set `UserOwned: true`, state their ownership in the header, and
+  have a two-build regression proving developer edits survive and stay out of
+  the manifest. _(shipped 2026-07-14)_
+- [x] **`bp test --target python`.** Builds the generated pytest + Postgres
+  testcontainers suite and runs it through `uv run pytest`; Effect is rejected
+  before writing output. _(shipped 2026-07-14)_
 - [~] **Typed IR / resolve pass.** New `internal/resolve` package; slice 1 (per-block
   variable facts: model + cardinality `Single`/`Collection`/`Paginated`) shipped. Codegen
   reads pre-resolved facts instead of incrementally bookkeeping during emit. Remaining slices:
@@ -43,29 +108,20 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   the README idiom (`|> todos = query todo paginate(page, per_page)`,
   `|> todo = fetch todo(id)`, `|> todo = save todo { title: title }`) instead of the
   function-call form. Two new printer tests (`TestPrint_DataOpShorthand`,
-  `TestPrint_DataOpWithMarkers`) cover the shapes + idempotency. `examples/hello-world.bp`
-  remains the only `bp fmt --check`-clean file; the four others (auth-service,
-  ecommerce-api, realtime-chat, todo-api) now diverge only on **column alignment** of
-  model fields / input statements and on **blank lines between sections** / inline-vs-
-  multiline `BlockExpr` rendering. _(shipped — see CHANGELOG)_
-- [ ] **`bp fmt` polish — column alignment (continuation).** Outstanding work for the
-  remaining 4 examples: align `name type constraints` columns within `model { ... }`,
-  align `<- name type ...` columns within an endpoint inputs group, preserve blank-line
-  separators between meta / inputs / steps / outputs, and re-render small `BlockExpr`s
-  multi-line + column-aligned when the source was that way. Tricky because the printer
-  currently emits a stream of tokens without a two-pass width computation; needs either
-  a structural width-pre-pass or a column-aware writer. Once done, extend the CI step
-  in `.github/workflows/test.yml` "Format check examples" to gate all 5 examples.
-  Touch: `internal/ast/printer.go`.
+  `TestPrint_DataOpWithMarkers`) cover the shapes + idempotency. All five
+  canonical examples now pass `bp fmt --check`. _(shipped — see CHANGELOG)_
+- [x] **`bp fmt` polish — column alignment.** Model fields, endpoint inputs,
+  and blueprint keys use a two-pass width computation; CI gates every
+  `examples/*.bp` file. _(shipped v0.14.0)_
 
 - [x] `bp explain <code>` command — embeds `internal/diag/error-codes.md`, prints the
   matching section, drift-tested against `docs/error-codes.md`. Coverage grown to 12
   sites (C001–C012). _(shipped — see CHANGELOG)_
-- [ ] `internal/codegen/common` — extract pure-string helpers (`toCamelCase`, `toSnakeCase`,
-  `toPascalCase`, `pluralize`, `extractResource`, `extractPathParams`, `isPathParam`) so the
-  upcoming Python target can reuse them. JS codegen continues to use them via the new package.
-- [ ] `--target` flag scaffolding on `bp build`/`test`/`diff` (default `node`; no new
-  generator yet, just plumbing) so the Python work next session can slot in cleanly.
+- [x] `internal/codegen/common` — extract pure-string helpers (`toCamelCase`, `toSnakeCase`,
+  `toPascalCase`, `pluralize`, `extractResource`, `extractPathParams`, `isPathParam`) for
+  reuse across the Node, Python, and future targets.
+- [x] `--target` dispatch on `bp build`/`diff` (`node`/`python`/`effect`) and
+  `bp test`/`migrate` (`node`/`python`).
 
 - [~] Reconcile roadmap P0 vs CHANGELOG drift (rate-limit store, etc.) — verify each P0 against code.
   _(2026-06-16 audit: several P0s below were already shipped; corrected here.)_
@@ -121,14 +177,21 @@ _(detailed working notes live in the maintainer's Obsidian vault under
   the maintainer's review notes (Obsidian). **Verdict: opt-in/experimental,
   ~6-8wk MVP, not default.**
   _(shipped 2026-06-16)_
-- [ ] **`bp import` — scaffolder only, with loud TODO stubs (decision).** The
+- [x] **`bp import` — scaffolder only, with loud TODO stubs (decision).** The
   2026-06-16 empirical experiment (captured in the Obsidian review notes) ported
   real handler archetypes: logic survival 25-55%, and **every** port passed
   `bp check` while silently diverging (data leaks, accepting revoked tokens,
   wrong totals, mishandled card declines). Conclusion: a faithful importer is
   not viable; if built, it must be a scaffolder that emits `@ "TODO"` stubs
   loudly and never claims the dropped logic was preserved. `bp check` is NOT a
-  sufficient import-validity gate. _(experiment done 2026-06-16)_
+  sufficient import-validity gate. `bp import [path] --from ts` now extracts
+  only static Drizzle `pgTable`/`pgEnum` declarations, Hono route shapes, and
+  named Zod objects from static, transport-compatible `zValidator` calls.
+  Nullable/type-changing Zod fields skip, while SQL identity loss and dropped
+  Drizzle options warn. It never lifts handler bodies: every emitted route
+  carries a TODO, returns 501, and appears in the stderr fidelity report;
+  unsupported/dynamic structure is skipped with a warning. _(shipped
+  2026-07-14)_
 
 ### Iteration-3 queue — reviewer-confirmed defects (shipped 2026-07-09)
 
@@ -172,7 +235,7 @@ string interpolation) shipped. See CHANGELOG [Unreleased] "iteration-3 batch".
   iteration-3)_
 - [x] **Stale "fly reserved for v0.11" strings inside the binary** — already fixed: all
   strings now say "reserved for a future release" (iteration-2). _(verified 2026-07-10)_
-- [x] **SPEC.md truth sync** — Appendix C targets table reflects reality (node mature /
+- [x] **Language-contract truth sync** — the target table reflects reality (node mature /
   python advanced / effect experimental / go planned); `in` predicate in the grammar;
   Appendix D CLI exit codes. _(shipped iteration-2)_
 - [x] **Parser: dedicated if/else diagnostic (P002)** — `if`/`else`/`for`/`while`/`switch`
@@ -215,8 +278,10 @@ Prep work (must precede the Python generator):
     on `examples/hello-world.bp`; CI smoke gate added.
   - [x] Phase 2 (shipped): SQLAlchemy 2.0 schema + Pydantic v2 read models + sync
     `db.py` session + full Alembic skeleton from `model` declarations. `database`
-    and `model` dropped from the unsupported list. Verified imports + table
-    registration under `uv`. _(see CHANGELOG)_
+    and `model` dropped from the unsupported list. Python participates in the
+    shared Node/Python database-activation rule: a model implies the Postgres
+    layer, while a database with no models emits an importable empty `Base`.
+    Verified imports + table registration under `uv`. _(see CHANGELOG)_
   - [x] Phase 3 (shipped): endpoint bodies with `|>` steps (`save`/`fetch`/`update`/
     `delete`/`query` + optional `paginate`) and `guard` → SQLAlchemy + HTTPException;
     `db: Session = Depends(get_db)` plumbed; sync `def` for DB handlers, `async def`
@@ -234,9 +299,10 @@ Prep work (must precede the Python generator):
     - [x] `map items: update M { ... }` (unbound) -> for-loop with per-iteration FK alias
     - [x] `log "msg"` -> `print(f"...")`
   - [ ] Phase 3d: the long tail still rejected with a specific message.
-    - [x] `where(...)` comparison ops (`!=`, `<`, `>`, `<=`, `>=`) and `in` —
-      shipped 2026-07-09 (iteration-3). Text-search `where(q)`, `or`, and
-      `like` are still rejected.
+    - [x] `where(...)` comparison ops (`!=`, `<`, `>`, `<=`, `>=`), `in`,
+      recursive `or`/`and`, text-search `where(q)`, and duration RHS values —
+      shipped across the 2026-07-09 audit and v0.13.0 batch. Explicit `like`
+      syntax remains unsupported.
     - [x] Step calls to user-defined `fn` names — shipped in Phase 3d/5 via
       generated wrapper + user-owned scaffold (`raise NotImplementedError`).
     - [x] `|> total = sum(...)` aggregate — shipped (rewrites to
@@ -261,29 +327,44 @@ Prep work (must precede the Python generator):
       assertions, FK-aware seeding). The CLI's previous "not supported"
       guard against `--target python --gen-tests` is gone; `--gen-tests`
       works on both targets. See CHANGELOG [Unreleased].
-    - [x] `middleware` declarations → FastAPI dependencies with
-      alias-and-model injection. _(shipped — Phase 3d/5)_
+    - [x] `middleware` declarations → FastAPI dependencies with header aliases
+      and a fail-closed `fetch`/`log`/declared-fn/`inject`/`guard` step subset.
+      Richer middleware pipelines are rejected until translated. _(shipped —
+      Phase 3d/5)_
     - [x] `fn` declarations with `impl <strategy> { module, func }` →
       generated wrapper + user-owned scaffold; step calls dispatch. _(shipped — Phase 3d/5)_
-    - [ ] `bp test --target python` wraps `uv run pytest` (today users
-      invoke `pytest` themselves after `bp build --gen-tests`).
-  - [x] Phase 5 (shipped): STREAM endpoints → FastAPI
-    `EventSourceResponse`; WS endpoints → `@router.websocket(...)`;
-    `cache redis` → `src/lib/cache.py` with Redis client. realtime-chat
-    compiles; coverage hits 5/5.
+    - [x] `bp test --target python` wraps `uv run pytest`; Docker remains a
+      runtime requirement for the generated Postgres testcontainer.
+  - [~] Phase 5: `cache redis` → `src/lib/cache.py` with a Redis client is
+    shipped. Dormant STREAM/WS routing emitters exist, but public Python
+    codegen now rejects those declarations because their event/lifecycle
+    bodies were only TODO placeholders; successful builds never imply that
+    incomplete handlers execute.
   - [ ] Phase 5b: full STREAM/WS body translation (Redis pub/sub
     backbone, `broadcast`/`join`/`leave`/`emit` builtins, `where(...)` filter
     wiring), `pipe` declarations under `impl python`, `worker` + `schedule`
     via APScheduler, `storage s3` → boto3, `payload.X` → `payload["X"]`
-    for fn returns typed `json`, structured `log`, partial-commit rollback
-    in `try`/`recover`, non-`==` `where` predicates.
+    for fn returns typed `json`, and structured `log`.
 
 ## Later
 
-- [ ] Multi-target codegen (Python/FastAPI) on top of the typed IR.
-- [ ] LSP feature depth: diagnostics, go-to-def, autocomplete, hover from `@` intents.
-- [ ] Behavioral test generation (property-based / fuzz) beyond contract tests.
-- [ ] Relationships/joins syntax (`with(author)`), computed fields.
+- [~] Multi-target codegen parity: Python/FastAPI is advanced; Effect remains a scaffold.
+- [x] LSP feature depth: context-aware completion, local-workspace symbol
+  search, and a packaged VS Code language client that starts `bp lsp` are
+  shipped. Completion is intentionally syntax/source-context based (no resolve
+  round-trip), workspace search scans local `.bp` files while ignoring common
+  generated/vendor directories, and rename remains future work. _(shipped
+  2026-07-14)_
+- [x] Behavioral test generation beyond contract tests: Node-only
+  `--gen-property-tests` emits deterministic fast-check suites, implies
+  `--gen-tests`, resets PGlite per run when needed, and fails the whole build
+  for non-hermetic or unsupported route surfaces instead of skipping them.
+  _(shipped 2026-07-14)_
+- [x] Relationships/joins syntax and computed fields: Node supports one-level
+  `query ... with(author)` LEFT JOINs through `author_id ref(target)` and pure,
+  read-only `computed` model fields. Join aliases, self joins, repeated targets,
+  and `fetch ... with(...)` reject; Python and Effect reject both slices until
+  they have faithful emitters. _(shipped 2026-07-14)_
 
 ---
 

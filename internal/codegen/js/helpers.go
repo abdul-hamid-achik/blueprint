@@ -9,6 +9,7 @@ import (
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen/common"
+	"github.com/abdul-hamid-achik/blueprint/internal/resolve"
 )
 
 // The target-agnostic string + path helpers live in internal/codegen/common.
@@ -510,12 +511,13 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 					}
 					if modelName != "" {
 						if model := ctx.generator.findModel(modelName); model != nil {
+							relationships := ctx.eagerRelations[ident.Name]
 							if ctx.singleVars[ident.Name] {
-								val = buildSingleRecordMapper(val, model)
+								val = buildSingleRecordMapper(val, model, ctx.generator, relationships)
 							} else if ctx.paginatedVars[ident.Name] {
-								val = buildPaginatedMapper(val, model)
+								val = buildPaginatedMapper(val, model, ctx.generator, relationships)
 							} else {
-								val = buildCollectionMapper(val, model)
+								val = buildCollectionMapper(val, model, ctx.generator, relationships)
 							}
 						}
 					}
@@ -532,7 +534,7 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 						}
 						if modelName != "" {
 							if model := ctx.generator.findModel(modelName); model != nil {
-								val = buildCollectionMapper(val, model)
+								val = buildCollectionMapper(val, model, ctx.generator, ctx.eagerRelations[baseIdent.Name])
 							}
 						}
 					}
@@ -976,7 +978,11 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 			return "/* import_bundle: model must have key[/version] or id fields */"
 		}
 		updateVals := bundleUpdateValues(ctx, modelName, "item")
-		return fmt.Sprintf("await Promise.all((%s ?? []).map(async (item: any) => { const existing = await db.select().from(%s).where(%s).limit(1); if (existing.length > 0) { return (await db.update(%s).set(%s).where(%s).returning())[0]; } return (await db.insert(%s).values(item).returning())[0]; }))", itemsExpr, schemaTable, matchExpr, schemaTable, updateVals, matchExpr, schemaTable)
+		result := fmt.Sprintf("await Promise.all((%s ?? []).map(async (item: any) => { const existing = await db.select().from(%s).where(%s).limit(1); if (existing.length > 0) { return (await db.update(%s).set(%s).where(%s).returning())[0]; } return (await db.insert(%s).values(item).returning())[0]; }))", itemsExpr, schemaTable, matchExpr, schemaTable, updateVals, matchExpr, schemaTable)
+		if modelHasComputed(ctx, modelName) {
+			return fmt.Sprintf("(%s).map((row: any) => schema.compute%s(row))", result, toPascalCase(modelName))
+		}
+		return result
 
 	case "export_bundle":
 		query := fmt.Sprintf("await db.select().from(%s)", schemaTable)
@@ -984,6 +990,9 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 			query += fmt.Sprintf(".orderBy(asc(%s.key), desc(%s.version))", schemaTable, schemaTable)
 		} else if bundleModelHasField(ctx, modelName, "key") {
 			query += fmt.Sprintf(".orderBy(asc(%s.key))", schemaTable)
+		}
+		if modelHasComputed(ctx, modelName) {
+			return fmt.Sprintf("(%s).map((row: any) => schema.compute%s(row))", query, toPascalCase(modelName))
 		}
 		return query
 
@@ -995,33 +1004,29 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 			if whereCall, ok := v.Args[1].(*ast.FnCall); ok && whereCall.Name == "where" {
 				if len(whereCall.Args) == 1 {
 					cond := whereExprToJSWithCtx(whereCall.Args[0], schemaTable, ctx)
-					return fmt.Sprintf("(await db.select().from(%s).where(%s))[0]",
-						schemaTable, cond)
+					return computeRecordJS(ctx, modelName, fmt.Sprintf("(await db.select().from(%s).where(%s))[0]", schemaTable, cond))
 				} else if len(whereCall.Args) > 1 {
 					conditions := make([]string, len(whereCall.Args))
 					for i, cond := range whereCall.Args {
 						conditions[i] = whereExprToJSWithCtx(cond, schemaTable, ctx)
 					}
-					return fmt.Sprintf("(await db.select().from(%s).where(and(%s)))[0]",
-						schemaTable, strings.Join(conditions, ", "))
+					return computeRecordJS(ctx, modelName, fmt.Sprintf("(await db.select().from(%s).where(and(%s)))[0]", schemaTable, strings.Join(conditions, ", ")))
 				}
 			}
 			idExpr := exprToJSWithCtx(v.Args[1], ctx)
-			return fmt.Sprintf("(await db.select().from(%s).where(eq(%s.id, %s)))[0]",
-				schemaTable, schemaTable, idExpr)
+			return computeRecordJS(ctx, modelName, fmt.Sprintf("(await db.select().from(%s).where(eq(%s.id, %s)))[0]", schemaTable, schemaTable, idExpr))
 		}
-		return fmt.Sprintf("(await db.select().from(%s))[0]", schemaTable)
+		return computeRecordJS(ctx, modelName, fmt.Sprintf("(await db.select().from(%s))[0]", schemaTable))
 
 	case "save", "seed":
 		// save model { fields } -> (await db.insert(schema.model).values({ fields }).returning())[0]
 		if len(v.Args) >= 2 {
 			if block, ok := v.Args[1].(*ast.BlockExpr); ok {
 				vals := exprToJSWithCtx(block, ctx)
-				return fmt.Sprintf("(await db.insert(%s).values(%s).returning())[0]",
-					schemaTable, vals)
+				return computeRecordJS(ctx, modelName, fmt.Sprintf("(await db.insert(%s).values(%s).returning())[0]", schemaTable, vals))
 			}
 		}
-		return fmt.Sprintf("(await db.insert(%s).values({}).returning())[0]", schemaTable)
+		return computeRecordJS(ctx, modelName, fmt.Sprintf("(await db.insert(%s).values({}).returning())[0]", schemaTable))
 
 	case "update":
 		// update model { fields } -> await db.update(schema.model).set({ fields }).where(eq(schema.model.id, boundVar.id))
@@ -1081,8 +1086,7 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 				}
 
 				// Bug 2: Use .returning() to get updated row instead of stale data
-				return fmt.Sprintf("(await db.update(%s).set(%s).where(eq(%s.id, %s)).returning())[0]",
-					resolvedSchemaTable, vals, resolvedSchemaTable, idRef)
+				return computeRecordJS(ctx, resolvedModel, fmt.Sprintf("(await db.update(%s).set(%s).where(eq(%s.id, %s)).returning())[0]", resolvedSchemaTable, vals, resolvedSchemaTable, idRef))
 			}
 		}
 		return fmt.Sprintf("await db.update(%s).set({})", resolvedSchemaTable)
@@ -1138,6 +1142,46 @@ func dataOpToJSWithCtx(v *ast.FnCall, ctx *emitCtx) string {
 	return "/* unknown data op */"
 }
 
+func modelHasComputed(ctx *emitCtx, modelName string) bool {
+	return ctx != nil && ctx.generator != nil && ctx.generator.findModel(modelName) != nil && len(ctx.generator.findModel(modelName).ComputedFields) > 0
+}
+
+func computeRecordJS(ctx *emitCtx, modelName, recordExpr string) string {
+	if !modelHasComputed(ctx, modelName) {
+		return recordExpr
+	}
+	return fmt.Sprintf("schema.compute%s(%s as typeof schema.%s.$inferSelect)", toPascalCase(modelName), recordExpr, toCamelCase(modelName))
+}
+
+func relationshipTarget(ctx *emitCtx, modelName, relation string) (string, bool) {
+	if ctx == nil || ctx.generator == nil {
+		return "", false
+	}
+	return resolve.ModelFieldRef(ctx.generator.models, modelName, relation)
+}
+
+func materializeQueryRow(ctx *emitCtx, modelName, rowRef string, relationships []string) string {
+	baseRef := rowRef
+	if len(relationships) > 0 {
+		baseRef = rowRef + "._base"
+	}
+	base := computeRecordJS(ctx, modelName, baseRef)
+	if len(relationships) == 0 {
+		return base
+	}
+	var parts []string
+	for _, relation := range relationships {
+		target, ok := relationshipTarget(ctx, modelName, relation)
+		if !ok {
+			continue
+		}
+		relationRef := rowRef + "." + toCamelCase(relation)
+		record := computeRecordJS(ctx, target, relationRef)
+		parts = append(parts, fmt.Sprintf("%s: %s == null ? null : %s", toCamelCase(relation), relationRef, record))
+	}
+	return "Object.assign(" + base + ", { " + strings.Join(parts, ", ") + " })"
+}
+
 func bundleModelHasField(ctx *emitCtx, modelName, fieldName string) bool {
 	if ctx == nil || ctx.generator == nil {
 		return false
@@ -1187,6 +1231,7 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 	var whereMarker *ast.FnCall
 	var orderMarker *ast.FnCall
 	var paginateMarker *ast.FnCall
+	var withMarker *ast.FnCall
 	hasFirst := false
 	var otherArgs []ast.Expr
 
@@ -1202,6 +1247,9 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 			case "paginate":
 				paginateMarker = fn
 				continue
+			case "with":
+				withMarker = fn
+				continue
 			}
 		}
 		if ident, ok := arg.(*ast.Ident); ok && ident.Name == "first" {
@@ -1211,9 +1259,39 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 		otherArgs = append(otherArgs, arg)
 	}
 
-	// Build base query
+	modelName := ""
+	if model, ok := v.Args[0].(*ast.Ident); ok {
+		modelName = model.Name
+	}
+	var relationships []string
+	if withMarker != nil {
+		for _, relationExpr := range withMarker.Args {
+			if relation, ok := relationExpr.(*ast.Ident); ok {
+				relationships = append(relationships, relation.Name)
+			}
+		}
+	}
+
+	// Build base query. Joined tables are selected as nested records so column
+	// names cannot collide with the source model.
 	var query strings.Builder
-	query.WriteString("db.select().from(" + schemaTable + ")")
+	if len(relationships) == 0 {
+		query.WriteString("db.select().from(" + schemaTable + ")")
+	} else {
+		selections := []string{"_base: " + schemaTable}
+		for _, relation := range relationships {
+			if target, ok := relationshipTarget(ctx, modelName, relation); ok {
+				selections = append(selections, toCamelCase(relation)+": schema."+toCamelCase(target))
+			}
+		}
+		query.WriteString("db.select({ " + strings.Join(selections, ", ") + " }).from(" + schemaTable + ")")
+		for _, relation := range relationships {
+			if target, ok := relationshipTarget(ctx, modelName, relation); ok {
+				targetTable := "schema." + toCamelCase(target)
+				fmt.Fprintf(&query, ".leftJoin(%s, eq(%s.%s, %s.id))", targetTable, schemaTable, toCamelCase(relation+"_id"), targetTable)
+			}
+		}
+	}
 
 	// Add where clause from marker
 	if whereMarker != nil {
@@ -1292,9 +1370,13 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 			}
 			whereClause = wq.String()
 		}
+		itemsExpr := "_items"
+		if len(relationships) > 0 || modelHasComputed(ctx, modelName) {
+			itemsExpr = "_items.map((_row: any) => (" + materializeQueryRow(ctx, modelName, "_row", relationships) + "))"
+		}
 		return fmt.Sprintf(
-			"await (async () => { const _items = await %s.limit(%s).offset((%s - 1) * %s); const [{value: _ct}] = await db.select({value: sql`count(*)`}).from(%s)%s; return { items: _items, total: Number(_ct) }; })()",
-			baseQuery, perPage, page, perPage, schemaTable, whereClause)
+			"await (async () => { const _items = await %s.limit(%s).offset((%s - 1) * %s); const [{value: _ct}] = await db.select({value: sql`count(*)`}).from(%s)%s; return { items: %s, total: Number(_ct) }; })()",
+			baseQuery, perPage, page, perPage, schemaTable, whereClause, itemsExpr)
 	}
 
 	// Legacy fallback: if there are exactly 2 remaining non-marker args, treat as paginate(page, perPage)
@@ -1315,9 +1397,16 @@ func queryToJSWithCtx(v *ast.FnCall, schemaTable string, ctx *emitCtx) string {
 	}
 
 	if hasFirst {
-		return fmt.Sprintf("(await %s)[0]", query.String())
+		record := fmt.Sprintf("(await %s)[0]", query.String())
+		if len(relationships) == 0 && !modelHasComputed(ctx, modelName) {
+			return record
+		}
+		return fmt.Sprintf("await (async () => { const _row = %s; return _row == null ? _row : %s; })()", record, materializeQueryRow(ctx, modelName, "_row", relationships))
 	}
 
+	if len(relationships) > 0 || modelHasComputed(ctx, modelName) {
+		return fmt.Sprintf("(await %s).map((_row: any) => (%s))", query.String(), materializeQueryRow(ctx, modelName, "_row", relationships))
+	}
 	return "await " + query.String()
 }
 
@@ -1465,7 +1554,7 @@ func durationFieldToMS(num, unit string) string {
 func isBuiltinFn(name string) bool {
 	switch name {
 	case "log", "clock", "sleep", "inject", "map", "pipe",
-		"where", "order", "paginate", "limit", "offset",
+		"where", "with", "order", "paginate", "limit", "offset",
 		"join", "leave", "broadcast", "emit", "enqueue", "on", "sum",
 		"publish", "archive", "rollback", "track", "upgrade_save", "transition":
 		return true
@@ -1686,30 +1775,48 @@ func (g *Generator) findModel(name string) *ast.Model {
 
 // buildCollectionMapper wraps a collection variable with .map() that converts
 // Drizzle camelCase keys to .bp snake_case keys for response output.
-func buildCollectionMapper(varName string, model *ast.Model) string {
-	pairs := make([]string, len(model.Fields))
-	for i, f := range model.Fields {
-		pairs[i] = fmt.Sprintf("%s: r.%s", f.Name, toCamelCase(f.Name))
-	}
+func buildCollectionMapper(varName string, model *ast.Model, g *Generator, relationships []string) string {
+	pairs := responseRecordPairs("r", model, g, relationships)
 	return fmt.Sprintf("%s.map((r: any) => ({ %s }))", varName, strings.Join(pairs, ", "))
 }
 
 // buildSingleRecordMapper wraps a single-record variable with an inline object
 // that maps Drizzle camelCase keys to .bp snake_case keys.
-func buildSingleRecordMapper(varName string, model *ast.Model) string {
-	pairs := make([]string, len(model.Fields))
-	for i, f := range model.Fields {
-		pairs[i] = fmt.Sprintf("%s: %s.%s", f.Name, varName, toCamelCase(f.Name))
-	}
+func buildSingleRecordMapper(varName string, model *ast.Model, g *Generator, relationships []string) string {
+	pairs := responseRecordPairs(varName, model, g, relationships)
 	return fmt.Sprintf("{ %s }", strings.Join(pairs, ", "))
 }
 
 // buildPaginatedMapper wraps a paginated result variable so that .items
 // gets mapped from Drizzle camelCase to .bp snake_case keys.
-func buildPaginatedMapper(varName string, model *ast.Model) string {
-	pairs := make([]string, len(model.Fields))
-	for i, f := range model.Fields {
-		pairs[i] = fmt.Sprintf("%s: r.%s", f.Name, toCamelCase(f.Name))
-	}
+func buildPaginatedMapper(varName string, model *ast.Model, g *Generator, relationships []string) string {
+	pairs := responseRecordPairs("r", model, g, relationships)
 	return fmt.Sprintf("{ ...%s, items: %s.items.map((r: any) => ({ %s })) }", varName, varName, strings.Join(pairs, ", "))
+}
+
+func responseRecordPairs(row string, model *ast.Model, g *Generator, relationships []string) []string {
+	pairs := make([]string, 0, len(model.Fields)+len(model.ComputedFields)+len(relationships))
+	for _, field := range model.Fields {
+		pairs = append(pairs, fmt.Sprintf("%s: %s.%s", field.Name, row, toCamelCase(field.Name)))
+	}
+	for _, field := range model.ComputedFields {
+		pairs = append(pairs, fmt.Sprintf("%s: %s.%s", field.Name, row, toCamelCase(field.Name)))
+	}
+	if g == nil {
+		return pairs
+	}
+	for _, relation := range relationships {
+		targetName, ok := resolve.ModelFieldRef(g.models, model.Name, relation)
+		if !ok {
+			continue
+		}
+		target := g.findModel(targetName)
+		if target == nil {
+			continue
+		}
+		relationRef := row + "." + toCamelCase(relation)
+		nested := responseRecordPairs(relationRef, target, g, nil)
+		pairs = append(pairs, fmt.Sprintf("%s: %s == null ? null : ({ %s })", relation, relationRef, strings.Join(nested, ", ")))
+	}
+	return pairs
 }

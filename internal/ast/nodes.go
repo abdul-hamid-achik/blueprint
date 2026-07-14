@@ -212,10 +212,11 @@ type EnumVariant struct {
 }
 
 type Model struct {
-	Loc    lexer.Loc
-	Intent *Intent
-	Name   string
-	Fields []*Field
+	Loc            lexer.Loc
+	Intent         *Intent
+	Name           string
+	Fields         []*Field
+	ComputedFields []*ComputedField
 }
 
 func (n *Model) nodeType() string    { return "Model" }
@@ -777,6 +778,16 @@ type Field struct {
 	Name        string
 	Type        TypeExpr
 	Constraints []*Constraint_
+}
+
+// ComputedField is a read-only model property derived from persisted fields.
+// It deliberately lives outside Model.Fields so schema and migration code
+// cannot accidentally treat it as a database column.
+type ComputedField struct {
+	Loc  lexer.Loc
+	Name string
+	Type TypeExpr
+	Expr Expr
 }
 
 type Constraint_ struct {

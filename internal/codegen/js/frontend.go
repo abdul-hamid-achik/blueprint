@@ -7,6 +7,7 @@ import (
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen"
+	"github.com/abdul-hamid-achik/blueprint/internal/resolve"
 )
 
 type frontendBinding struct {
@@ -15,6 +16,7 @@ type frontendBinding struct {
 	modelName       string
 	collectionModel string
 	paginated       bool
+	relationships   []string
 	expr            ast.Expr
 }
 
@@ -108,6 +110,9 @@ func (g *Generator) genFrontendTypes(models []*ast.Model, types []*ast.TypeDecl,
 			for _, f := range m.Fields {
 				info := g.frontendTypeInfoFromModelField(f)
 				fmt.Fprintf(&b, "  %s: %s;\n", toCamelCase(f.Name), info.ts)
+			}
+			for _, f := range m.ComputedFields {
+				fmt.Fprintf(&b, "  %s: %s;\n", toCamelCase(f.Name), typeToTS(f.Type))
 			}
 			b.WriteString("}\n\n")
 		}
@@ -276,6 +281,9 @@ func (g *Generator) genFrontendSchemas(models []*ast.Model, types []*ast.TypeDec
 		for _, f := range m.Fields {
 			info := g.frontendTypeInfoFromModelField(f)
 			fmt.Fprintf(&b, "  %s: %s,\n", toCamelCase(f.Name), info.zod)
+		}
+		for _, f := range m.ComputedFields {
+			fmt.Fprintf(&b, "  %s: %s,\n", toCamelCase(f.Name), frontendTypeToZod(f.Type))
 		}
 		b.WriteString("});\n\n")
 	}
@@ -1237,8 +1245,13 @@ func (g *Generator) collectFrontendBindingsInto(stmts []ast.ArrowStmt, bindings 
 				case "query":
 					if len(fn.Args) > 0 {
 						if ident, ok := fn.Args[0].(*ast.Ident); ok {
-							binding.collectionModel = ident.Name
-							binding.paginated = queryIsPaginated(fn)
+							if queryHasFirst(fn) {
+								binding.modelName = ident.Name
+							} else {
+								binding.collectionModel = ident.Name
+								binding.paginated = queryIsPaginated(fn)
+							}
+							binding.relationships = frontendQueryRelationships(fn)
 							binding.expr = nil
 						}
 					}
@@ -1327,16 +1340,17 @@ func (g *Generator) frontendTypeInfoFromBinding(binding frontendBinding, binding
 		return g.frontendTypeInfoFromInput(binding.input)
 	}
 	if binding.modelName != "" {
-		name := toPascalCase(binding.modelName)
-		return frontendTypeInfo{ts: name, zod: fmt.Sprintf("z.lazy(() => %s)", frontendSchemaName(binding.modelName))}
+		return g.frontendModelInfo(binding.modelName, binding.relationships)
 	}
 	if binding.collectionModel != "" {
-		itemName := toPascalCase(binding.collectionModel)
-		itemSchema := fmt.Sprintf("z.lazy(() => %s)", frontendSchemaName(binding.collectionModel))
+		item := g.frontendModelInfo(binding.collectionModel, binding.relationships)
 		if binding.paginated {
-			return frontendTypeInfo{ts: fmt.Sprintf("PaginatedResult<%s>", itemName), zod: fmt.Sprintf("paginatedResultSchema(%s)", itemSchema)}
+			return frontendTypeInfo{ts: fmt.Sprintf("PaginatedResult<%s>", item.ts), zod: fmt.Sprintf("paginatedResultSchema(%s)", item.zod)}
 		}
-		return frontendTypeInfo{ts: itemName + "[]", zod: fmt.Sprintf("z.array(%s)", itemSchema)}
+		if len(binding.relationships) == 0 {
+			return frontendTypeInfo{ts: item.ts + "[]", zod: fmt.Sprintf("z.array(%s)", item.zod)}
+		}
+		return frontendTypeInfo{ts: "Array<" + item.ts + ">", zod: fmt.Sprintf("z.array(%s)", item.zod)}
 	}
 	if binding.typeExpr != nil {
 		return g.frontendTypeInfoFromTypeExpr(binding.typeExpr)
@@ -1393,6 +1407,21 @@ func (g *Generator) frontendNestedFieldInfo(base *ast.FieldAccess, field string,
 }
 
 func (g *Generator) frontendFieldInfoFromBinding(binding frontendBinding, field string, bindings map[string]frontendBinding) (frontendTypeInfo, bool) {
+	modelName := binding.modelName
+	if modelName == "" {
+		modelName = binding.collectionModel
+	}
+	for _, relation := range binding.relationships {
+		if relation != field {
+			continue
+		}
+		if target, ok := resolve.ModelFieldRef(g.models, modelName, relation); ok {
+			info := g.frontendModelInfo(target, nil)
+			info.ts += " | null"
+			info.zod += ".nullable()"
+			return info, true
+		}
+	}
 	if binding.modelName != "" {
 		return g.frontendFieldInfoFromNamed(binding.modelName, field)
 	}
@@ -1431,6 +1460,11 @@ func (g *Generator) frontendFieldInfoFromNamed(name, field string) (frontendType
 		for _, f := range model.Fields {
 			if f.Name == field {
 				return g.frontendTypeInfoFromModelField(f), true
+			}
+		}
+		for _, f := range model.ComputedFields {
+			if f.Name == field {
+				return frontendTypeInfo{ts: typeToTS(f.Type), zod: frontendTypeToZod(f.Type)}, true
 			}
 		}
 	}
@@ -1499,12 +1533,14 @@ func (g *Generator) frontendTypeInfoFromFnCall(call *ast.FnCall, bindings map[st
 		case "query":
 			if len(call.Args) > 0 {
 				if ident, ok := call.Args[0].(*ast.Ident); ok {
-					itemName := toPascalCase(ident.Name)
-					itemSchema := fmt.Sprintf("z.lazy(() => %s)", frontendSchemaName(ident.Name))
-					if queryIsPaginated(call) {
-						return frontendTypeInfo{ts: fmt.Sprintf("PaginatedResult<%s>", itemName), zod: fmt.Sprintf("paginatedResultSchema(%s)", itemSchema)}
+					item := g.frontendModelInfo(ident.Name, frontendQueryRelationships(call))
+					if queryHasFirst(call) {
+						return item
 					}
-					return frontendTypeInfo{ts: itemName + "[]", zod: fmt.Sprintf("z.array(%s)", itemSchema)}
+					if queryIsPaginated(call) {
+						return frontendTypeInfo{ts: fmt.Sprintf("PaginatedResult<%s>", item.ts), zod: fmt.Sprintf("paginatedResultSchema(%s)", item.zod)}
+					}
+					return frontendTypeInfo{ts: "Array<" + item.ts + ">", zod: fmt.Sprintf("z.array(%s)", item.zod)}
 				}
 			}
 		case "fetch", "save", "seed", "update":
@@ -1527,6 +1563,57 @@ func (g *Generator) frontendTypeInfoFromFnCall(call *ast.FnCall, bindings map[st
 		}
 	}
 	return frontendTypeInfo{ts: "unknown", zod: "z.unknown()"}
+}
+
+func queryHasFirst(call *ast.FnCall) bool {
+	for _, arg := range call.Args[1:] {
+		if ident, ok := arg.(*ast.Ident); ok && ident.Name == "first" {
+			return true
+		}
+	}
+	return false
+}
+
+func frontendQueryRelationships(call *ast.FnCall) []string {
+	var relationships []string
+	for _, arg := range call.Args[1:] {
+		marker, ok := arg.(*ast.FnCall)
+		if !ok || marker.Name != "with" {
+			continue
+		}
+		for _, value := range marker.Args {
+			if relation, ok := value.(*ast.Ident); ok {
+				relationships = append(relationships, relation.Name)
+			}
+		}
+	}
+	return relationships
+}
+
+func (g *Generator) frontendModelInfo(modelName string, relationships []string) frontendTypeInfo {
+	base := frontendTypeInfo{
+		ts:  toPascalCase(modelName),
+		zod: fmt.Sprintf("z.lazy(() => %s)", frontendSchemaName(modelName)),
+	}
+	if len(relationships) == 0 {
+		return base
+	}
+	var typeFields []string
+	var schemaFields []string
+	for _, relation := range relationships {
+		target, ok := resolve.ModelFieldRef(g.models, modelName, relation)
+		if !ok {
+			continue
+		}
+		typeFields = append(typeFields, fmt.Sprintf("%s: %s | null", toCamelCase(relation), toPascalCase(target)))
+		schemaFields = append(schemaFields, fmt.Sprintf("%s: z.lazy(() => %s).nullable()", toCamelCase(relation), frontendSchemaName(target)))
+	}
+	if len(typeFields) == 0 {
+		return base
+	}
+	base.ts += " & { " + strings.Join(typeFields, "; ") + " }"
+	base.zod = fmt.Sprintf("%s.extend({ %s })", frontendSchemaName(modelName), strings.Join(schemaFields, ", "))
+	return base
 }
 
 func (g *Generator) frontendTypeInfoFromListExpr(list *ast.ListExpr, bindings map[string]frontendBinding) frontendTypeInfo {

@@ -4,9 +4,6 @@
   "workspaces": {
     "": {
       "name": "blueprint-docs",
-      "dependencies": {
-        "vue-router": "^5.0.3",
-      },
       "devDependencies": {
         "@vercel/analytics": "^2.0.1",
         "vitepress": "2.0.0-alpha.16",

@@ -5,113 +5,105 @@
 <h1 align="center">Blueprint</h1>
 
 <p align="center">
-  A declarative programming language for LLMs to write web services.<br>
+  Describe a service once. Generate a typed project you own.<br>
   Intent-first. Flow-visible. Flat by force.
 </p>
 
-Blueprint (`.bp`) compiles to a runnable TypeScript/Node.js project. Write a spec, get a working API.
+Blueprint is a Go compiler for declarative `.bp` service definitions. The
+default target produces a runnable Hono + Drizzle + Zod project; the same source
+can also produce a FastAPI + SQLAlchemy project.
+
+| Target | Output | Maturity |
+|--------|--------|----------|
+| `node` (default) | TypeScript, Hono, Drizzle, Zod | Reference target; REST, models, migrations, frontend contracts, and generated tests are the mature path |
+| `python` | FastAPI, SQLAlchemy, Pydantic, Alembic | Advanced beta; supported HTTP/data slices build, unsupported realtime and declaration semantics fail closed |
+| `effect` | Effect-TS project and Config scaffold | Experimental; model and endpoint emission is not implemented |
+
+## From `.bp` to a running endpoint
+
+Save this as `hello.bp`:
 
 ```bp
-@ "A simple TODO API"
-blueprint "todo-api" {
+@ "A small greeting service"
+blueprint "hello" {
   version  "1.0.0"
   port     3000
   runtime  node
-  database postgres
 }
 
-secret DATABASE_URL required
-
-model todo {
-  id      uuid      primary
-  title   string    required
-  done    bool      default(false)
-  created timestamp default(now)
-}
-
-@ "Create a new todo"
-POST /api/todos {
-  <- title string required
-
-  |> item = save todo { title: title }
-
-  -> 201 { id: item.id, title: item.title, done: item.done }
-}
-
-@ "List all todos"
-GET /api/todos {
-  <- page     int default(1) min(1)
-  <- per_page int default(20) max(100)
-
-  |> todos = query todo order(created desc) paginate(page, per_page)
-
-  -> 200 { todos: todos.items, total: todos.total }
+GET /hello/:name {
+  <- name string required
+  -> 200 { message: "Hello, {name}!" }
 }
 ```
 
-`bp build todo.bp` generates a working [Hono](https://hono.dev) + [Drizzle](https://orm.drizzle.team) + [Zod](https://zod.dev) project. No boilerplate. No lock-in.
-
-Blueprint also supports game/content-platform patterns such as typed JSON payloads, versioned `content` records, localization bundles, state machines, analytics sinks, and save migration helpers.
-
----
-
-## Install
+Install `bp`, validate the source, and run it:
 
 ```bash
 # Homebrew (macOS / Linux)
 brew install abdul-hamid-achik/tap/bp
 
-# Download a release binary
+bp check hello.bp
+bp run hello.bp
+
+# In another terminal
+curl http://localhost:3000/hello/Ada
+# {"message":"Hello, Ada!"}
+```
+
+`bp run` builds into `generated/`, installs dependencies when needed, and starts
+the service. Use `bp dev hello.bp` for rebuild-and-restart watch mode.
+
+Other installation options:
+
+```bash
+# Prebuilt binaries for macOS, Linux, and Windows
 # https://github.com/abdul-hamid-achik/blueprint/releases
 
-# Build from source (requires Go 1.22+)
+# Build the CLI from source (requires Go 1.25.5 or newer)
 git clone https://github.com/abdul-hamid-achik/blueprint
 cd blueprint
 go build -o bin/bp ./cmd/bp
 ```
 
-## Usage
+## Build, inspect, and own the output
 
 ```bash
-# Validate a .bp file (syntax + semantics)
-bp check myservice.bp
+# Default Node project
+bp build service.bp --target node --out generated
 
-# Compile to TypeScript project
-bp build myservice.bp --out ./generated
+# Python project
+bp build service.bp --target python --out generated-python
 
-# Optional: include TanStack React Query hooks
-bp build myservice.bp --out ./generated --react-query
+# Preview generator changes without writing
+bp diff service.bp --target node --out generated
 
-# Optional: emit only the standalone frontend contract package
-bp build myservice.bp --out ./web-contract --frontend-only --react-query
-
-# Shortcut for frontend-only output
-bp frontend myservice.bp --out ./web-contract --react-query
-
-# Dry-run the frontend package publish flow
-bp frontend publish myservice.bp --out ./web-contract --react-query
-
-# Faster repeat publish checks when deps are already installed
-bp frontend publish myservice.bp --out ./web-contract --react-query --skip-install
-
-# Show version
-bp version
+# Add deterministic Node contract + fast-check properties
+bp build service.bp --gen-property-tests --out generated
 ```
 
-After `bp build`, the output is a standard TypeScript service with health checks and graceful shutdown built in:
+Node output includes a built-in `/health` endpoint, graceful shutdown, and
+frontend-safe API types/clients. `--react-query` adds TanStack Query hooks.
+`bp frontend` emits only the standalone frontend contract package.
+
+Generated files are tracked in `.blueprint/manifest.json`. Rebuilds remove
+stale generated files and preserve implementation scaffolds marked as
+user-owned. Blueprint-generated services have no required Blueprint runtime
+dependency.
+
+Migrating a TypeScript service starts with an intentionally incomplete
+structural scaffold:
 
 ```bash
-cd generated
-bun install
-bunx drizzle-kit push  # apply schema to postgres
-bun run start          # start the server (with /health endpoint)
+bp import ./src --from ts --out service.bp
 ```
 
-Blueprint also generates frontend-safe contract files in `src/types/api.ts`, `src/types/schemas.ts`, and `src/types/client.ts` so LLMs and frontend apps can share one API contract. Add `--react-query` to emit `src/types/react-query.ts` as well.
-
-For monorepos and separate frontend apps, Blueprint also emits a standalone package in `frontend/` that mirrors those files behind a clean package boundary.
-If you only want that package, use `--frontend-only` and Blueprint will write it at the output root instead of generating the backend project.
-There is also a dedicated `bp frontend` shortcut for that workflow.
+The importer recognizes static Drizzle tables/enums, Hono routes, and named Zod
+object inputs passed through static, transport-compatible `zValidator` calls.
+It skips nullable/nullish and type-changing Zod fields, and warns when SQL
+identity or Drizzle builder/table/reference options cannot be preserved. It
+never translates handler bodies: every route becomes a loud TODO that returns
+501, and stderr lists what was mapped, dropped, or skipped for manual review.
 
 When you're ready to own the code, eject Blueprint markers:
 
@@ -181,6 +173,34 @@ enum Plan {
 ```
 
 Access enum data: `Plan[user.plan].monthly_ops`, `Plan[auth.plan].rate_limit`
+
+### Computed fields and relationship loading (Node)
+
+```bp
+model author {
+  id uuid primary
+  first_name string required
+  last_name string required
+  computed display_name string = first_name + " " + last_name
+}
+
+model post {
+  id uuid primary
+  author_id uuid ref(author)
+  title string required
+}
+
+GET /posts {
+  |> posts = query post with(author) order(title, asc)
+  -> 200 { posts: posts }
+}
+```
+
+Computed fields are pure, read-only response values rather than database
+columns. `with(author)` performs a one-level `LEFT JOIN` through
+`author_id ref(author)`. Join aliases, self joins, repeated joins to the same
+target, and `fetch ... with(...)` are rejected; Python and Effect reject this
+slice until they can preserve it.
 
 ### Middleware with inject
 
@@ -291,15 +311,18 @@ save player_progress {
 
 ## Generated Stack
 
-| Blueprint concept | Library                    | Version |
-|-------------------|----------------------------|---------|
-| HTTP server       | [Hono](https://hono.dev)   | ^4.x    |
-| Database ORM      | [Drizzle ORM](https://orm.drizzle.team) | ^0.35.x |
-| Validation        | [Zod](https://zod.dev)     | ^3.23.x |
-| Job queue         | [BullMQ](https://bullmq.io) | ^5.x   |
-| Testing           | [Vitest](https://vitest.dev) | ^2.x  |
-| Storage           | `@aws-sdk/client-s3`       | ^3.x    |
-| Auth              | `jose`                     | ^5.x    |
+The Node target adds dependencies only when the source uses the corresponding
+feature:
+
+| Blueprint concept | Generated dependency | Version |
+|-------------------|----------------------|---------|
+| HTTP server | [Hono](https://hono.dev) + `@hono/node-server` | ^4.6 / ^1.13 |
+| Database ORM | [Drizzle ORM](https://orm.drizzle.team) + `pg` | ^0.36 / ^8.13 |
+| Validation | [Zod](https://zod.dev) | ^3.23 |
+| Job queue | [BullMQ](https://bullmq.io) | ^5.30 |
+| Redis client | `redis` | ^5.0 |
+| File storage | `@aws-sdk/client-s3` | ^3.700 |
+| Testing | [Vitest](https://vitest.dev); optional [fast-check](https://fast-check.dev) properties | ^2.1 / ^3.23 |
 
 The generated code is clean, idiomatic TypeScript with zero Blueprint runtime dependencies.
 
@@ -320,7 +343,7 @@ generated/
 │       ├── schemas.ts
 │       ├── client.ts
 │       └── react-query.ts      # Optional React Query hooks (--react-query)
-└── src/
+├── src/
     ├── index.ts                  # Hono server entrypoint
     ├── types.ts                  # TypeScript types, enums, PlanConfig
     ├── types/api.ts              # Frontend-safe API contract types
@@ -334,56 +357,88 @@ generated/
     │   ├── env.ts                # Env var validation (Zod)
     │   ├── storage.ts            # S3 upload/download helpers
     │   ├── cache.ts              # Redis client
+    │   ├── events.ts             # In-process event bus (when subscriptions exist)
+    │   ├── external.ts           # External HTTP auth/retry helper (when declared)
     │   └── errors.ts             # BpError class
     ├── routes/<resource>.ts      # Hono endpoint handlers
     ├── functions/<name>.ts       # generated fn wrappers
     ├── impl/functions/...        # user-owned native implementations
     ├── pipes/<name>.ts           # pipe functions
     ├── middleware/<name>.ts      # Hono middleware
-    ├── schedules/<name>.ts       # Cron job handlers
-    └── workers/<name>.ts         # BullMQ worker handlers
+    ├── schedules/<name>.ts       # Scheduled job handlers
+    ├── workers/<name>.ts         # BullMQ worker handlers
+    └── subscriptions/<name>.ts   # Event subscribers
+└── test/generated/
+    ├── <resource>.test.ts            # --gen-tests
+    └── <resource>.property.test.ts   # --gen-property-tests
 ```
 
 ---
 
 ## CLI Commands
 
-| Command | Status | Description |
-|---------|--------|-------------|
-| `bp check <file> [--json]` | ✅ | Validate syntax and semantics |
-| `bp build <file> [--out <dir>] [--target <node\|python>] [--gen-tests]` | ✅ | Compile to a runnable project. `--target node` (default) → TS/Hono; `--target python` → FastAPI/uv. `--gen-tests` works on both: node emits a PGlite-backed Vitest suite, python emits a pytest suite backed by `testcontainers[postgresql]` (Docker required) |
-| `bp diff <file> [--out <dir>] [--apply] [--exit-code]` | ✅ | Preview changes as a unified diff; `--apply` writes them, `--exit-code` returns 1 on diff (CI) |
-| `bp run <file> [--out <dir>]` | ✅ | Build and start the server |
-| `bp dev <file> [--out <dir>]` | ✅ | Watch mode — rebuild and restart on changes |
-| `bp test <file> [--out <dir>]` | ✅ | Build (with auto-generated contract tests) and run vitest — no external Postgres needed |
-| `bp migrate <file> [generate\|push]` | ✅ | Build and run drizzle-kit |
-| `bp deploy <file> [--out <dir>] [--tag <image>]` | Preview | Build a Docker image; Fly.io deployment requires local Fly configuration |
-| `bp generate <file> [--write]` | ✅ | Resolve `@>` slots via LLM (needs `ANTHROPIC_API_KEY`) |
-| `bp init [name]` | ✅ | Scaffold a new Blueprint project |
-| `bp fmt <file> [--write]` | ✅ | Format .bp files |
-| `bp lint <file>` | ✅ | Lint for style and best practices |
-| `bp docs <file> [--out file.json]` | ✅ | Generate OpenAPI 3.1 JSON spec |
-| `bp stats <file> [--json]` | ✅ | Show code statistics |
-| `bp doctor` | ✅ | Check environment dependencies |
-| `bp explain <code>` | ✅ | Print the documentation for an error code (e.g. `bp explain C001`) |
-| `bp completion <bash\|zsh\|fish>` | ✅ | Generate shell completion script |
-| `bp lsp` | Basic | Start the language server |
-| `bp eject <dir>` | ✅ | Remove Blueprint markers — make generated code fully yours |
-| `bp version` | ✅ | Show version |
+Run `bp <command> --help` for the authoritative flags. The command inventory is:
 
-## Implementation Status
+| Command | What it does |
+|---------|--------------|
+| `bp check <file> [--json]` | Validate syntax and semantics |
+| `bp build <file> [--target node\|python\|effect] [--out <dir>] [--gen-tests] [--gen-property-tests]` | Generate a target project; properties, `--react-query`, and `--frontend-only` are Node-only |
+| `bp frontend <file>` | Generate only the standalone frontend SDK package |
+| `bp frontend publish <file>` | Build and dry-run the frontend package publish flow |
+| `bp diff <file> [--target ...] [--apply] [--exit-code]` | Preview generated changes or use them as a CI gate |
+| `bp run <file>` / `bp dev <file>` | Build and start the Node service, once or in watch mode |
+| `bp test <file> [--target node\|python] [--gen-property-tests]` | Run PGlite-backed Vitest or Docker/testcontainers-backed pytest; properties are Node-only |
+| `bp migrate <file> [generate\|push\|studio\|check] [--target node\|python]` | Run Drizzle Kit or Alembic; Python does not provide `studio` |
+| `bp deploy <file> [--target docker]` | Build and smoke-test a Node Docker image; `fly` is reserved but not implemented |
+| `bp generate <file> [--write]` | Resolve quoted `@>` slots to Blueprint statements; `--write` edits the `.bp` file |
+| `bp init [name]` | Scaffold a starter project |
+| `bp import [path] --from ts` | Scaffold `.bp` structure from static TypeScript facts; all handler bodies become TODO/501 stubs |
+| `bp fmt <file>` / `bp lint <file>` | Format source or lint best practices |
+| `bp docs <file>` | Generate an OpenAPI 3.1 document |
+| `bp stats <file>` / `bp doctor` | Inspect a Blueprint or the local toolchain environment |
+| `bp explain <code>` | Explain a structured diagnostic code |
+| `bp context [topic]` / `bp llms` | Print embedded agent-facing language and CLI guidance |
+| `bp completion <shell>` / `bp lsp` | Generate shell completion or start the language server |
+| `bp eject <dir>` | Remove Blueprint ownership markers and manifest |
+| `bp version` / `bp help` | Show version or command help |
 
-| Milestone | Status | Notes |
-|-----------|--------|-------|
-| M1: Lexer + Parser + AST | ✅ Complete | 50+ lexer tests, 61+ parser tests, all SPEC fixtures |
-| M2: Semantic Checker | ✅ Complete | Name resolution, type references, function calls, middleware, and supported auth forms |
-| M3: JavaScript Codegen | Core stable | REST, models, middleware, pipes, fns, schedules, and tests are usable; STREAM/WS/workers remain preview surfaces |
-| M4: Developer Experience | Core stable | init, run, dev, fmt, lint, docs |
-| M5: Testing + Migrations | Core stable | bp test (Vitest), bp migrate (drizzle-kit) |
-| M6: LLM Integration | Preview | bp generate requires `ANTHROPIC_API_KEY`; review generated code before shipping |
-| M7: Polish + Launch | In progress | GoReleaser, release CI, `@blueprint/runtime` npm package |
+## Current Status
 
-See [SPEC.md](./SPEC.md) for the full language specification and design rationale.
+- The Node target is the release/reference path. Generic `auth api_key`,
+  `auth bearer`, and `auth session` metadata does not itself generate credential
+  verification; use explicit middleware. Webhook HMAC auth is implemented.
+- Node `external` auth is a separate generated boundary: `bearer`/`jwt`/`basic`/
+  `api_key` accept one declared `secret.NAME` or `env.NAME`. `retry N` adds N
+  immediate retries for network/timeout failures and HTTP 408/429/5xx, with a
+  fresh timeout each attempt; other 4xx responses fail immediately, and
+  malformed configuration fails codegen.
+- Endpoint `cache <duration>` is currently metadata only. Endpoint rate limits
+  are in-process and per instance.
+- On both Node and Python, declaring a model implies the full Postgres data
+  layer. `database postgres` with no models still emits an importable empty
+  schema so migration tooling remains valid.
+- Node `--gen-property-tests` is an opt-in valid-request fuzz layer, not a
+  proof of business correctness. It rejects the build when a REST route uses
+  unsupported auth/header/rate-limit input, impossible path/email/URL bounds, a
+  ref-backed `save`/`seed`/`update` field, a reachable recursive inline
+  `fn`/`pipe` graph, or non-hermetic external, native, queue, storage, event,
+  realtime, sleep, or wall-clock behavior.
+- Node relationship loading is limited to one-level ref-backed LEFT JOINs, and
+  computed fields use a pure, total, read-only expression subset. Python and
+  Effect fail closed on both features.
+- The Python target is an advanced beta for supported HTTP/data slices. It
+  emits FastAPI `Body`/`Query` validation and aliased header parameters, while
+  rejecting STREAM/WS handlers, undeclared env access, unsafe function config,
+  richer middleware steps, and other semantics it cannot preserve. The Effect
+  target is an experimental scaffold and likewise rejects models/endpoints
+  rather than pretending to support them.
+- Workers, schedules, `enqueue`, subscriptions, STREAM, and WebSocket generation
+  exist on Node, but realtime/queue behavior should be verified for each service.
+- `bp generate` is preview functionality that calls Anthropic. Review rewritten
+  Blueprint and run `bp check` before building.
+
+See the [Language Reference](./docs/language-reference.md) for the published
+grammar and behavior contract.
 
 ---
 
@@ -438,10 +493,14 @@ bun run docs:dev
 This starts a local dev server at `http://localhost:5173` with:
 
 - [Getting Started](./docs/getting-started.md) -- Installation, quickstart, first project
-- [Language Reference](./docs/language-reference.md) -- Complete BP syntax, every construct
+- [Language Reference](./docs/language-reference.md) -- BP syntax and language constructs
 - [CLI Reference](./docs/cli-reference.md) -- All `bp` commands with flags and examples
 - [Examples](./docs/examples.md) -- Worked examples from hello-world to production API
 - [Generated Output](./docs/generated-output.md) -- What gets generated and how to use it
+- [Testing Guide](./docs/testing-guide.md) -- Generated and authored tests by target
+- [LLM Generation](./docs/llm-generation.md) -- Quoted `@>` slots and source rewriting
+- [Multi-Target Codegen](./docs/multi-target-codegen.md) -- Target contracts and maturity
+- [Error Codes](./docs/error-codes.md) -- Structured diagnostics used by `bp explain`
 - [Architecture](./docs/architecture.md) -- Toolchain internals for contributors
 
 To build the static site for deployment:

@@ -1,14 +1,33 @@
 # Blueprint Language Support for VS Code
 
-Syntax highlighting and language support for the [Blueprint](https://github.com/abdul-hamid-achik/blueprint) language (`.bp` files).
+Editor and language-server support for the [Blueprint](https://github.com/abdul-hamid-achik/blueprint) language (`.bp` files).
 
 ## Features
 
 - Full syntax highlighting for all Blueprint constructs
+- Parser and semantic diagnostics while you type
+- Context-aware completion for declarations, types, constraints, models,
+  middleware, steps, local values, environment names, and model fields
+- Hover and go-to-definition for Blueprint symbols
+- Workspace symbol search across `.bp` files
 - Bracket matching and auto-closing pairs (`{}`, `[]`, `()`, `""`)
 - Comment toggling with `Ctrl+/` / `Cmd+/`
 - Smart indentation — auto-indents after `{`
 - String interpolation `{expr}` highlighted inside strings
+
+The extension starts `bp lsp` automatically when a Blueprint file opens.
+
+## Prerequisite
+
+Install the Blueprint CLI and make sure VS Code can find it:
+
+```bash
+bp version
+```
+
+If `bp` is not on VS Code's `PATH`, set **Blueprint › Server: Path** to the
+absolute executable path. **Blueprint: Restart Language Server** applies a new
+path or restarts a stopped server.
 
 ## Installation
 
@@ -18,15 +37,17 @@ Build and install the extension package:
 
 ```bash
 cd editors/vscode-blueprint
-npm install -g @vscode/vsce
-vsce package
-code --install-extension blueprint-language-0.1.0.vsix
+npm install
+npx @vscode/vsce package
+code --install-extension blueprint-language-0.2.0.vsix
 ```
 
 ### Option 2: Symlink (development)
 
 ```bash
-ln -s "$(pwd)/editors/vscode-blueprint" \
+cd editors/vscode-blueprint
+npm install
+ln -s "$(pwd)" \
   "$HOME/.vscode/extensions/blueprint-language"
 ```
 
@@ -35,11 +56,34 @@ Reload VS Code (`Ctrl+Shift+P` → **Developer: Reload Window**).
 ### Option 3: Copy to extensions folder
 
 ```bash
-cp -r editors/vscode-blueprint \
+cd editors/vscode-blueprint
+npm install
+cp -r . \
   "$HOME/.vscode/extensions/blueprint-language"
 ```
 
 Restart VS Code.
+
+## Settings
+
+```json
+{
+  "blueprint.server.path": "bp",
+  "blueprint.server.args": ["lsp"]
+}
+```
+
+The defaults above work for the normal Blueprint CLI. `server.args` can be
+empty when `server.path` points to a dedicated wrapper that starts the language
+server directly. Both settings are machine-overridable, so remote workspaces
+can select the executable installed on the remote host.
+
+## Development checks
+
+```bash
+npm test
+npm run check
+```
 
 ## What Gets Highlighted
 
@@ -51,7 +95,7 @@ Restart VS Code.
 | `\|>` step | `\|> user = fetch user(id)` | `keyword.operator.step` |
 | `->` output | `-> 200 { id: user.id }` | `keyword.operator.output` |
 | HTTP methods | `GET POST PUT PATCH DELETE` | `support.function.http-method` |
-| Declarations | `blueprint model fn pipe` | `keyword.declaration` |
+| Declarations | `blueprint model computed fn pipe` | `keyword.declaration` |
 | Control flow | `guard when try recover` | `keyword.control` |
 | Data ops | `fetch query save update` | `support.function.data-operation` |
 | Types | `string int bool uuid` | `storage.type` |
@@ -67,9 +111,13 @@ Restart VS Code.
 
 ```
 vscode-blueprint/
-├── package.json                  — extension manifest
+├── extension.js                 — stdio language-client lifecycle
+├── client-config.js             — validated server settings
+├── package.json                 — extension manifest
+├── LICENSE                      — MIT package license
 ├── language-configuration.json  — brackets, comments, indent rules
 ├── syntaxes/
 │   └── bp.tmLanguage.json        — TextMate grammar
+├── test/                         — dependency-free client config tests
 └── README.md
 ```

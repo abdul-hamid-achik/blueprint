@@ -7,7 +7,6 @@ import (
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen"
-	"github.com/abdul-hamid-achik/blueprint/internal/codegen/common"
 	"github.com/abdul-hamid-achik/blueprint/internal/resolve"
 )
 
@@ -48,7 +47,7 @@ func (g *Generator) genMiddleware(mw *ast.Middleware) codegen.OutputFile {
 	// Build the function signature.
 	params := []string{}
 	for _, h := range headerParams {
-		params = append(params, fmt.Sprintf("%s: str | None = Header(None, alias=%q)", common.SnakeCase(h), h))
+		params = append(params, fmt.Sprintf("%s: str | None = Header(None, alias=%q)", pythonHeaderParamName(h), h))
 	}
 	if used.touchesDB {
 		params = append(params, "db: Session = Depends(get_db)")
@@ -100,6 +99,9 @@ type middlewareUsage struct {
 	touchesDB    bool
 	hasGuards    bool
 	callsUserFn  bool
+	usesEnv      bool
+	needsNow     bool
+	needsDelta   bool
 	userFnCalls  []string // ordered, unique
 }
 
@@ -115,13 +117,24 @@ func scanMiddlewareUsage(mw *ast.Middleware, userFns map[string]bool, models []*
 		}
 		switch v := e.(type) {
 		case *ast.FieldAccess:
-			if id, ok := v.Base.(*ast.Ident); ok && id.Name == "header" {
-				if !seenHeaders[v.Field] {
-					seenHeaders[v.Field] = true
-					u.headerFields = append(u.headerFields, v.Field)
+			if id, ok := v.Base.(*ast.Ident); ok {
+				switch id.Name {
+				case "header":
+					if !seenHeaders[v.Field] {
+						seenHeaders[v.Field] = true
+						u.headerFields = append(u.headerFields, v.Field)
+					}
+				case "env":
+					u.usesEnv = true
 				}
 			}
+			if v.Field == "ago" || pyDurationField(v.Field) != "" {
+				u.needsNow = true
+				u.needsDelta = true
+			}
 			visitExpr(v.Base)
+		case *ast.NowLit:
+			u.needsNow = true
 		case *ast.FnCall:
 			if userFns[v.Name] && !seenFns[v.Name] {
 				seenFns[v.Name] = true
@@ -144,6 +157,10 @@ func scanMiddlewareUsage(mw *ast.Middleware, userFns map[string]bool, models []*
 		case *ast.ListExpr:
 			for _, el := range v.Elements {
 				visitExpr(el)
+			}
+		case *ast.BlockExpr:
+			for _, entry := range v.Entries {
+				visitExpr(entry.Value)
 			}
 		}
 	}
@@ -185,6 +202,16 @@ func writeMiddlewareImports(b *strings.Builder, u middlewareUsage) {
 		b.WriteString("from sqlalchemy.orm import Session\n")
 		b.WriteString("from src.lib.db import get_db\n")
 		b.WriteString("from src.models import schema\n")
+	}
+	if u.needsNow {
+		imports := []string{"datetime", "timezone"}
+		if u.needsDelta {
+			imports = append(imports, "timedelta")
+		}
+		fmt.Fprintf(b, "from datetime import %s\n", strings.Join(imports, ", "))
+	}
+	if u.usesEnv {
+		b.WriteString("from src.lib.env import env\n")
 	}
 	sort.Strings(u.userFnCalls)
 	for _, name := range u.userFnCalls {
@@ -277,7 +304,7 @@ func newMiddlewareBodyCtx(mw *ast.Middleware, models []*ast.Model, userFns map[s
 		userFns:     userFns,
 	}
 	for _, h := range headers {
-		c.inputs[common.SnakeCase(h)] = true
+		c.inputs[pythonHeaderParamName(h)] = true
 	}
 	// Re-resolve facts. We don't have a global block-resolver function for
 	// non-endpoint bodies yet; do a small walk inline for data-op bindings.
@@ -300,4 +327,38 @@ func newMiddlewareBodyCtx(mw *ast.Middleware, models []*ast.Model, userFns map[s
 		}
 	}
 	return c
+}
+
+// pythonHeaderParamName maps a wire header to a valid snake_case Python
+// parameter while preserving the original spelling in FastAPI's alias.
+func pythonHeaderParamName(header string) string {
+	runes := []rune(header)
+	var b strings.Builder
+	lastUnderscore := false
+	for i, r := range runes {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			previousIsLowerOrDigit := i > 0 && ((runes[i-1] >= 'a' && runes[i-1] <= 'z') || (runes[i-1] >= '0' && runes[i-1] <= '9'))
+			nextIsLower := i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z'
+			previousIsUpper := i > 0 && runes[i-1] >= 'A' && runes[i-1] <= 'Z'
+			if (previousIsLowerOrDigit || previousIsUpper && nextIsLower) && !lastUnderscore {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r + ('a' - 'A'))
+			lastUnderscore = false
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		default:
+			if !lastUnderscore && b.Len() > 0 {
+				b.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	name := strings.Trim(b.String(), "_")
+	if !validPythonIdentifier(name) {
+		return "header_" + name
+	}
+	return name
 }

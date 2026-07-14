@@ -146,7 +146,7 @@ func streamSignatureParams(se *ast.StreamEndpoint) string {
 			inputs = append(inputs, in)
 		}
 	}
-	return signatureParams(se.Path, inputs)
+	return signatureParams("GET", se.Path, inputs)
 }
 
 // streamTouchesDB reports whether any pre-stream statement is a data op.

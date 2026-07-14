@@ -94,7 +94,7 @@ func TestPython_RouteFileForPathParam(t *testing.T) {
 	for _, want := range []string{
 		`@router.get("/api/hello/{name}")`,
 		"async def get_hello_name(name: str):",
-		`return JSONResponse({"message": f"Hello, {name}!"}, status_code=200)`,
+		`return JSONResponse(jsonable_encoder({"message": f"Hello, {name}!"}), status_code=200)`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("hello.py missing %q, got:\n%s", want, body)
@@ -110,6 +110,63 @@ func TestPython_RouteFileForStaticEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(body, "async def get_health():") {
 		t.Errorf("health handler missing, got:\n%s", body)
+	}
+}
+
+func TestPython_KeywordRouteResourceUsesSafeModuleName(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/class { -> 200 "ok" }
+`
+	outDir := buildPython(t, src)
+	if _, err := os.Stat(filepath.Join(outDir, "src/routes/_class.py")); err != nil {
+		t.Fatalf("keyword route resource should use a safe module name: %v", err)
+	}
+	app := readPy(t, outDir, "src/app.py")
+	for _, want := range []string{"from src.routes import _class", "app.include_router(_class.router)"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.py missing keyword-safe route import %q, got:\n%s", want, app)
+		}
+	}
+}
+
+func TestPython_RouteInputsPreserveHTTPTransportDefaultsAndConstraints(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+POST /api/items/:id {
+  <- id    uuid   required
+  <- title string required min(1) max(80)
+  <- count int    default(2) min(1) max(5)
+  <- note  string optional
+  -> 200 { id: id, title: title, count: count, note: note }
+}
+GET /api/search {
+  <- q    string optional min(2)
+  <- page int    default(1) min(1)
+  -> 200 { q: q, page: page }
+}
+`
+	outDir := buildPython(t, src)
+	items := readPy(t, outDir, "src/routes/items.py")
+	for _, want := range []string{
+		"from fastapi import APIRouter, Body",
+		"from uuid import UUID",
+		"id: UUID",
+		"title: str = Body(..., embed=True, min_length=1, max_length=80)",
+		"count: int = Body(2, embed=True, ge=1, le=5)",
+		"note: str | None = Body(None, embed=True)",
+	} {
+		if !strings.Contains(items, want) {
+			t.Errorf("items.py missing %q, got:\n%s", want, items)
+		}
+	}
+	search := readPy(t, outDir, "src/routes/search.py")
+	for _, want := range []string{
+		"from fastapi import APIRouter, Query",
+		"q: str | None = Query(None, min_length=2)",
+		"page: int = Query(1, ge=1)",
+	} {
+		if !strings.Contains(search, want) {
+			t.Errorf("search.py missing %q, got:\n%s", want, search)
+		}
 	}
 }
 
@@ -131,6 +188,15 @@ func TestPython_PyProjectHasFastAPIAndUvicorn(t *testing.T) {
 
 func TestPython_UnsupportedFeaturesAreRejected(t *testing.T) {
 	cases := map[string]string{
+		"duplicate blueprint entry": `blueprint "x" { version "1.0" version "2.0" port 3000 runtime node }
+GET /api/x { -> 200 "ok" }
+`,
+		"malformed blueprint version": `blueprint "x" { version 1 port 3000 runtime node }
+GET /api/x { -> 200 "ok" }
+`,
+		"out-of-range blueprint port": `blueprint "x" { version "1.0" port 70000 runtime node }
+GET /api/x { -> 200 "ok" }
+`,
 		"pipe declaration": `blueprint "x" { version "1.0" port 3000 runtime node }
 pipe validate { <- v string  -> v }
 GET /api/x { -> 200 "ok" }
@@ -141,6 +207,200 @@ GET /api/x { -> 200 "ok" }
 `,
 		"storage": `blueprint "x" { version "1.0" port 3000 runtime node storage s3 }
 GET /api/x { -> 200 "ok" }
+`,
+		"environment declaration": `blueprint "x" { version "1.0" port 3000 runtime node }
+env LOG_LEVEL "info"
+GET /api/x { -> 200 "ok" }
+`,
+		"named enum declaration": `blueprint "x" { version "1.0" port 3000 runtime node }
+enum Status { active inactive }
+GET /api/x { -> 200 "ok" }
+`,
+		"unresolved include declaration": `blueprint "x" { version "1.0" port 3000 runtime node }
+include "models.bp"
+GET /api/x { -> 200 "ok" }
+`,
+		"function logic": `blueprint "x" { version "1.0" port 3000 runtime node }
+fn calculate {
+  <- value int
+  -> int
+  logic { -> value }
+}
+`,
+		"authored test": `blueprint "x" { version "1.0" port 3000 runtime node }
+test smoke {
+  target GET /api/x
+  request {}
+  expect { status 200 }
+}
+`,
+		"stream endpoint": `blueprint "x" { version "1.0" port 3000 runtime node }
+STREAM /events {
+  stream {
+    |> on event(created) { -> { id: event.id } }
+  }
+}
+`,
+		"websocket endpoint": `blueprint "x" { version "1.0" port 3000 runtime node }
+WS /socket {
+  on_message { -> { body: message.body } }
+}
+`,
+		"sum without a collection expression": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x {
+  |> total = sum(1)
+  -> 200 { total: total }
+}
+`,
+		"file input": `blueprint "x" { version "1.0" port 3000 runtime node }
+POST /api/x {
+  <- file image/* required
+  -> 200 "ok"
+}
+`,
+		"middleware after body": `blueprint "x" { version "1.0" port 3000 runtime node }
+middleware audit {
+  after { |> log "done" }
+}
+GET /api/x { -> 200 "ok" }
+`,
+		"endpoint metadata": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x {
+  limit 60/min
+  -> 200 "ok"
+}
+`,
+		"dynamic endpoint default": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x {
+  <- at timestamp default(now)
+  -> 200 { at: at }
+}
+`,
+		"middleware configuration entries": `blueprint "x" { version "1.0" port 3000 runtime node }
+middleware cors {
+  origins: ["https://example.com"]
+}
+GET /api/x { -> 200 "ok" }
+`,
+		"unsupported function implementation": `blueprint "x" { version "1.0" port 3000 runtime node }
+fn convert {
+  <- value string
+  -> string
+  impl exec { cmd: "convert" }
+}
+GET /api/x { -> 200 "ok" }
+`,
+		"configured builtin middleware": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x {
+  use cors { origins: ["https://example.com"] }
+  -> 200 "ok"
+}
+`,
+		"non-identifier middleware injection": `blueprint "x" { version "1.0" port 3000 runtime node }
+middleware auth {
+  before { |> inject header.Authorization as token }
+}
+GET /api/x {
+  use auth
+  -> 200 "ok"
+}
+`,
+		"multiple middleware injections": `blueprint "x" { version "1.0" port 3000 runtime node }
+middleware auth {
+  before {
+    |> inject first as first_alias
+    |> inject second as second_alias
+  }
+}
+GET /api/x {
+  use auth
+  -> 200 "ok"
+}
+`,
+		"structured query input": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x {
+  <- filters json optional
+  -> 200 { filters: filters }
+}
+`,
+		"constrained path input": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x/:id {
+  <- id uuid optional
+  -> 200 { id: id }
+}
+`,
+		"invalid min constraint type": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x {
+  <- id uuid min(1)
+  -> 200 { id: id }
+}
+`,
+		"undefined value builtin": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x { -> 200 { n: count(items) } }
+`,
+		"dictionary attribute access": `blueprint "x" { version "1.0" port 3000 runtime node }
+POST /api/x {
+  <- payload json required
+  -> 200 { name: payload.name }
+}
+`,
+		"undeclared environment field": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x { -> 200 { token: env.MISSING_TOKEN } }
+`,
+		"middleware query step": `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+model user { id uuid primary }
+middleware auth {
+  before { |> users = query user paginate(1, 10) }
+}
+GET /api/x { use auth  -> 200 "ok" }
+`,
+		"filter accumulator query": `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+model item { id uuid primary  status string required }
+POST /api/x {
+  |> filters = { status: "active" }
+  |> items = query item where(filters)
+  -> 200 { items: items }
+}
+`,
+		"json function result attribute": `blueprint "x" { version "1.0" port 3000 runtime node }
+fn decode {
+  <- token string
+  -> json
+  impl python { module: "./internal/auth", func: "decode" }
+}
+GET /api/x {
+  <- token string required
+  |> payload = decode(token)
+  -> 200 { user: payload.user_id }
+}
+`,
+		"header string interpolation": `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x { -> 200 { value: "token {header.Authorization}" } }
+`,
+		"json result string interpolation": `blueprint "x" { version "1.0" port 3000 runtime node }
+fn decode { -> json  impl python { module: "./internal/auth", func: "decode" } }
+GET /api/x {
+  |> payload = decode()
+  -> 200 { value: "user {payload.user_id}" }
+}
+`,
+		"invalid min constraint value": `blueprint "x" { version "1.0" port 3000 runtime node }
+POST /api/x { <- count int min("one")  -> 200 { count: count } }
+`,
+		"mismatched input default": `blueprint "x" { version "1.0" port 3000 runtime node }
+POST /api/x { <- enabled bool default("yes")  -> 200 { enabled: enabled } }
+`,
+		"unsafe implementation module": `blueprint "x" { version "1.0" port 3000 runtime node }
+fn run { -> string  impl python { module: "./internal/../../outside", func: "run" } }
+`,
+		"invalid implementation function": `blueprint "x" { version "1.0" port 3000 runtime node }
+fn run { -> string  impl python { module: "./internal/run", func: "not-valid" } }
+`,
+		"unknown implementation entry": `blueprint "x" { version "1.0" port 3000 runtime node }
+fn run { -> string  impl python { module: "./internal/run", file: "run.py" } }
+`,
+		"python keyword input": `blueprint "x" { version "1.0" port 3000 runtime node }
+POST /api/x { <- class string required  -> 200 "ok" }
 `,
 	}
 	for name, src := range cases {
@@ -157,6 +417,97 @@ GET /api/x { -> 200 "ok" }
 				t.Errorf("error should explain phase: %v", err)
 			}
 		})
+	}
+}
+
+func TestPython_EndpointAndMiddlewareHeadersUseValidAliasesAndEnvImports(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+secret API_KEY required
+middleware auth {
+  before {
+    |> guard header.X-API-Key == env.API_KEY -> 401 "invalid key"
+  }
+}
+GET /api/x {
+  use auth
+  -> 200 { matches: header.X-API-Key == env.API_KEY }
+}
+`
+	outDir := buildPython(t, src)
+	route := readPy(t, outDir, "src/routes/x.py")
+	for _, want := range []string{
+		"from fastapi import APIRouter, Header",
+		"from src.lib.env import env",
+		`x_api_key: str | None = Header(None, alias="X-API-Key")`,
+		`"matches": (x_api_key == env.API_KEY)`,
+	} {
+		if !strings.Contains(route, want) {
+			t.Errorf("route header/env support missing %q, got:\n%s", want, route)
+		}
+	}
+	middleware := readPy(t, outDir, "src/middleware/auth.py")
+	for _, want := range []string{
+		"from src.lib.env import env",
+		`x_api_key: str | None = Header(None, alias="X-API-Key")`,
+		"if not ((x_api_key == env.API_KEY)):",
+	} {
+		if !strings.Contains(middleware, want) {
+			t.Errorf("middleware header/env support missing %q, got:\n%s", want, middleware)
+		}
+	}
+}
+
+func TestPython_MiddlewareTemporalExpressionsImportDatetime(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+middleware clock_guard {
+  before { |> guard now == now -> 401 "clock unavailable" }
+}
+GET /api/x { use clock_guard  -> 200 "ok" }
+`
+	outDir := buildPython(t, src)
+	middleware := readPy(t, outDir, "src/middleware/clock_guard.py")
+	if !strings.Contains(middleware, "from datetime import datetime, timezone") {
+		t.Fatalf("middleware using now must import datetime/timezone, got:\n%s", middleware)
+	}
+	if !strings.Contains(middleware, "datetime.now(timezone.utc)") {
+		t.Fatalf("middleware now expression was not emitted, got:\n%s", middleware)
+	}
+}
+
+func TestPython_ExpressionLiteralsDoNotFallBackToTODOs(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/values {
+  -> 200 {
+    durations: [5s, 10min, 2hours, 1day]
+    sizes: [10mb, 1gb, 512kb, 7b]
+    rate: 60/min
+  }
+}
+`
+	body := readPy(t, buildPython(t, src), "src/routes/values.py")
+	for _, want := range []string{
+		`"durations": [5 * 1000, 10 * 60 * 1000, 2 * 60 * 60 * 1000, 1 * 24 * 60 * 60 * 1000]`,
+		`"sizes": [10 * 1024 * 1024, 1 * 1024 * 1024 * 1024, 512 * 1024, 7]`,
+		`"rate": "60/min"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("values.py missing %q, got:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "TODO(python)") {
+		t.Errorf("supported expression literals must not emit TODO fallbacks, got:\n%s", body)
+	}
+}
+
+func TestPython_OptionalSecretDefaultIsPreserved(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+secret API_ORIGIN optional default("https://example.test")
+GET /api/x { -> 200 { origin: env.API_ORIGIN } }
+`
+	outDir := buildPython(t, src)
+	env := readPy(t, outDir, "src/lib/env.py")
+	if !strings.Contains(env, `API_ORIGIN: Optional[str] = "https://example.test"`) {
+		t.Fatalf("optional secret default was not preserved, got:\n%s", env)
 	}
 }
 
@@ -199,6 +550,39 @@ func TestPython_Phase2EmitsModelLayer(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(outDir, rel)); err != nil {
 			t.Errorf("expected %s to exist: %v", rel, err)
 		}
+	}
+}
+
+func TestPython_ModelImpliesCompleteDatabaseLayer(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+model item { id uuid primary }
+GET /api/x { -> 200 "ok" }
+`
+	outDir := buildPython(t, src)
+	project := readPy(t, outDir, "pyproject.toml")
+	for _, dep := range []string{"sqlalchemy", "psycopg", "alembic"} {
+		if !strings.Contains(project, dep) {
+			t.Errorf("model-implied data layer missing %s dependency, got:\n%s", dep, project)
+		}
+	}
+	for _, rel := range []string{"src/lib/db.py", "src/models/schema.py", "alembic/env.py"} {
+		if _, err := os.Stat(filepath.Join(outDir, rel)); err != nil {
+			t.Errorf("model-implied data layer missing %s: %v", rel, err)
+		}
+	}
+}
+
+func TestPython_DatabaseWithoutModelsEmitsImportableEmptySchema(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+GET /api/x { -> 200 "ok" }
+`
+	outDir := buildPython(t, src)
+	schema := readPy(t, outDir, "src/models/schema.py")
+	if !strings.Contains(schema, "class Base(DeclarativeBase):") {
+		t.Fatalf("database-only project should emit an empty Base schema, got:\n%s", schema)
+	}
+	if strings.Contains(schema, "from sqlalchemy import \n") {
+		t.Fatalf("empty schema must not emit an invalid empty import, got:\n%s", schema)
 	}
 }
 

@@ -1,0 +1,4 @@
+model included_user {
+  id   uuid   primary
+  name string required
+}

@@ -205,3 +205,31 @@ func TestGen_AutoTests_DisabledByDefault(t *testing.T) {
 		t.Errorf("pglite devDep should not be added without --gen-tests")
 	}
 }
+
+func TestGen_AutoTests_NoDatabaseDoesNotImportMissingHarness(t *testing.T) {
+	src := `blueprint "hello" {
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+
+GET /api/hello/:name {
+  <- name string required
+  -> 200 { message: name }
+}
+`
+	outDir := buildWithGenTests(t, src)
+	test := readGen(t, outDir, "test/generated/hello.test.ts")
+	if strings.Contains(test, "src/lib/db") || strings.Contains(test, "_harness/db") || strings.Contains(test, "resetDb") {
+		t.Errorf("database-free contract suite must not import a missing db harness, got:\n%s", test)
+	}
+	for _, rel := range []string{"test/_harness/db.ts", "test/_harness/ddl.ts"} {
+		if _, err := os.Stat(filepath.Join(outDir, rel)); !os.IsNotExist(err) {
+			t.Errorf("database-free contract suite should not emit %s", rel)
+		}
+	}
+	pkg := readGen(t, outDir, "package.json")
+	if strings.Contains(pkg, "@electric-sql/pglite") {
+		t.Errorf("database-free contract suite should not depend on PGlite, got:\n%s", pkg)
+	}
+}

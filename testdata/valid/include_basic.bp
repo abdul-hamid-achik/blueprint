@@ -4,5 +4,5 @@ blueprint "test-include" {
   runtime  node
 }
 
-include "models.bp"
-include "endpoints/api.bp"
+include "includes/models.bp"
+include "includes/endpoints/api.bp"

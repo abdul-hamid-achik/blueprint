@@ -4,6 +4,58 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added (2026-07-14 audit and polish pass)
+
+- **A deliberately conservative `bp import` scaffolder** can recover static
+  Drizzle tables/enums, Hono route shapes, and named Zod objects from static,
+  transport-compatible `zValidator` calls. Nullable/type-changing fields skip,
+  and SQL identity or dropped Drizzle options warn. Handler bodies are always
+  discarded, reported on stderr, and replaced with explicit TODO/501 routes;
+  dynamic or unsupported structure is warned about rather than guessed.
+- **The language server now provides context-aware completion and workspace
+  symbols**, and `editors/vscode-blueprint` is a packaged stdio client that
+  starts `bp lsp`, watches `.bp` files, supports restart/configuration, and
+  retains the existing syntax highlighting.
+- **Opt-in deterministic endpoint property tests** ship through
+  `--gen-property-tests` on Node `build`, `diff`, and `test`. The flag implies
+  the contract suite, emits fast-check properties with stable seeds and 32
+  valid-request runs per REST route, resets PGlite between runs, and rejects
+  unsupported or non-hermetic routes before returning files.
+- **Node relationship loading and computed model fields** now support
+  one-level `query ... with(relation)` LEFT JOINs backed by
+  `<relation>_id ref(model)`, plus pure read-only computed expressions included
+  in generated API/OpenAPI shapes. Unsupported aliases, self/repeated-target
+  joins, `fetch ... with(...)`, and Python/Effect generation fail closed.
+- **`bp test --target python`** now builds the pytest/testcontainers contract-test harness and runs it through `uv`; the experimental Effect target is rejected with a direct explanation.
+- **A purpose-built documentation landing page** now explains Blueprint's compiler model, arrow flow, target maturity, workflow, and learning paths in a responsive, accessible light/dark design.
+
+### Fixed (2026-07-14 audit and polish pass)
+
+- **Property generation no longer admits false-green routes.** Impossible
+  path/email/URL domains, ref-backed `save`/`seed`/`update` fields, and reachable
+  recursive inline `fn`/`pipe` graphs now fail before any files are returned.
+  Arbitrary emission returns an error instead of producing an `undefined`
+  fallback.
+- **Save migration implementation hooks are user-owned.** Generated `src/saves/*.ts` hooks are scaffolded only when missing, excluded from the manifest, and preserved byte-for-byte on rebuild.
+- **`bp deploy` respects the Blueprint port.** Docker run instructions, port mapping, and the `/health` smoke probe now use the port emitted in the generated Dockerfile instead of assuming `3000`.
+- **Source builds report an honest development version** (`0.15.0-dev`) instead of the stale `0.11.0`; release builds continue to receive their tag through GoReleaser ldflags.
+- **Unresolved `@>` slots fail codegen** instead of disappearing from generated behavior. All target `Files` entrypoints point to `bp generate --write`, and shared AST walking now covers test-group setup and fixture bodies.
+- **Experimental targets fail closed consistently.** Effect rejects every unimplemented top-level declaration. Python now uses an exhaustive declaration/expression allowlist and rejects authored tests, inline function logic, STREAM/WS placeholders, unsupported endpoint input types, middleware `after` bodies, and malformed `sum(...)` shapes before returning files; duration/size/rate/list/path expressions translate without TODO fallbacks.
+- **Arrow-expression and blueprint checking now match generated contracts.** The checker rejects unbound/use-before-bind names, accidental `auth`/`token`/general `secret` globals, unknown data-operation models, out-of-scope conditional/worker bindings, undeclared interpolation roots, duplicate declarations/inputs/local bindings, callable arity mismatches, bare pipe calls, builtin-name collisions, direct model-field typos, duplicate blueprint settings, malformed setting value shapes, and ports outside 1–65535. Input reassignment, realtime path values, middleware injections, map bindings, collection/pagination properties, and FK aliases remain valid.
+- **Authored Node tests fail before an incomplete run.** `bp test` now admits only emitter shapes it can execute: setup is limited to `seed`/`save` and simple unbound `log`; request keys are lowercase and unique, repeats are positive, GET/HEAD bodies and calls/interpolation reject, and assertions use strict supported forms/literals with at most one model assertion. It also rejects dynamic targets, cleanup/shared setup, custom or multipart/file requests, unsupported auth/timing forms, and whole setup rows as auth values. Native dependency checks cover every app-loaded route, realtime/background/subscription, and middleware module rather than only the target route. Ordinary `bp build` remains available for hand-written test workflows.
+- **External subscription sources no longer masquerade as local delivery.** Node codegen rejects `subscribe "event" from(service)` with no files until a transport adapter exists; source-less subscriptions continue to use the in-process event bus.
+- **Python endpoint inputs preserve their HTTP contract.** POST/PUT/PATCH primitives now use embedded FastAPI `Body(...)` parameters, GET/DELETE inputs use `Query(...)`, scalar defaults and min/max constraints are emitted, UUID/timestamp/list/map annotations stay typed, and static JSON responses pass through `jsonable_encoder`. Previously POST JSON was interpreted as query parameters and generated contract tests would receive 422 responses.
+- **Node external auth and retry configuration is enforced.** `bearer`/`jwt`/`basic`/`api_key` require exactly one declared `secret.NAME` or `env.NAME` and generate env-backed `Authorization` or `X-API-Key` headers. `retry N` performs N additional immediate attempts for network/timeout failures and HTTP 408/429/5xx, with a fresh timeout per attempt; other 4xx responses fail immediately. Malformed or duplicate configuration fails before files are returned, with compile-shape and mocked-fetch runtime coverage.
+- **Python codegen closes request, environment, interpolation, and naming escape hatches.** Hyphenated direct `header.X` references become valid FastAPI `Header(..., alias=...)` parameters, `env.FIELD` imports settings and must resolve to a declared secret or generated infrastructure setting, and optional secret defaults are preserved. Attribute access on JSON/map endpoint inputs or JSON-returning function results, raw interpolation of header/env/dictionary-backed values, unknown value calls, unsafe/malformed native implementation config, mismatched defaults/constraints, Python-keyword names, dynamic/bound `where(q)` filter accumulators, and richer unsupported middleware steps now fail before files are returned; bare `where(q)` remains supported for string/text endpoint inputs.
+- **Models activate a complete data layer on both Node and Python.** A model without an explicit database now emits the full Postgres dependencies, validated `DATABASE_URL`, schema, and migration setup. Conversely, `database postgres` with zero models emits an importable empty Drizzle schema or SQLAlchemy `Base` instead of leaving migration imports broken.
+- **The valid include fixture is genuinely resolvable.** `include_basic.bp` now points at checked-in model and endpoint fragments, so the entire root `testdata/valid/*.bp` set passes the real CLI rather than parser-only validation.
+
+### Changed (2026-07-14 audit and polish pass)
+
+- **README, contributor guidance, language reference, CLI help, agent context, and public docs were truth-synced** against the parser, checker, generators, and CLI. Unsupported security/runtime semantics are now called out instead of being presented as enforced behavior.
+- **Deployment guidance is Docker-first and evidence-based.** Unverified serverless adapter recipes were removed, migration paths are separated by target, and production caveats are explicit.
+- **The repository contract now lives in its published references and executable tests.** The maintainer's formal-spec working document moved out of the repository; contributor links now point to the public language and CLI references instead of a private/internal artifact.
+
 A correctness-and-hardening batch driven by a 7-dimension audit (2026-07-09): two silent data-corruption bugs in the Python target, workers/schedules made functional end-to-end on the node target, WS/STREAM transport hardening, strict CLI flag parsing with output-directory safety, and a docs accuracy pass.
 
 ### Fixed
@@ -36,7 +88,7 @@ A correctness-and-hardening batch driven by a 7-dimension audit (2026-07-09): tw
 
 - **`bp migrate` no longer targets a stale database**: the project-root `.env` copy is refreshed when the output-dir copy is still bp's own (hash-tracked); hand-edited copies are preserved with a warning.
 - **`bp migrate --target effect` is rejected explicitly** instead of falling through to the drizzle-kit path with a confusing error.
-- **SPEC.md truth sync**: Appendix C targets table reflects reality (node mature / python advanced / effect experimental), the `in` predicate operator is in the grammar, `like`/`or` status is stated, and a new Appendix D documents the CLI exit-code contract (AGENTS.md's phantom "§24.2" citation fixed). Roadmap line counts and production-readiness multi-target framing corrected.
+- **Language-contract truth sync**: the targets table reflects reality (node mature / python advanced / effect experimental), the `in` predicate operator is documented, `like`/`or` status is stated, and the CLI exit-code contract is documented (AGENTS.md's phantom section citation fixed). Roadmap line counts and production-readiness multi-target framing corrected.
 
 ### Added
 
@@ -46,7 +98,7 @@ A correctness-and-hardening batch driven by a 7-dimension audit (2026-07-09): tw
 
 ### Changed
 
-- **Docs accuracy pass**: `docs/cli-reference.md` reflects the real Python-target coverage (all 5 examples compile), documents `bp explain`, `bp llms`, `bp check --json`, the `effect` target, `--force`, strict flag parsing, and the full exit-code table; `docs/changelog.md` is caught up to v0.11.0; `--target`-per-command claims corrected (deploy's `--target` is a deploy target, not codegen); `docs/testing-guide.md` gains the Python (pytest + testcontainers) testing story; version-anchored "fly reserved for v0.11" claims made version-neutral; `docs/multi-target-codegen.md` now covers the `--gen-tests` builder convention, exit-code contract, and per-command target dispatch; the README middleware example is `bp check`-clean.
+- **Docs accuracy pass**: `docs/cli-reference.md` reflects the Python target's supported/rejected matrix, documents `bp explain`, `bp llms`, `bp check --json`, the `effect` target, `--force`, strict flag parsing, and the full exit-code table; `docs/changelog.md` is caught up to v0.11.0; `--target`-per-command claims corrected (deploy's `--target` is a deploy target, not codegen); `docs/testing-guide.md` gains the Python (pytest + testcontainers) testing story; version-anchored "fly reserved for v0.11" claims made version-neutral; `docs/multi-target-codegen.md` now covers the `--gen-tests` builder convention, exit-code contract, and per-command target dispatch; the README middleware example is `bp check`-clean.
 
 
 ### Fixed (iteration-3 batch — reviewer-confirmed defects)

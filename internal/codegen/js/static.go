@@ -55,8 +55,11 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 	if hasDB {
 		devDeps["drizzle-kit"] = "^0.28.0"
 	}
-	if g.genTests && hasDB {
+	if (g.genTests || g.propertyTests) && hasDB {
 		devDeps["@electric-sql/pglite"] = "^0.2.0"
+	}
+	if g.propertyTests {
+		devDeps["fast-check"] = "^3.23.2"
 	}
 	if g.reactQuery {
 		devDeps["@types/react"] = "^18.3.12"
@@ -533,13 +536,18 @@ func saveMigrationStubs(sourceFile string, save *ast.SaveSchema) []codegen.Outpu
 	files := make([]codegen.OutputFile, 0, len(byModule))
 	for path, funcs := range byModule {
 		var stub strings.Builder
-		stub.WriteString(fileHeader(sourceFile))
+		fmt.Fprintf(&stub, "// Blueprint save migration implementation scaffold from %s.\n", sourceFile)
+		stub.WriteString("// This file is user-owned; `bp build` will not overwrite it. Implement the migration functions below.\n\n")
 		for _, fn := range funcs {
 			fmt.Fprintf(&stub, "export async function %s(save: any): Promise<any> {\n", fn)
 			stub.WriteString("  return save;\n")
 			stub.WriteString("}\n\n")
 		}
-		files = append(files, codegen.OutputFile{Path: path, Content: []byte(stub.String())})
+		files = append(files, codegen.OutputFile{
+			Path:      path,
+			Content:   []byte(stub.String()),
+			UserOwned: true,
+		})
 	}
 	return files
 }

@@ -1,0 +1,126 @@
+:root {
+  --vp-font-family-base: "Avenir Next", Avenir, "Segoe UI Variable", "Segoe UI", sans-serif;
+  --vp-font-family-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  --vp-c-brand-1: #2458c6;
+  --vp-c-brand-2: #1f4da9;
+  --vp-c-brand-3: #1b438f;
+  --vp-c-brand-soft: rgba(36, 88, 198, 0.12);
+
+  --bp-bg: #f6f7f4;
+  --bp-surface: #ffffff;
+  --bp-surface-raised: #fbfcfa;
+  --bp-surface-strong: #111824;
+  --bp-ink: #111827;
+  --bp-ink-soft: #4f5b6d;
+  --bp-ink-faint: #667184;
+  --bp-line: rgba(17, 24, 39, 0.12);
+  --bp-line-strong: rgba(17, 24, 39, 0.2);
+  --bp-grid: rgba(36, 88, 198, 0.075);
+  --bp-accent: #2458c6;
+  --bp-accent-hover: #1b438f;
+  --bp-accent-soft: #e8eefc;
+  --bp-code-bg: #111824;
+  --bp-code-surface: #182131;
+  --bp-code-text: #dce7fb;
+  --bp-code-muted: #8998b1;
+  --bp-success: #277458;
+  --bp-warning: #986a10;
+  --bp-experimental: #626d7e;
+  --bp-focus: #0b6ef3;
+  --bp-nav-bg: rgba(246, 247, 244, 0.88);
+  --bp-radius-sm: 10px;
+  --bp-radius-md: 18px;
+  --bp-radius-lg: 28px;
+  --bp-shadow: 0 24px 70px rgba(20, 31, 50, 0.11);
+}
+
+.dark {
+  --vp-c-brand-1: #8db4ff;
+  --vp-c-brand-2: #a9c6ff;
+  --vp-c-brand-3: #c8d9ff;
+  --vp-c-brand-soft: rgba(117, 167, 255, 0.14);
+
+  --bp-bg: #11141a;
+  --bp-surface: #171c24;
+  --bp-surface-raised: #1b212b;
+  --bp-surface-strong: #0d1118;
+  --bp-ink: #f1f4f8;
+  --bp-ink-soft: #abb5c5;
+  --bp-ink-faint: #838ea0;
+  --bp-line: rgba(229, 235, 245, 0.11);
+  --bp-line-strong: rgba(229, 235, 245, 0.2);
+  --bp-grid: rgba(117, 167, 255, 0.08);
+  --bp-accent: #8db4ff;
+  --bp-accent-hover: #bdd2ff;
+  --bp-accent-soft: #1c2a46;
+  --bp-code-bg: #0d1118;
+  --bp-code-surface: #151c28;
+  --bp-code-text: #dce7fb;
+  --bp-code-muted: #8290a8;
+  --bp-success: #70c7a4;
+  --bp-warning: #e4bc63;
+  --bp-experimental: #9da8ba;
+  --bp-focus: #9dc0ff;
+  --bp-nav-bg: rgba(17, 20, 26, 0.88);
+  --bp-shadow: 0 28px 80px rgba(0, 0, 0, 0.28);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  text-rendering: optimizeLegibility;
+}
+
+.VPNavBar {
+  background: var(--bp-nav-bg) !important;
+  border-bottom: 1px solid var(--bp-line);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+.VPNavBar .logo {
+  border-radius: 6px;
+}
+
+.VPSidebar,
+.VPDocAside {
+  scrollbar-color: var(--bp-line-strong) transparent;
+}
+
+.blueprint-home-page .VPHome {
+  margin-bottom: 0;
+}
+
+.blueprint-home-page .VPFooter {
+  background: var(--bp-bg);
+  border-top-color: var(--bp-line);
+}
+
+@media (max-width: 959px) {
+  /* VitePress alpha leaves translated-offscreen sidebar links tabbable. */
+  .VPSidebar:not(.open) {
+    visibility: hidden;
+  }
+
+  .VPSidebar.open {
+    visibility: visible;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

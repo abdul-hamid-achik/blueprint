@@ -9,6 +9,7 @@ GET /api/greet/:name {
 
   |> log "Greeting {name}"
   |> message = "Hello {name}, welcome!"
+  |> greeted_at = now
 
-  -> 200 { message: message, detail: "User {name} greeted at {now}" }
+  -> 200 { message: message, detail: "User {name} greeted at {greeted_at}" }
 }

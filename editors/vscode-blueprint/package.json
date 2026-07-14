@@ -1,8 +1,8 @@
 {
   "name": "blueprint-language",
   "displayName": "Blueprint Language",
-  "description": "Syntax highlighting for Blueprint (.bp) — the declarative web service language",
-  "version": "0.1.0",
+  "description": "Blueprint language support: diagnostics, completion, hover, definitions, symbols, and syntax highlighting",
+  "version": "0.2.0",
   "publisher": "abdul-hamid-achik",
   "license": "MIT",
   "repository": {
@@ -10,7 +10,7 @@
     "url": "https://github.com/abdul-hamid-achik/blueprint"
   },
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
     "Programming Languages"
@@ -22,8 +22,18 @@
     "api",
     "declarative"
   ],
-  "activationEvents": [],
-  "main": "",
+  "activationEvents": [
+    "onLanguage:blueprint",
+    "onCommand:blueprint.restartLanguageServer"
+  ],
+  "main": "./extension.js",
+  "scripts": {
+    "check": "node --check extension.js && node --check client-config.js && node --test test/*.test.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "contributes": {
     "languages": [
       {
@@ -39,6 +49,37 @@
         "scopeName": "source.bp",
         "path": "./syntaxes/bp.tmLanguage.json"
       }
-    ]
-  }
+    ],
+    "commands": [
+      {
+        "command": "blueprint.restartLanguageServer",
+        "title": "Blueprint: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Blueprint",
+      "properties": {
+        "blueprint.server.path": {
+          "type": "string",
+          "default": "bp",
+          "scope": "machine-overridable",
+          "description": "Path to the Blueprint CLI executable. The executable must support the `lsp` command."
+        },
+        "blueprint.server.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "lsp"
+          ],
+          "scope": "machine-overridable",
+          "description": "Arguments used to start the Blueprint language server."
+        }
+      }
+    }
+  },
+  "extensionKind": [
+    "workspace"
+  ]
 }

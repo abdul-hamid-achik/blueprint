@@ -7,6 +7,7 @@ blueprint "test-use-per-endpoint" {
 middleware require_auth {
   before {
     |> guard header.Authorization -> 401 "Missing auth"
+    |> token = header.Authorization
     |> inject token as auth
   }
 }
@@ -17,5 +18,5 @@ GET /api/public {
 
 GET /api/private {
   use require_auth
-  -> 200 { user: auth.name }
+  -> 200 { token: auth }
 }

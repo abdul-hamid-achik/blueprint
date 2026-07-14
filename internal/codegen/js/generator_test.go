@@ -111,6 +111,63 @@ func TestGenerateMinimal(t *testing.T) {
 	}
 }
 
+func TestModelsImplyCompletePostgresLayer(t *testing.T) {
+	src := `blueprint "models-imply-db" {
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+model item { id uuid primary }
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	for _, rel := range []string{"src/models/schema.ts", "src/lib/db.ts", "drizzle.config.ts"} {
+		if _, err := os.Stat(filepath.Join(outDir, rel)); err != nil {
+			t.Errorf("model-implied database layer missing %s: %v", rel, err)
+		}
+	}
+	pkg, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dependency := range []string{"drizzle-orm", `"pg"`, "drizzle-kit"} {
+		if !strings.Contains(string(pkg), dependency) {
+			t.Errorf("model-implied database layer missing %s in package.json", dependency)
+		}
+	}
+}
+
+func TestDatabaseWithoutModelsEmitsEmptySchemaModule(t *testing.T) {
+	src := `blueprint "empty-db" {
+  version "1.0.0"
+  port 3000
+  runtime node
+  database postgres
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	schema, err := os.ReadFile(filepath.Join(outDir, "src/models/schema.ts"))
+	if err != nil {
+		t.Fatalf("database-only project must emit schema module: %v", err)
+	}
+	if !strings.Contains(string(schema), "drizzle-orm/pg-core") {
+		t.Errorf("empty schema module should remain importable, got:\n%s", schema)
+	}
+}
+
 // TestFilesNoDisk exercises the codegen.Generator.Files contract: a target
 // returns its output as in-memory OutputFiles without touching disk, so emit
 // logic is unit-testable without a temp dir. This is the pattern new targets
@@ -2371,7 +2428,7 @@ func TestGenerateSubscribe(t *testing.T) {
   runtime node
 }
 
-subscribe "user.created" from(auth_service) {
+subscribe "user.created" {
   |> log "User created"
 }
 `
@@ -2429,6 +2486,44 @@ subscribe "user.created" from(auth_service) {
 	}
 	if !strings.Contains(indexStr, "on('user.created', onUserCreated)") {
 		t.Error("index.ts should register onUserCreated for user.created event")
+	}
+}
+
+func TestGenerateSubscribeFromExternalFailsClosed(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    3000
+  runtime node
+}
+
+external "auth-service" {
+  url: "http://auth:3001"
+}
+
+subscribe "user.created" from(auth_service) {
+  |> log "User created"
+}
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+
+	files, err := New().Files(file)
+	if err == nil {
+		t.Fatal("expected external subscription source to be rejected")
+	}
+	if len(files) != 0 {
+		t.Fatalf("fail-closed generation must return no files, got %d", len(files))
+	}
+	for _, want := range []string{
+		`subscribe "user.created" from(auth_service)`,
+		"no external event transport is generated",
+		"remove from(auth_service) for an in-process subscription",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
 	}
 }
 
@@ -2894,6 +2989,88 @@ type MissionDefinition {
 	}
 	if !strings.Contains(string(typesContent), `titleKey: "mission.start" | "mission.complete";`) {
 		t.Fatal("translation key types should generate literal unions in TypeScript contracts")
+	}
+}
+
+func TestSaveMigrationScaffoldsAreUserOwned(t *testing.T) {
+	src := `blueprint "save-ownership" {
+  version  "1.0.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model save_slot {
+  id uuid primary
+  save_version int default(1)
+}
+
+save player_progress {
+  model save_slot
+  version_field save_version
+  latest 3
+  migrate 1 -> 2 using "./custom-player-progress"
+}`
+	file, errs := parser.ParseFile("save-ownership.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if checkErrs := checker.Check(file); len(checkErrs) > 0 {
+		t.Fatalf("check errors: %v", checkErrs)
+	}
+
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("initial generate error: %v", err)
+	}
+
+	developerEdits := map[string][]byte{
+		"src/saves/custom-player-progress.ts": []byte("// developer-owned custom migration\nexport async function migratePlayerProgressSaveFrom1To2(save: any): Promise<any> {\n  return { ...save, migratedBy: 'custom' };\n}\n"),
+		"src/saves/player-progress.ts":        []byte("// developer-owned default migration\nexport async function migratePlayerProgressSaveFrom2To3(save: any): Promise<any> {\n  return { ...save, migratedBy: 'default' };\n}\n"),
+	}
+	for rel, custom := range developerEdits {
+		path := filepath.Join(outDir, filepath.FromSlash(rel))
+		initial, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read initial scaffold %s: %v", rel, err)
+		}
+		if !strings.Contains(string(initial), "This file is user-owned; `bp build` will not overwrite it.") {
+			t.Fatalf("scaffold %s should clearly state its ownership:\n%s", rel, string(initial))
+		}
+		if err := os.WriteFile(path, custom, 0o644); err != nil {
+			t.Fatalf("write developer edit %s: %v", rel, err)
+		}
+	}
+
+	// Generate again through the real manifest-aware writer. User-owned save
+	// hooks must be scaffolded once, then left byte-for-byte untouched.
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("regenerate error: %v", err)
+	}
+	for rel, want := range developerEdits {
+		got, err := os.ReadFile(filepath.Join(outDir, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("read regenerated scaffold %s: %v", rel, err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("user-owned save migration %s was overwritten:\n%s", rel, string(got))
+		}
+	}
+
+	manifest, err := os.ReadFile(filepath.Join(outDir, ".blueprint", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestStr := string(manifest)
+	for rel := range developerEdits {
+		if strings.Contains(manifestStr, rel) {
+			t.Fatalf("user-owned save migration %s should not be tracked as generated", rel)
+		}
+	}
+	if !strings.Contains(manifestStr, "src/lib/save-migrations.ts") {
+		t.Fatal("generated save-migration dispatcher should remain tracked in the manifest")
 	}
 }
 

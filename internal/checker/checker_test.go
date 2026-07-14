@@ -70,6 +70,41 @@ const headerWithDB = `blueprint "test" {
 }
 `
 
+func TestBlueprintConfigurationIsUnambiguousAndWellTyped(t *testing.T) {
+	cases := map[string]struct {
+		source string
+		want   string
+	}{
+		"duplicate": {
+			source: `blueprint "test" { version "1.0" version "2.0" runtime node }`,
+			want:   `duplicate blueprint entry "version"`,
+		},
+		"version type": {
+			source: `blueprint "test" { version 1 runtime node }`,
+			want:   "blueprint version must be a string",
+		},
+		"port type": {
+			source: `blueprint "test" { version "1.0" port "3000" runtime node }`,
+			want:   "blueprint port must be an integer",
+		},
+		"port range": {
+			source: `blueprint "test" { version "1.0" port 70000 runtime node }`,
+			want:   "outside 1..65535",
+		},
+		"runtime type": {
+			source: `blueprint "test" { version "1.0" runtime "node" }`,
+			want:   "blueprint runtime must be an identifier",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			errs := check(t, tc.source)
+			expectErrors(t, errs, 1)
+			expectErrorContaining(t, errs, tc.want)
+		})
+	}
+}
+
 // ═══════════════════════════════════════════════
 // Name Uniqueness Tests (1-6)
 // ═══════════════════════════════════════════════
@@ -462,6 +497,456 @@ POST /api/test {
 `)
 	expectErrors(t, errs, 1)
 	expectErrorContaining(t, errs, `"auth" is a model, not a middleware`)
+}
+
+func TestUnboundIdentifierInArrowExpression(t *testing.T) {
+	errs := check(t, header+`
+POST /api/test {
+  |> copy = missing
+  |> missing = "declared too late"
+  -> 200 copy
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `unbound identifier "missing"`)
+}
+
+func TestArrowIdentifierResolutionAcceptsLocalsGlobalsAndContexts(t *testing.T) {
+	errs := check(t, headerWithDB+`
+env MODE "test"
+
+enum Plan {
+  free
+  pro
+}
+
+model user {
+  id    uuid   primary
+  email string required
+}
+
+fn normalize {
+  <- value string
+  -> string
+  impl node { module: "./normalize" }
+}
+
+middleware require_user {
+  before {
+    |> inject header.Authorization as current_user
+  }
+}
+
+POST /api/users/:id {
+  use require_user
+  <- id uuid required
+  <- email string required
+  |> existing = query user where(email == email) first
+  |> normalized = normalize(email)
+  |> selected = Plan.pro
+  |> try {
+    |> result = normalize(normalized)
+  } recover {
+    |> log error.message level(error)
+  }
+  -> 200 {
+    id: id,
+    existing: existing,
+    result: result,
+    selected: selected,
+    current_user: current_user.id,
+    mode: env.MODE,
+  }
+}
+`)
+	expectNoErrors(t, errs)
+}
+
+func TestArrowIdentifierResolutionRejectsAccidentalRuntimeGlobals(t *testing.T) {
+	errs := check(t, header+`
+secret API_KEY required
+
+model user {
+  id uuid primary
+}
+
+GET /api/test {
+  -> 200 { auth: auth.id, token: token, key: secret.API_KEY, model: user }
+}
+`)
+	expectErrors(t, errs, 4)
+	for _, name := range []string{"auth", "token", "secret", "user"} {
+		expectErrorContaining(t, errs, `unbound identifier "`+name+`"`)
+	}
+}
+
+func TestWebhookPayloadDataIsInScope(t *testing.T) {
+	errs := check(t, header+`
+secret SIGNING_KEY required
+
+POST /webhook {
+  auth webhook_sig using(secret.SIGNING_KEY)
+  |> when data.type == "created" {
+    |> log data.id
+  }
+  -> 200 { received: true }
+}
+`)
+	expectNoErrors(t, errs)
+}
+
+func TestArrowIdentifierResolutionAcceptsStreamAndWebSocketContexts(t *testing.T) {
+	errs := check(t, header+`
+WS /ws/:room_id {
+  on_connect {
+    |> sender = header.Authorization
+  }
+  on_message {
+    |> guard message.body -> 400 "Empty message"
+    -> { room_id: room_id, sender: sender, body: message.body }
+  }
+  on_disconnect {
+    |> log sender
+  }
+}
+
+STREAM /events/:record_id {
+  stream {
+    |> on event(updated) where(id == record_id) {
+      -> { id: record_id, payload: event.payload }
+    }
+  }
+}
+`)
+	expectNoErrors(t, errs)
+}
+
+func TestGlobalMiddlewareInjectionIsNotAnEndpointContext(t *testing.T) {
+	errs := check(t, `blueprint "test" {
+  version "1.0"
+  runtime node
+  use require_user
+}
+
+middleware require_user {
+  before {
+    |> inject header.Authorization as current_user
+  }
+}
+
+GET /api/me {
+  -> 200 current_user.id
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `unbound identifier "current_user"`)
+}
+
+func TestMiddlewareAfterInjectionIsNotAnEndpointContext(t *testing.T) {
+	errs := check(t, header+`
+middleware observe_response {
+  after {
+    |> inject header.X-Trace-Id as trace_id
+  }
+}
+
+GET /api/test {
+  use observe_response
+  -> 200 trace_id
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `unbound identifier "trace_id"`)
+}
+
+func TestImplicitMapResultBindingIsInScope(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model product {
+  id uuid primary
+}
+
+model order_item {
+  id uuid primary
+}
+
+POST /api/orders {
+  |> products = query product
+  |> map products: save order_item {}
+  -> 200 order_items
+}
+`)
+	expectNoErrors(t, errs)
+}
+
+func TestDuplicateEnumVariant(t *testing.T) {
+	errs := check(t, header+`
+enum Plan {
+  free
+  pro
+  free
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `duplicate variant "free" in enum "Plan"`)
+}
+
+func TestDuplicateFunctionInput(t *testing.T) {
+	errs := check(t, header+`
+fn transform_record {
+  <- value string
+  <- value int
+  -> string
+  impl node { module: "./internal/transform-record" }
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `duplicate input "value"`)
+	if !strings.Contains(errs[0].Hint, "First declared at test.bp:") {
+		t.Fatalf("expected duplicate input hint to identify the first declaration, got %q", errs[0].Hint)
+	}
+}
+
+func TestDuplicateArrowInput(t *testing.T) {
+	errs := check(t, header+`
+POST /api/test {
+  <- value string
+  <- value int
+  -> 200 value
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `duplicate input "value"`)
+}
+
+func TestDuplicatePipeInput(t *testing.T) {
+	errs := check(t, header+`
+pipe normalize_value {
+  <- value string
+  <- value string
+  -> value
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `duplicate input "value"`)
+}
+
+func TestDuplicateLocalBinding(t *testing.T) {
+	errs := check(t, header+`
+POST /api/test {
+  |> result = "first"
+  |> result = "second"
+  -> 200 result
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `duplicate local binding "result"`)
+	if !strings.Contains(errs[0].Hint, "First bound at test.bp:") {
+		t.Fatalf("expected duplicate binding hint to identify the first binding, got %q", errs[0].Hint)
+	}
+}
+
+func TestInputReassignmentRemainsValid(t *testing.T) {
+	errs := check(t, header+`
+POST /api/test {
+  <- value string required
+  |> value = value + "x"
+  |> value = value + "y"
+  -> 200 value
+}
+`)
+	expectNoErrors(t, errs)
+}
+
+func TestKnownModelFieldAccessRejectsTypo(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model user {
+  id    uuid   primary
+  email string required
+}
+
+GET /api/users/:id {
+  <- id uuid required
+  |> row = fetch user(id)
+  -> 200 row.emial
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `model "user" has no field "emial"`)
+	if !strings.Contains(errs[0].Hint, `did you mean "email"?`) {
+		t.Fatalf("expected field typo suggestion, got %q", errs[0].Hint)
+	}
+}
+
+func TestKnownModelFieldAccessInMapRejectsTypo(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model user {
+  id    uuid   primary
+  email string required
+}
+
+POST /api/users/log {
+  |> rows = query user
+  |> map rows: log item.emial
+  -> 204
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `model "user" has no field "emial"`)
+}
+
+func TestModelTypedFunctionInputFieldValidation(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model user {
+  id    uuid   primary
+  email string required
+}
+
+fn user_email {
+  <- account user
+  -> string
+  logic {
+    -> account.emial
+  }
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `model "user" has no field "emial"`)
+}
+
+func TestKnownModelFieldAccessAllowsCollectionsPaginationFKAndJSON(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model product {
+  id      uuid   primary
+  stock   int    required
+  details json   optional
+}
+
+model cart_item {
+  id         uuid primary
+  product_id uuid ref(product) required
+}
+
+GET /api/items/:id {
+  <- id uuid required
+  |> products = query product
+  |> page = query product paginate(1, 20)
+  |> item = fetch cart_item(id)
+  |> product = fetch product(id)
+  |> log products.id
+  |> log products.length
+  |> log page.items
+  |> log page.total
+  |> log item.product.stock
+  -> 200 product.details.anything
+}
+`)
+	expectNoErrors(t, errs)
+}
+
+func TestModelInputReassignmentClearsFieldMetadata(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model user {
+  id uuid primary
+}
+
+fn stringify_user {
+  <- account user
+  -> string
+  logic {
+    |> account = "plain"
+    -> account.anything
+  }
+}
+`)
+	// Assignability is a future checker layer. This assertion specifically
+	// protects against reporting a stale user-field error after reassignment.
+	expectNoErrors(t, errs)
+}
+
+func TestRestPathParameterRequiresInputBinding(t *testing.T) {
+	errs := check(t, header+`
+GET /api/items/:id {
+  -> 200 id
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `unbound identifier "id"`)
+}
+
+func TestWorkerOnFailOnlySeesInputsAndError(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model job {
+  id uuid primary
+}
+
+worker process_job {
+  trigger queue("jobs")
+  <- job_id uuid
+  |> row = fetch job(job_id)
+
+  on_fail {
+    |> log job_id
+    |> log error.message
+    |> log row.id
+  }
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `unbound identifier "row"`)
+}
+
+func TestWhenBodyBindingDoesNotLeak(t *testing.T) {
+	errs := check(t, header+`
+POST /api/test {
+  <- enabled bool required
+  |> when enabled {
+    |> conditional = "value"
+    |> log conditional
+  }
+  -> 200 conditional
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `unbound identifier "conditional"`)
+}
+
+func TestUnknownDataModelStillChecksWhereValues(t *testing.T) {
+	errs := check(t, header+`
+GET /api/test {
+  |> rows = query typo where(id == missing)
+  -> 200 rows
+}
+`)
+	expectErrors(t, errs, 2)
+	expectErrorContaining(t, errs, `data operation "query" references unknown model "typo"`)
+	expectErrorContaining(t, errs, `unbound identifier "missing"`)
+}
+
+func TestStringInterpolationIdentifierResolution(t *testing.T) {
+	errs := check(t, header+`
+POST /api/greet {
+  <- name string required
+  |> greeting = "Hello {name}"
+  |> log "Unknown {missing.value}"
+  -> 200 "{greeting}"
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `unbound identifier "missing"`)
+}
+
+func TestRecoverErrorInterpolationIsInScope(t *testing.T) {
+	errs := check(t, header+`
+POST /api/test {
+  |> try {
+    |> log "working"
+  } recover {
+    |> log "Failed: {error.message}"
+  }
+  -> 200 "ok"
+}
+`)
+	expectNoErrors(t, errs)
 }
 
 // ═══════════════════════════════════════════════
@@ -1020,6 +1505,154 @@ POST /api/test {
 			return
 		}
 	}
+}
+
+func TestFunctionCallArity(t *testing.T) {
+	fn := `
+fn combine_values {
+  <- left  string
+  <- right string
+  -> string
+  impl node { module: "./internal/combine-values" }
+}
+`
+	tests := []struct {
+		name      string
+		call      string
+		wantError string
+	}{
+		{name: "exact", call: `combine_values("a", "b")`},
+		{name: "too few", call: `combine_values("a")`, wantError: `function "combine_values" expects 2 arguments, got 1`},
+		{name: "too many", call: `combine_values("a", "b", "c")`, wantError: `function "combine_values" expects 2 arguments, got 3`},
+		{name: "none", call: `combine_values()`, wantError: `function "combine_values" expects 2 arguments, got 0`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := check(t, header+fn+`
+POST /api/test {
+  |> result = `+tt.call+`
+  -> 200 result
+}
+`)
+			if tt.wantError == "" {
+				expectNoErrors(t, errs)
+				return
+			}
+			expectErrors(t, errs, 1)
+			expectErrorContaining(t, errs, tt.wantError)
+			if !strings.Contains(errs[0].Hint, "combine_values(left, right)") ||
+				!strings.Contains(errs[0].Hint, "declared at test.bp:") {
+				t.Fatalf("expected arity hint to include signature and declaration, got %q", errs[0].Hint)
+			}
+		})
+	}
+}
+
+func TestZeroArgumentFunctionCallArity(t *testing.T) {
+	errs := check(t, header+`
+fn make_value {
+  -> string
+  impl node { module: "./internal/make-value" }
+}
+
+POST /api/test {
+  |> result = make_value()
+  -> 200 result
+}
+`)
+	expectNoErrors(t, errs)
+}
+
+func TestFunctionOptionalInputStillRequiresAnArgument(t *testing.T) {
+	errs := check(t, header+`
+fn label_value {
+  <- value  string
+  <- suffix string optional
+  -> string
+  impl node { module: "./internal/label-value" }
+}
+
+POST /api/test {
+  |> result = label_value("x")
+  -> 200 result
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `function "label_value" expects 2 arguments, got 1`)
+}
+
+func TestPipeCallArity(t *testing.T) {
+	pipe := `
+pipe normalize_value {
+  <- value string
+  -> value
+}
+`
+	tests := []struct {
+		name      string
+		call      string
+		wantError string
+	}{
+		{name: "exact", call: `pipe normalize_value("x")`},
+		{name: "too few", call: `pipe normalize_value()`, wantError: `pipe "normalize_value" expects 1 argument, got 0`},
+		{name: "too many", call: `pipe normalize_value("x", "y")`, wantError: `pipe "normalize_value" expects 1 argument, got 2`},
+		{name: "bare", call: `pipe normalize_value`, wantError: `pipe "normalize_value" expects 1 argument, got 0`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := check(t, header+pipe+`
+POST /api/test {
+  |> result = `+tt.call+`
+  -> 200 result
+}
+`)
+			if tt.wantError == "" {
+				expectNoErrors(t, errs)
+				return
+			}
+			expectErrors(t, errs, 1)
+			expectErrorContaining(t, errs, tt.wantError)
+		})
+	}
+}
+
+func TestPipeWithoutDeclaredInputUsesImplicitArity(t *testing.T) {
+	errs := check(t, header+`
+pipe make_value {
+  -> "ok"
+}
+
+POST /api/test {
+  |> result = pipe make_value()
+  -> 200 result
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `pipe "make_value" expects 1 argument, got 0`)
+}
+
+func TestPipeRejectsMultipleInputsUnsupportedByTargets(t *testing.T) {
+	errs := check(t, header+`
+pipe combine_values {
+  <- left  string
+  <- right string
+  -> left
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `pipe "combine_values" may declare at most one input, got 2`)
+}
+
+func TestCallableNameCannotCollideWithBuiltin(t *testing.T) {
+	errs := check(t, header+`
+fn clock {
+  <- value string
+  -> string
+  impl node { module: "./internal/clock" }
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `function name "clock" is reserved by a built-in`)
 }
 
 func TestWebhookAuthRequiresSecretUsing(t *testing.T) {

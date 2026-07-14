@@ -13,11 +13,12 @@ import (
 
 // Server implements the LSP protocol for Blueprint.
 type Server struct {
-	reader  *bufio.Reader
-	writer  io.Writer
-	docs    map[string]*Document
-	indexes map[string]*docIndex // parsed AST cache keyed by uri
-	running bool
+	reader         *bufio.Reader
+	writer         io.Writer
+	docs           map[string]*Document
+	indexes        map[string]*docIndex // parsed AST cache keyed by uri
+	workspaceRoots []string             // absolute local paths, in deterministic order
+	running        bool
 }
 
 // Document represents an open text document.
@@ -133,6 +134,12 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) error {
 		return s.handleHover(msg)
 	case "textDocument/definition":
 		return s.handleDefinition(msg)
+	case "textDocument/completion":
+		return s.handleCompletion(msg)
+	case "workspace/symbol":
+		return s.handleWorkspaceSymbol(msg)
+	case "workspace/didChangeWorkspaceFolders":
+		return s.handleDidChangeWorkspaceFolders(msg)
 	default:
 		// Method not found
 		if msg.ID != nil {
@@ -145,8 +152,13 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) error {
 // handleInitialize handles the initialize request.
 func (s *Server) handleInitialize(msg *jsonRPCMessage) error {
 	var params struct {
-		ProcessID    int    `json:"processId"`
-		RootURI      string `json:"rootUri"`
+		ProcessID        int    `json:"processId"`
+		RootURI          string `json:"rootUri"`
+		RootPath         string `json:"rootPath"`
+		WorkspaceFolders []struct {
+			URI  string `json:"uri"`
+			Name string `json:"name"`
+		} `json:"workspaceFolders"`
 		Capabilities struct {
 			TextDocument struct {
 				Synchronization struct {
@@ -167,15 +179,43 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) error {
 		return s.sendError(msg.ID, -32602, "Invalid params", err.Error())
 	}
 
+	roots := make([]string, 0, len(params.WorkspaceFolders)+1)
+	for _, folder := range params.WorkspaceFolders {
+		if root, ok := localWorkspaceRoot(folder.URI); ok {
+			roots = append(roots, root)
+		}
+	}
+	if len(roots) == 0 {
+		if root, ok := localWorkspaceRoot(params.RootURI); ok {
+			roots = append(roots, root)
+		} else if params.RootPath != "" {
+			if root, ok := localWorkspaceRoot(params.RootPath); ok {
+				roots = append(roots, root)
+			}
+		}
+	}
+	s.workspaceRoots = normalizeWorkspaceRoots(roots)
+
 	result := map[string]interface{}{
 		"capabilities": map[string]interface{}{
-			"textDocumentSync":   1, // Full document sync
-			"hoverProvider":      true,
-			"definitionProvider": true,
+			"textDocumentSync":        1, // Full document sync
+			"hoverProvider":           true,
+			"definitionProvider":      true,
+			"workspaceSymbolProvider": true,
+			"completionProvider": map[string]interface{}{
+				"resolveProvider":   false,
+				"triggerCharacters": []string{"."},
+			},
+			"workspace": map[string]interface{}{
+				"workspaceFolders": map[string]interface{}{
+					"supported":           true,
+					"changeNotifications": true,
+				},
+			},
 		},
 		"serverInfo": map[string]string{
 			"name":    "blueprint-lsp",
-			"version": "0.1.0",
+			"version": "0.2.0",
 		},
 	}
 
@@ -407,4 +447,11 @@ func (s *Server) sendMessage(msg *jsonRPCMessage) error {
 func mustMarshal(v any) json.RawMessage {
 	data, _ := json.Marshal(v)
 	return data
+}
+
+func jsonUnmarshalParams(data json.RawMessage, dst any) error {
+	if len(data) == 0 {
+		return fmt.Errorf("missing params")
+	}
+	return json.Unmarshal(data, dst)
 }

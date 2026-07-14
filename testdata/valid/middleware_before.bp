@@ -7,6 +7,7 @@ blueprint "test-middleware" {
 middleware require_auth {
   before {
     |> guard header.Authorization -> 401 "Missing auth"
+    |> token = header.Authorization
     |> inject token as auth
   }
 }

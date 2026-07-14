@@ -18,9 +18,14 @@ Blueprint is a declarative programming language for web services. It lets you wr
 Blueprint eliminates boilerplate and enforces best practices:
 - Automatic validation schema generation
 - Type-safe database operations
-- Built-in rate limiting, caching, and auth
+- Endpoint rate limiting plus explicit middleware hooks for application auth
 - Clean separation of concerns with the arrow syntax
 - Generated code is clean — you can `bp eject` at any time
+
+Blueprint does not currently generate generic API-key/JWT/session verification
+or response caching from metadata alone. Security-sensitive behavior belongs in
+an explicit middleware or user-owned function; see the support notes in the
+[Language Reference](/language-reference#endpoint-metadata).
 
 ---
 
@@ -43,10 +48,11 @@ go build -o bin/bp ./cmd/bp
 
 ### What are the system requirements?
 
-- **Go 1.22+** (to build from source)
-- **Node.js 18+** (to run generated projects)
+- **Go 1.25.5+** (only to build Blueprint from source)
+- **Node.js 20+ or Bun 1.x** (to run the default Node target)
 - **PostgreSQL** (if using database features)
-- **Redis** (optional, for caching and job queues)
+- **Redis** (optional, for workers and multi-instance realtime delivery)
+- **Docker** (for `bp test --target python`)
 
 ### Do I need to know Go?
 
@@ -118,9 +124,24 @@ Rules:
 - Paths are relative to the file containing `include`
 - No circular includes allowed
 
+### Can I migrate an existing TypeScript service?
+
+`bp import` can give you a structural starting point:
+
+```bash
+bp import ./src --from ts --out service.bp
+```
+
+It recognizes conservative static forms of Drizzle tables/enums, Hono routes,
+and referenced Zod object inputs. It never translates imperative handler
+bodies. Every recovered handler is reported on stderr and becomes an explicit
+TODO returning 501; dynamic and unsupported structure is warned about or
+skipped. Treat the result as a review checklist, not a behavior-preserving
+conversion, even when `bp check service.bp` succeeds.
+
 ### Can Blueprint generate something other than Node.js?
 
-Yes. The same `.bp` source can compile to three targets, selected with `--target` on `bp build` and `bp diff` (`bp migrate` accepts `--target node|python` only):
+Yes. The same `.bp` source can compile to three targets, selected with `--target` on `bp build` and `bp diff` (`bp test` and `bp migrate` accept `--target node|python`):
 
 - **`node`** (default) — TypeScript on Hono + Drizzle ORM + Zod.
 - **`python`** (`--target python`) — FastAPI + SQLAlchemy + Alembic.
@@ -135,6 +156,34 @@ bp build my-api.bp --target python
 codegen target. `bp deploy` always builds the node target internally.
 
 See [Multi-Target Codegen](./multi-target-codegen.md) for what each target covers.
+
+### Can a model expose computed values or load relationships?
+
+On Node, yes, within a deliberately narrow slice:
+
+```bp
+model author {
+  id uuid primary
+  name string required
+  computed label string = name + "!"
+}
+
+model post {
+  id uuid primary
+  author_id uuid ref(author)
+}
+
+GET /posts {
+  |> posts = query post with(author)
+  -> 200 { posts: posts }
+}
+```
+
+Computed fields are pure, read-only materialized values, not database columns.
+`with(author)` is a one-level `LEFT JOIN` through `author_id ref(author)`.
+Aliases, self joins, repeated joins to the same target, nested loading, and
+`fetch ... with(...)` are not supported. Python and Effect reject these
+features before emitting files.
 
 ---
 
@@ -266,17 +315,30 @@ test create_user {
     body.name == "John"
   }
 
-  cleanup {
-    |> delete_all organization where(id == org.id)
-  }
 }
 ```
 
 Run with: `bp test my-api.bp`
 
+Generated Node tests currently accept a strict executable subset. Cleanup,
+dynamic target paths, custom/multipart/file requests, timing forms, and richer
+setup are rejected before build. See the [Testing Guide](/testing-guide) for
+the complete boundary.
+
+For deterministic valid-request generation on supported Node REST routes, add:
+
+```bash
+bp test my-api.bp --gen-property-tests
+```
+
+This adds fast-check properties and implies contract tests. Auth/header/rate
+limit routes, native or external side effects, queues/storage/events/realtime,
+sleep/wall-clock behavior, and unsupported input transports fail property
+generation rather than being silently skipped.
+
 ### Can I use fixtures?
 
-Yes:
+Fixture declarations are valid source syntax:
 
 ```bp
 # Reference a file
@@ -290,6 +352,11 @@ request {
   body { file: fixture("sample.png") }
 }
 ```
+
+However, the generated Node authored-test runner does not yet copy assets or
+emit multipart `FormData`, so `bp test` rejects a `fixture(...)` request value.
+Use a hand-written Vitest multipart test today. Python rejects authored
+`fixture`/`test` blocks entirely until it can translate them.
 
 ---
 
@@ -324,10 +391,13 @@ GET /api/items {
 Yes:
 
 ```bp
+secret STRIPE_TOKEN required
+
 external "stripe" {
-  url     "https://api.stripe.com/v1"
-  auth    bearer(secret.STRIPE_KEY)
-  timeout 30s
+  url:     "https://api.stripe.com/v1"
+  timeout: 30s
+  auth:    bearer(secret.STRIPE_TOKEN)
+  retry:   2
 }
 
 POST /api/charges {
@@ -338,6 +408,18 @@ POST /api/charges {
   -> 200 { charge_id: result.id }
 }
 ```
+
+The generated Node helper applies URL, timeout, authentication, and retry
+configuration. `bearer`, `jwt`, `basic`, and `api_key` each require one declared
+`secret.NAME` or `env.NAME`; the generated request reads the credential through
+the env module and sets `Authorization` or `X-API-Key` as appropriate.
+
+`retry 2` means the initial call plus at most two additional immediate attempts.
+Each attempt has a fresh timeout. Only network/timeout failures and HTTP
+408/429/5xx are retried; other 4xx responses fail immediately. Malformed auth,
+undeclared credentials, and invalid retry values fail codegen before files are
+returned. For provider-specific signing, refresh flows, or backoff, use a
+user-owned function.
 
 ### How do background jobs work?
 
@@ -362,8 +444,12 @@ Trigger jobs from endpoints:
 
 ```bp
 |> job = save job { status: "pending", image_url: url }
-|> emit process_image { job_id: job.id }
+|> enqueue "images" { job_id: job.id }
 ```
+
+`enqueue` sends a BullMQ job to the queue named by `trigger queue(...)`.
+`emit` is the local event bus used by STREAM/subscription handlers; it does not
+enqueue worker jobs.
 
 ---
 
@@ -393,21 +479,26 @@ Make sure:
 
 ### Rate limiting isn't working
 
-Rate limits are per-endpoint by default. For global rate limiting, use middleware:
+Endpoint `limit` metadata generates a per-process, per-instance IP/path counter:
 
 ```bp
-blueprint "my-api" {
-  use rate_limit(100/min)
+GET /api/items {
+  limit 100/min
+  -> 200 { ok: true }
 }
 ```
+
+This counter is not shared across replicas. For a global or distributed limit,
+declare a custom middleware backed by Redis or an API gateway. The recognized
+`use rate_limit(...)` name is not generated as a working global middleware.
 
 ### Tests timeout or hang
 
 Common causes:
-- Missing database connection
-- Redis not running (for job queues)
-- Infinite loops in generated code
-- Missing `cleanup` blocks leaving test data
+- A Node test was built without `--gen-tests`/the PGlite harness
+- Docker is not running for `bp test --target python`
+- Redis-backed workers started in a hand-written test environment
+- A user-owned function never resolves
 
 ---
 
@@ -430,6 +521,11 @@ See [CONTRIBUTING.md](https://github.com/abdul-hamid-achik/blueprint/blob/main/C
 
 ## Roadmap
 
-LSP support (IDE integration) and multi-target codegen (Python and Effect) have already shipped — run `bp lsp`, or build with `--target python` / `--target effect`. See [Roadmap](./roadmap.md) for what's still planned, including:
+LSP support (including completion, workspace symbols, and a VS Code client) and
+multi-target codegen (Python and Effect) have already shipped — run `bp lsp`,
+or build with `--target python` / `--target effect`. See
+[Roadmap](./roadmap.md) for what's still planned, including:
 - Package registry
 - Managed hosting
+- Rename/references/code actions and deeper cross-file editor semantics
+- Join aliases/nested loading and Python relationship/computed-field parity

@@ -261,7 +261,7 @@ POST /api/uploads {
   |> file = pipe validate_file(file)
 
   |> try {
-    |> stored = upload(file, secret.S3_BUCKET)
+    |> stored = upload(file, env.S3_BUCKET)
     |> record = save upload {
       url:       stored.url,
       filename:  filename,
@@ -378,7 +378,7 @@ POST /api/jobs {
   <- input string required
 
   |> job = save job { status: "pending", input: input }
-  |> emit process_job { job_id: job.id }
+  |> enqueue "process_job" { job_id: job.id }
 
   -> 202 { job_id: job.id, status: "pending" }
 }
@@ -455,7 +455,6 @@ POST /api/jobs {
 
 @ "Stream job progress via SSE"
 STREAM /api/jobs/:id/progress {
-  auth api_key
   tags ["jobs", "streaming"]
 
   <- id uuid required
@@ -478,6 +477,10 @@ STREAM /api/jobs/:id/progress {
   }
 }
 ```
+
+To protect the stream, apply a declared middleware that validates the API key
+and rejects the request before streaming starts. A bare `auth api_key` line is
+metadata and does not generate credential verification by itself.
 
 ---
 

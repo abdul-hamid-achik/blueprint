@@ -902,8 +902,7 @@ func TestBuildPythonHelloWorld(t *testing.T) {
 }
 
 func TestBuildPythonRejectsUnsupportedSpec(t *testing.T) {
-	// All 5 shipped examples now compile on --target python, so the test
-	// uses an inline synthetic spec with constructs still rejected (Phase 5b):
+	// Use an inline synthetic spec with constructs rejected by the Python target:
 	// `pipe` declarations, `worker`, `storage`. The roadmap error message must
 	// surface cleanly so users get pointed at BACKLOG.md, not half-broken code.
 	dir := t.TempDir()
@@ -1072,6 +1071,71 @@ func TestDeployDockerNoRun(t *testing.T) {
 	}
 	if strings.Contains(logStr, "run -d") {
 		t.Errorf("--no-run should skip docker run, but log contained it: %q", logStr)
+	}
+}
+
+// TestDeployUsesBlueprintPort protects non-default-port services from a
+// misleading run command (and the same value is threaded into the live smoke
+// test path). Deploy reads the generated Dockerfile, the artifact Docker
+// actually builds, instead of assuming port 3000.
+func TestDeployUsesBlueprintPort(t *testing.T) {
+	bpDir := t.TempDir()
+	bp := filepath.Join(bpDir, "custom-port.bp")
+	src := `blueprint "custom-port" {
+  version "1.0"
+  port 4242
+  runtime node
+}
+`
+	if err := os.WriteFile(bp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	binDir := t.TempDir()
+	dockerStub := filepath.Join(binDir, "docker")
+	if err := os.WriteFile(dockerStub, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+	stdout, stderr, code := runBPEnv(t, env, "deploy", bp, "--out", outDir, "--no-run", "--tag", "bp-port-test:latest")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "docker run -p 4242:4242 bp-port-test:latest") {
+		t.Errorf("expected declared port in run command, got: %q", stdout)
+	}
+}
+
+func TestBuildRejectsUnresolvedGenerateSlot(t *testing.T) {
+	bpDir := t.TempDir()
+	bp := filepath.Join(bpDir, "unresolved.bp")
+	src := `blueprint "unresolved" {
+  version "1.0"
+  port 3000
+  runtime node
+}
+
+GET /work {
+  @> "add the requested behavior"
+  -> 200 "ok"
+}
+`
+	if err := os.WriteFile(bp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(t.TempDir(), "generated")
+	_, stderr, code := runBP(t, "build", bp, "--out", outDir)
+	if code != 4 {
+		t.Fatalf("expected codegen exit 4, got %d; stderr: %s", code, stderr)
+	}
+	for _, want := range []string{"unresolved @> generation slot", "bp generate " + bp + " --write"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("expected stderr to contain %q; got %q", want, stderr)
+		}
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Errorf("rejected build should not write output; stat err=%v", err)
 	}
 }
 
@@ -1721,6 +1785,824 @@ func TestTestCommandReinstallsWhenPackageJSONChanges(t *testing.T) {
 	}
 }
 
+func TestTestCommandPythonBuildsAndRunsPytest(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := filepath.Join(t.TempDir(), "python-tests")
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "uv.log")
+	uvStub := filepath.Join(binDir, "uv")
+	script := "#!/bin/sh\n" +
+		"printf '%s|%s\\n' \"$PWD\" \"$*\" >> \"$BP_UV_LOG\"\n" +
+		"exit 0\n"
+	if err := os.WriteFile(uvStub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_UV_LOG=" + logFile,
+	}
+
+	stdout, stderr, code := runBPEnv(t, env, "test", bp, "--out", outDir, "--target", "python")
+	if code != 0 {
+		t.Fatalf("python test command failed: %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInvocation := outDir + "|run pytest"
+	if !strings.Contains(string(logBytes), wantInvocation) {
+		t.Errorf("expected uv to run pytest in generated output; want %q in log %q", wantInvocation, string(logBytes))
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "tests", "conftest.py")); err != nil {
+		t.Errorf("expected generated pytest harness: %v", err)
+	}
+	pyproject, err := os.ReadFile(filepath.Join(outDir, "pyproject.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pyproject), "testcontainers[postgresql]") {
+		t.Error("expected bp test --target python to enable the Postgres testcontainers dependency")
+	}
+}
+
+func TestTestCommandRejectsEffectTarget(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "hello-world.bp")
+	outDir := filepath.Join(t.TempDir(), "effect-tests")
+
+	_, stderr, code := runBP(t, "test", bp, "--out", outDir, "--target", "effect")
+	if code != 2 {
+		t.Fatalf("expected exit 2 for unsupported effect tests, got %d; stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "does not support generated tests") {
+		t.Errorf("expected actionable effect-target error, got: %q", stderr)
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Errorf("effect test rejection should happen before writing output; stat err=%v", err)
+	}
+}
+
+func TestNodeAuthoredTestPreflightRejectsUnfaithfulSurfaces(t *testing.T) {
+	tests := []struct {
+		name        string
+		extra       string
+		wantMessage string
+	}{
+		{
+			name: "missing target",
+			extra: `
+test no_target {
+  request { body { title: "x" } }
+  expect { status 201 }
+}
+`,
+			wantMessage: "no target request would be emitted",
+		},
+		{
+			name: "file fixture request value",
+			extra: `
+fixture "sample" from "testdata/sample.png"
+test upload_fixture {
+  target POST /api/todos
+  request { body { title: "x", file: fixture("sample") } }
+  expect { status 201 }
+}
+`,
+			wantMessage: `fixture("sample") is JSON-stringified`,
+		},
+		{
+			name: "custom request headers",
+			extra: `
+test custom_headers {
+  target POST /api/todos
+  request {
+    headers { Authorization: "test" }
+    body { title: "x" }
+  }
+  expect { status 201 }
+}
+`,
+			wantMessage: "custom request headers are ignored",
+		},
+		{
+			name: "unsupported auth scheme",
+			extra: `
+test session_auth {
+  target POST /api/todos
+  request {
+    auth webhook_sig("signature")
+    body { title: "x" }
+  }
+  expect { status 201 }
+}
+`,
+			wantMessage: `auth scheme "webhook_sig" is not emitted`,
+		},
+		{
+			name: "multipart request entry",
+			extra: `
+test multipart_upload {
+  target POST /api/todos
+  request { multipart { title: "x" } }
+  expect { status 201 }
+}
+`,
+			wantMessage: "requires form/multipart encoding",
+		},
+		{
+			name: "file typed endpoint field",
+			extra: `
+POST /api/upload {
+  <- file file required
+  -> 200 "ok"
+}
+test file_body {
+  target POST /api/upload
+  request { body { file: "contents" } }
+  expect { status 200 }
+}
+`,
+			wantMessage: `body field "file" targets a file input`,
+		},
+		{
+			name: "dynamic target path",
+			extra: `
+test dynamic_path {
+  target POST /api/todos/:id
+  request { body { title: "x" } }
+  expect { status 201 }
+}
+`,
+			wantMessage: "still contains a :parameter placeholder",
+		},
+		{
+			name: "cleanup body",
+			extra: `
+test with_cleanup {
+  target POST /api/todos
+  request { body { title: "x" } }
+  expect { status 201 }
+  cleanup { |> log "cleaning" }
+}
+`,
+			wantMessage: "cleanup statements are parsed but not emitted",
+		},
+		{
+			name: "test group shared setup",
+			extra: `
+test grouped_todo {
+  target POST /api/todos
+  request { body { title: "x" } }
+  expect { status 201 }
+}
+test_group todo_suite {
+  shared_setup { |> log "required group setup" }
+  tests [grouped_todo]
+}
+`,
+			wantMessage: `test_group "todo_suite" shared_setup statements are not emitted`,
+		},
+		{
+			name: "timing assertion",
+			extra: `
+test timed_request {
+  target POST /api/todos
+  request { body { title: "x" } }
+  expect {
+    status 201
+    duration < 2s
+  }
+}
+`,
+			wantMessage: "is emitted only as a TODO comment",
+		},
+		{
+			name: "empty expectations",
+			extra: `
+test no_assertions {
+  target GET /health
+  expect { }
+}
+`,
+			wantMessage: "contains no executable assertion",
+		},
+		{
+			name: "malformed status assertion",
+			extra: `
+test malformed_status {
+  target GET /health
+  expect { status success }
+}
+`,
+			wantMessage: "must contain exactly an HTTP status",
+		},
+		{
+			name: "unknown body type assertion",
+			extra: `
+test unknown_body_type {
+  target GET /health
+  expect { body.status is magical }
+}
+`,
+			wantMessage: "uses an unsupported type",
+		},
+		{
+			name: "assertion literal needs emitter escaping",
+			extra: `
+test apostrophe_literal {
+  target GET /health
+  expect { body.status == "it's" }
+}
+`,
+			wantMessage: "must compare with one literal value",
+		},
+		{
+			name: "body not_exists spelling is a generator TODO",
+			extra: `
+test body_not_exists {
+  target GET /health
+  expect { body.error not_exists }
+}
+`,
+			wantMessage: "is not a supported field assertion",
+		},
+		{
+			name: "header name the emitter cannot reproduce",
+			extra: `
+test hyphenated_header {
+  target GET /health
+  expect { header.Content-Type == "application/json" }
+}
+`,
+			wantMessage: "simple header name",
+		},
+		{
+			name: "model inequality needs an unimported operator",
+			extra: `
+test model_inequality {
+  target GET /health
+  expect { model todo where(title != "x") exists }
+}
+`,
+			wantMessage: "must use declared fields with ==",
+		},
+		{
+			name: "model body reference without parsed response",
+			extra: `
+test model_body_without_body_assertion {
+  target POST /api/todos
+  request { body { title: "x" } }
+  expect {
+    status 201
+    model todo where(id == body.id) exists
+  }
+}
+`,
+			wantMessage: "unsupported right-hand value",
+		},
+		{
+			name: "multiple model assertions redeclare generated binding",
+			extra: `
+test multiple_model_assertions {
+  target GET /health
+  expect {
+    model todo where(title == "first") exists
+    model todo where(title == "second") exists
+  }
+}
+`,
+			wantMessage: "redeclare the generated _row binding",
+		},
+		{
+			name: "setup input is silently dropped",
+			extra: `
+test setup_input {
+  target GET /health
+  setup { <- ignored string }
+  expect { status 200 }
+}
+`,
+			wantMessage: "not in the authored-test setup allowlist",
+		},
+		{
+			name: "setup guard needs unavailable BpError",
+			extra: `
+test setup_guard {
+  target GET /health
+  setup { |> guard true -> 400 "stop" }
+  expect { status 200 }
+}
+`,
+			wantMessage: "not in the authored-test setup allowlist",
+		},
+		{
+			name: "setup runtime helper is unavailable",
+			extra: `
+test setup_emit {
+  target GET /health
+  setup { |> emit changed { value: "x" } }
+  expect { status 200 }
+}
+`,
+			wantMessage: `setup call "emit" is not in`,
+		},
+		{
+			name: "setup query is outside the import-safe subset",
+			extra: `
+test setup_query {
+  target GET /health
+  setup { |> rows = query todo where(title == "x") }
+  expect { status 200 }
+}
+`,
+			wantMessage: `setup call "query" is not in`,
+		},
+		{
+			name: "request builtin call is not imported",
+			extra: `
+test request_clock {
+  target POST /api/todos
+  request { body { title: clock() } }
+  expect { status 201 }
+}
+`,
+			wantMessage: `calls "clock"`,
+		},
+		{
+			name: "request string interpolation is not scoped",
+			extra: `
+test request_interpolation {
+  target POST /api/todos
+  setup { |> existing = seed todo { title: "old" } }
+  request { body { title: "todo-{existing.title}" } }
+  expect { status 201 }
+}
+`,
+			wantMessage: "uses string interpolation",
+		},
+		{
+			name: "auth builtin call is not imported",
+			extra: `
+test auth_clock {
+  target GET /health
+  request { auth bearer(clock()) }
+  expect { status 200 }
+}
+`,
+			wantMessage: `auth value calls "clock"`,
+		},
+		{
+			name: "duplicate body entries",
+			extra: `
+test duplicate_body {
+  target POST /api/todos
+  request {
+    body { title: "first" }
+    body { title: "second" }
+  }
+  expect { status 201 }
+}
+`,
+			wantMessage: `contains 2 "body" entries`,
+		},
+		{
+			name: "noncanonical request entry casing",
+			extra: `
+test uppercase_body {
+  target POST /api/todos
+  request { Body { title: "ignored" } }
+  expect { status 201 }
+}
+`,
+			wantMessage: `request entry "Body" is ignored`,
+		},
+		{
+			name: "zero repeat is silently coerced",
+			extra: `
+test zero_repeat {
+  target POST /api/todos
+  request repeat(0) { body { title: "x" } }
+  expect { status 201 }
+}
+`,
+			wantMessage: "repeat(0) would be silently emitted as one request",
+		},
+		{
+			name: "auth whole setup row",
+			extra: `
+test auth_row {
+  target GET /health
+  setup { |> key = seed todo { title: "secret" } }
+  request { auth bearer(key) }
+  expect { status 200 }
+}
+`,
+			wantMessage: "uses the whole setup row",
+		},
+		{
+			name: "get request body",
+			extra: `
+test get_body {
+  target GET /health
+  request { body { value: "x" } }
+  expect { status 200 }
+}
+`,
+			wantMessage: "GET authored requests cannot carry",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			filename := filepath.Join(dir, "service.bp")
+			if err := os.WriteFile(filename, []byte(makeTodoSource(tc.extra)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			issues := preflightNodeAuthoredTests(filename, filepath.Join(dir, "generated"))
+			if len(issues) == 0 {
+				t.Fatalf("expected a preflight issue containing %q", tc.wantMessage)
+			}
+			var messages []string
+			for _, issue := range issues {
+				messages = append(messages, issue.Message)
+			}
+			if !strings.Contains(strings.Join(messages, "\n"), tc.wantMessage) {
+				t.Fatalf("expected issue containing %q, got:\n%s", tc.wantMessage, strings.Join(messages, "\n"))
+			}
+		})
+	}
+}
+
+func TestEndpointPathMatchesIgnoresLiteralQueryAndFragment(t *testing.T) {
+	for _, target := range []string{"/api/upload?mode=test", "/api/upload#response"} {
+		if !endpointPathMatches("/api/upload", target) {
+			t.Errorf("expected endpoint path to match target %q after URL suffix normalization", target)
+		}
+	}
+	if endpointPathMatches("/api/upload", "/api/other?mode=test") {
+		t.Error("query normalization must not hide a different path")
+	}
+}
+
+func TestNodeAuthoredTestModelsImplyGeneratedDatabase(t *testing.T) {
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "service.bp")
+	src := `blueprint "no-db" {
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+model todo {
+  id uuid primary
+  title string required
+}
+test data_without_db {
+  target GET /health
+  setup { |> row = seed todo { title: "x" } }
+  expect { model todo where(title == "x") exists }
+}
+`
+	if err := os.WriteFile(filename, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issues := preflightNodeAuthoredTests(filename, filepath.Join(dir, "generated"))
+	if len(issues) != 0 {
+		var messages []string
+		for _, issue := range issues {
+			messages = append(messages, issue.Message)
+		}
+		t.Fatalf("models should imply the generated database layer; got:\n%s", strings.Join(messages, "\n"))
+	}
+}
+
+func TestNodeAuthoredTestPreflightDetectsZeroRepeatInInclude(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "service.bp")
+	includedFile := filepath.Join(dir, "included.bp")
+	if err := os.WriteFile(mainFile, []byte(makeTodoSource(`include "included.bp"`)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	included := `test included_zero_repeat {
+  target POST /api/todos
+  request repeat(0) { body { title: "x" } }
+  expect { status 201 }
+}
+`
+	if err := os.WriteFile(includedFile, []byte(included), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issues := preflightNodeAuthoredTests(mainFile, filepath.Join(dir, "generated"))
+	if len(issues) != 1 || !strings.Contains(issues[0].Message, "repeat(0) would be silently emitted") {
+		t.Fatalf("expected included repeat(0) rejection, got %#v", issues)
+	}
+}
+
+func TestNodeAuthoredTestPreflightKeepsSupportedSubset(t *testing.T) {
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "service.bp")
+	src := makeTodoSource(`
+test create_todo {
+  target POST /api/todos
+  setup { |> existing = seed todo { title: "Existing" } }
+  request {
+    auth bearer("pre-encoded-token")
+    body { title: "New" }
+  }
+  expect {
+    status 201
+    body.id is uuid
+    model todo where(title == "New") exists
+  }
+}
+test requestless_health_check {
+  target GET /health
+  expect { status 200 }
+}
+`)
+	if err := os.WriteFile(filename, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if issues := preflightNodeAuthoredTests(filename, filepath.Join(dir, "generated")); len(issues) > 0 {
+		var messages []string
+		for _, issue := range issues {
+			messages = append(messages, issue.Message)
+		}
+		t.Fatalf("supported JSON/authored-test subset should pass preflight, got:\n%s", strings.Join(messages, "\n"))
+	}
+}
+
+func TestNodeAuthoredTestPreflightRequiresReachableNativeImplementation(t *testing.T) {
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "service.bp")
+	outDir := filepath.Join(dir, "generated")
+	nativeDecl := `
+fn transform_title {
+  <- value string
+  -> output string
+  impl node { module: "./internal/transform-title", func: "transformTitle" }
+}
+`
+	nativeEndpointAndTest := `
+POST /api/native {
+  <- value string required
+  |> result = transform_title(value)
+  -> 200 { result: result }
+}
+test native_success {
+  target POST /api/native
+  request { body { value: "x" } }
+  expect { status 200 }
+}
+`
+	if err := os.WriteFile(filename, []byte(makeTodoSource(nativeDecl+nativeEndpointAndTest)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	issues := preflightNodeAuthoredTests(filename, outDir)
+	if len(issues) != 1 || !strings.Contains(issues[0].Message, "native implementation is missing") {
+		t.Fatalf("expected one missing-native issue, got %#v", issues)
+	}
+
+	implPath := filepath.Join(outDir, "src", "impl", "functions", "internal", "transform-title.ts")
+	if err := os.MkdirAll(filepath.Dir(implPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := "export async function transformTitle(value: string) { throw new Error('Not implemented: transformTitle'); }\n"
+	if err := os.WriteFile(implPath, []byte(stub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issues = preflightNodeAuthoredTests(filename, outDir)
+	if len(issues) != 1 || !strings.Contains(issues[0].Message, "still throws Not implemented") {
+		t.Fatalf("expected one unimplemented-scaffold issue, got %#v", issues)
+	}
+
+	implementation := "export async function transformTitle(value: string) { return value.toUpperCase(); }\n"
+	if err := os.WriteFile(implPath, []byte(implementation), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if issues = preflightNodeAuthoredTests(filename, outDir); len(issues) > 0 {
+		t.Fatalf("completed native implementation should pass preflight, got %#v", issues)
+	}
+
+	// A native declaration not reachable from this authored target does not
+	// poison an otherwise supported case.
+	if err := os.WriteFile(filename, []byte(makeTodoSource(nativeDecl+`
+test ordinary_todo {
+  target POST /api/todos
+  request { body { title: "x" } }
+  expect { status 201 }
+}
+`)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(outDir); err != nil {
+		t.Fatal(err)
+	}
+	if issues = preflightNodeAuthoredTests(filename, outDir); len(issues) > 0 {
+		t.Fatalf("unreachable native declaration should not block the test, got %#v", issues)
+	}
+
+	// Vitest imports the complete generated app. A sibling route therefore
+	// loads its function wrapper even when this authored request targets
+	// /health, so a missing native dependency there must fail preflight.
+	if err := os.WriteFile(filename, []byte(makeTodoSource(nativeDecl+`
+GET /api/native-sibling {
+  |> result = transform_title("x")
+  -> 200 { result: result }
+}
+test ordinary_health {
+  target GET /health
+  expect { status 200 }
+}
+`)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issues = preflightNodeAuthoredTests(filename, outDir)
+	if len(issues) != 1 || !strings.Contains(issues[0].Message, "native implementation is missing") {
+		t.Fatalf("expected sibling app route to require its loaded native module, got %#v", issues)
+	}
+}
+
+func TestNodeTestNativePreflightPathSafetyAndModuleResolution(t *testing.T) {
+	outDir := filepath.Join(t.TempDir(), "generated")
+
+	validPath, local, safe := localNativeImplementationPath("./internal/transform-title", outDir)
+	if !local || !safe || validPath != filepath.Join(outDir, "src", "impl", "functions", "internal", "transform-title.ts") {
+		t.Fatalf("expected safe local scaffold path, got path=%q local=%v safe=%v", validPath, local, safe)
+	}
+	if _, local, safe := localNativeImplementationPath("./internal/../../escape", outDir); !local || safe {
+		t.Fatalf("expected ./internal traversal to remain classified as local but unsafe; local=%v safe=%v", local, safe)
+	}
+
+	if err := os.MkdirAll(filepath.Join(outDir, "node_modules", "example"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if available, safe := nodeModuleAvailable("example", outDir); !safe || available {
+		t.Fatalf("generator emits example.js, so node_modules/example must not satisfy it; available=%v safe=%v", available, safe)
+	}
+	if err := os.MkdirAll(filepath.Join(outDir, "node_modules", "example.js"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if available, safe := nodeModuleAvailable("example", outDir); !safe || !available {
+		t.Fatalf("expected emitted package example.js to be found; available=%v safe=%v", available, safe)
+	}
+	if available, safe := nodeModuleAvailable("node:fs", outDir); !safe || available {
+		t.Fatalf("node:fs is emitted as invalid node:fs.js and must not be accepted; available=%v safe=%v", available, safe)
+	}
+	if available, safe := nodeModuleAvailable("../../../outside.js", outDir); safe || available {
+		t.Fatalf("relative module traversal must be unsafe; available=%v safe=%v", available, safe)
+	}
+
+	relativeSource := filepath.Join(outDir, "src", "functions", "helper.ts")
+	if err := os.MkdirAll(filepath.Dir(relativeSource), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(relativeSource, []byte("export function helper() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if available, safe := nodeModuleAvailable("./helper", outDir); !safe || !available {
+		t.Fatalf("expected ./helper.js emitted import to resolve helper.ts; available=%v safe=%v", available, safe)
+	}
+
+	outsideExec := filepath.Join(filepath.Dir(outDir), "outside-runner")
+	if err := os.WriteFile(outsideExec, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if available, safe := execCommandAvailable("../outside-runner", outDir); safe || available {
+		t.Fatalf("exec path traversal must be unsafe; available=%v safe=%v", available, safe)
+	}
+	insideExec := filepath.Join(outDir, "bin", "runner")
+	if err := os.MkdirAll(filepath.Dir(insideExec), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(insideExec, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if available, safe := execCommandAvailable("bin/runner", outDir); !safe || !available {
+		t.Fatalf("generated-project executable should be available; available=%v safe=%v", available, safe)
+	}
+}
+
+func TestTestCommandPreflightStopsBeforeBuildInstallAndVitest(t *testing.T) {
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "service.bp")
+	outDir := filepath.Join(dir, "generated")
+	src := makeTodoSource(`
+test cleanup_is_required {
+  target POST /api/todos
+  request { body { title: "x" } }
+  expect { status 201 }
+  cleanup { |> log "must run" }
+}
+`)
+	if err := os.WriteFile(filename, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "bun.log")
+	bunStub := filepath.Join(binDir, "bun")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BP_BUN_LOG\"\nexit 0\n"
+	if err := os.WriteFile(bunStub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_BUN_LOG=" + logFile,
+	}
+
+	_, stderr, code := runBPEnv(t, env, "test", filename, "--out", outDir)
+	if code != 2 {
+		t.Fatalf("expected preflight exit 2, got %d; stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "cleanup statements are parsed but not emitted") || !strings.Contains(stderr, "Vitest was not started") {
+		t.Fatalf("expected actionable preflight diagnostic, got: %s", stderr)
+	}
+	if _, err := os.Stat(logFile); !os.IsNotExist(err) {
+		t.Fatalf("bun must not be invoked after preflight rejection; stat err=%v", err)
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Fatalf("preflight should happen before build output is written; stat err=%v", err)
+	}
+}
+
+func TestBuildStillAllowsAuthoredTestSurfacesRejectedByTestCommand(t *testing.T) {
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "service.bp")
+	outDir := filepath.Join(dir, "generated")
+	src := makeTodoSource(`
+test cleanup_is_required {
+  target POST /api/todos/:id
+  request {
+    headers { X_Test: "value" }
+    body { title: "x" }
+  }
+  expect { duration < 2s }
+  cleanup { |> log "must run" }
+}
+`)
+	if err := os.WriteFile(filename, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, code := runBP(t, "build", filename, "--out", outDir)
+	if code != 0 {
+		t.Fatalf("ordinary build must remain available for hand-written Vitest workflows: code=%d stderr=%s", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "test", "cleanup-is-required.test.ts")); err != nil {
+		t.Fatalf("expected ordinary build to emit the authored test file: %v", err)
+	}
+}
+
+func TestTestCommandRunsSupportedAuthoredNodeSubset(t *testing.T) {
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "service.bp")
+	outDir := filepath.Join(dir, "generated")
+	src := makeTodoSource(`
+test create_todo {
+  target POST /api/todos
+  request { body { title: "x" } }
+  expect {
+    status 201
+    body.id is uuid
+  }
+}
+`)
+	if err := os.WriteFile(filename, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "bun.log")
+	bunStub := filepath.Join(binDir, "bun")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_BUN_LOG\"\n" +
+		"if [ \"$1\" = \"install\" ]; then mkdir -p node_modules; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bunStub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_BUN_LOG=" + logFile,
+	}
+
+	stdout, stderr, code := runBPEnv(t, env, "test", filename, "--out", outDir)
+	if code != 0 {
+		t.Fatalf("supported authored test should run: code=%d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logBytes), "install") || !strings.Contains(string(logBytes), "run test") {
+		t.Fatalf("expected install and Vitest invocation, got log %q", string(logBytes))
+	}
+}
+
 // --- bp dev: install-if-needed + crash reporting ---
 
 // TestDevInstallsDependencies pins the "bp dev never installs dependencies"
@@ -1865,5 +2747,124 @@ func TestCompletionScriptsIncludeAllCommands(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- deterministic endpoint property generation ---
+
+func TestBuildGenPropertyTestsEmitsAdditiveNodeSuite(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := filepath.Join(t.TempDir(), "property-build")
+
+	stdout, stderr, code := runBP(t, "build", bp, "--out", outDir, "--gen-property-tests")
+	if code != 0 {
+		t.Fatalf("property build failed: %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	for _, rel := range []string{
+		"test/generated/todos.test.ts",
+		"test/generated/todos.property.test.ts",
+		"test/_harness/db.ts",
+		"vitest.config.ts",
+	} {
+		if _, err := os.Stat(filepath.Join(outDir, rel)); err != nil {
+			t.Errorf("--gen-property-tests should emit %s: %v", rel, err)
+		}
+	}
+	pkg, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dependency := range []string{"fast-check", "@electric-sql/pglite"} {
+		if !strings.Contains(string(pkg), dependency) {
+			t.Errorf("property build package.json missing %q: %s", dependency, pkg)
+		}
+	}
+}
+
+func TestBuildGenPropertyTestsRejectsNonNodeBeforeWriting(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	for _, target := range []string{"python", "effect"} {
+		t.Run(target, func(t *testing.T) {
+			outDir := filepath.Join(t.TempDir(), "must-not-exist")
+			_, stderr, code := runBP(t, "build", bp, "--out", outDir, "--target", target, "--gen-property-tests")
+			if code != 2 {
+				t.Fatalf("expected usage exit 2, got %d; stderr: %s", code, stderr)
+			}
+			if !strings.Contains(stderr, "supported only with --target node") {
+				t.Errorf("expected focused target error, got: %q", stderr)
+			}
+			if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+				t.Errorf("target rejection must happen before output is written; stat err=%v", err)
+			}
+		})
+	}
+}
+
+func TestDiffGenPropertyTestsUsesSameGenerationMode(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := filepath.Join(t.TempDir(), "absent-output")
+	stdout, stderr, code := runBP(t, "diff", bp, "--out", outDir, "--gen-property-tests")
+	if code != 0 {
+		t.Fatalf("property diff failed: %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	for _, want := range []string{"test/generated/todos.property.test.ts", "test/generated/todos.test.ts"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("property diff should report %q, got:\n%s", want, stdout)
+		}
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Errorf("diff must not write the requested output directory; stat err=%v", err)
+	}
+}
+
+func TestTestGenPropertyTestsBuildsAndRunsVitest(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "examples", "todo-api.bp")
+	outDir := filepath.Join(t.TempDir(), "property-tests")
+	binDir := t.TempDir()
+	logFile := filepath.Join(binDir, "bun.log")
+	bunStub := filepath.Join(binDir, "bun")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$BP_BUN_LOG\"\n" +
+		"if [ \"$1\" = \"install\" ]; then mkdir -p node_modules; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bunStub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BP_BUN_LOG=" + logFile,
+	}
+
+	stdout, stderr, code := runBPEnv(t, env, "test", bp, "--out", outDir, "--gen-property-tests")
+	if code != 0 {
+		t.Fatalf("property test command failed: %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invocation := range []string{"install", "run test"} {
+		if !strings.Contains(string(logBytes), invocation) {
+			t.Errorf("expected bun %s invocation, log: %q", invocation, logBytes)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "test/generated/todos.property.test.ts")); err != nil {
+		t.Errorf("bp test --gen-property-tests should emit property suite: %v", err)
+	}
+}
+
+func TestPropertyTestFlagAppearsInHelpAndCompletions(t *testing.T) {
+	for _, args := range [][]string{{"build", "--help"}, {"test", "--help"}, {"diff", "--help"}, {"completion", "bash"}, {"completion", "fish"}} {
+		stdout, stderr, code := runBP(t, args...)
+		if code != 0 {
+			t.Fatalf("bp %s failed: %d; stderr=%s", strings.Join(args, " "), code, stderr)
+		}
+		if !strings.Contains(stdout+stderr, "--gen-property-tests") && !strings.Contains(stdout+stderr, "gen-property-tests") {
+			t.Errorf("bp %s should expose --gen-property-tests, stdout=%q stderr=%q", strings.Join(args, " "), stdout, stderr)
+		}
 	}
 }

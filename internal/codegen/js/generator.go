@@ -13,13 +13,14 @@ import (
 
 // Generator produces a Node.js project from a Blueprint AST.
 type Generator struct {
-	sourceFile   string
-	file         *ast.File
-	models       []*ast.Model
-	middlewares  map[string]*ast.Middleware // name -> middleware definition
-	reactQuery   bool
-	frontendOnly bool
-	genTests     bool
+	sourceFile    string
+	file          *ast.File
+	models        []*ast.Model
+	middlewares   map[string]*ast.Middleware // name -> middleware definition
+	reactQuery    bool
+	frontendOnly  bool
+	genTests      bool
+	propertyTests bool
 	// Lookup maps for declared names (built once in generateAll).
 	declaredFns       map[string]bool
 	declaredPipes     map[string]bool
@@ -55,27 +56,49 @@ func (g *Generator) WithGenTests(enabled bool) *Generator {
 	return g
 }
 
+// WithPropertyTests enables deterministic fast-check properties for REST
+// endpoints. Property tests are additive: enabling them also emits the normal
+// contract-test harness, while WithGenTests by itself keeps its existing
+// contract-only behavior.
+func (g *Generator) WithPropertyTests(enabled bool) *Generator {
+	g.propertyTests = enabled
+	return g
+}
+
 // emitCtx carries context for arrow statement code generation.
 type emitCtx struct {
-	kind              string            // "endpoint", "function", "middleware", "ws", "worker"
-	method            string            // HTTP method for endpoints (e.g., "GET", "POST")
-	path              string            // URL path for endpoints (e.g., "/api/todos/:id")
-	ctxVars           map[string]bool   // identifiers injected via middleware (e.g., "auth" -> c.get('auth'))
-	boundVars         map[string]string // data-op binding: model name -> bound variable (e.g., "job" -> "job")
-	declared          map[string]bool   // variables already declared in current scope
-	varModels         map[string]string // reverse of boundVars: variable name -> model name (e.g., "old" -> "job")
-	singleVars        map[string]bool   // variables bound from fetch (single record, not a collection)
-	asyncFns          map[string]bool   // function/pipe names that should be awaited
-	structEnums       map[string]bool   // enum names that have struct-body variants (bracket access → <Name>Config)
-	paginatedVars     map[string]bool   // variables bound from paginated queries (have .items/.total)
-	fkAliases         map[string]string // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
-	generator         *Generator        // back-reference for FK model lookups
-	preserveBlockKeys bool              // when true, BlockExpr keys are not camelCased (for JSON response output)
+	kind              string              // "endpoint", "function", "middleware", "ws", "worker"
+	method            string              // HTTP method for endpoints (e.g., "GET", "POST")
+	path              string              // URL path for endpoints (e.g., "/api/todos/:id")
+	ctxVars           map[string]bool     // identifiers injected via middleware (e.g., "auth" -> c.get('auth'))
+	boundVars         map[string]string   // data-op binding: model name -> bound variable (e.g., "job" -> "job")
+	declared          map[string]bool     // variables already declared in current scope
+	varModels         map[string]string   // reverse of boundVars: variable name -> model name (e.g., "old" -> "job")
+	singleVars        map[string]bool     // variables bound from fetch (single record, not a collection)
+	asyncFns          map[string]bool     // function/pipe names that should be awaited
+	structEnums       map[string]bool     // enum names that have struct-body variants (bracket access → <Name>Config)
+	paginatedVars     map[string]bool     // variables bound from paginated queries (have .items/.total)
+	eagerRelations    map[string][]string // query binding -> relationships requested by with(...)
+	fkAliases         map[string]string   // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
+	generator         *Generator          // back-reference for FK model lookups
+	preserveBlockKeys bool                // when true, BlockExpr keys are not camelCased (for JSON response output)
 }
 
 // Files implements codegen.Generator: it returns the generated TypeScript/Node
 // project as in-memory OutputFiles without touching disk.
 func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
+	if err := codegen.RejectUnresolvedGenerateSteps(file); err != nil {
+		return nil, err
+	}
+	if err := rejectExternalSubscriptionSources(file); err != nil {
+		return nil, err
+	}
+	if err := validateExternalConfigurations(file); err != nil {
+		return nil, err
+	}
+	if err := rejectWithLegacyQueryArgs(file); err != nil {
+		return nil, err
+	}
 	g.file = file
 	resolveTranslationKeyTypes(file)
 	g.sourceFile = file.Loc.File
@@ -88,6 +111,69 @@ func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
 		return nil, fmt.Errorf("codegen: %w", err)
 	}
 	return files, nil
+}
+
+func rejectWithLegacyQueryArgs(file *ast.File) error {
+	if file == nil {
+		return nil
+	}
+	validator := &withLegacyQueryValidator{}
+	ast.Walk(file, validator)
+	return validator.err
+}
+
+type withLegacyQueryValidator struct {
+	ast.BaseVisitor
+	err error
+}
+
+func (v *withLegacyQueryValidator) VisitFnCall(call *ast.FnCall) bool {
+	if v.err != nil || call.Name != "query" {
+		return v.err == nil
+	}
+	hasWith := false
+	hasLegacy := false
+	for _, arg := range call.Args[1:] {
+		if marker, ok := arg.(*ast.FnCall); ok {
+			switch marker.Name {
+			case "with":
+				hasWith = true
+				continue
+			case "where", "order", "paginate":
+				continue
+			}
+		}
+		if ident, ok := arg.(*ast.Ident); ok && ident.Name == "first" {
+			continue
+		}
+		hasLegacy = true
+	}
+	if hasWith && hasLegacy {
+		v.err = fmt.Errorf("node target rejects query with(...) at %s combined with legacy positional or block arguments; use structured query modifiers", call.Location())
+		return false
+	}
+	return true
+}
+
+// rejectExternalSubscriptionSources keeps `subscribe ... from(service)` from
+// masquerading as an external consumer. The generated event registry is an
+// in-process bus; it can faithfully handle a source-less subscribe block, but
+// it has no transport adapter that consumes events from an external service.
+func rejectExternalSubscriptionSources(file *ast.File) error {
+	if file == nil {
+		return nil
+	}
+	for _, block := range file.Blocks {
+		sub, ok := block.(*ast.Subscribe)
+		if !ok || sub.From == "" {
+			continue
+		}
+		return fmt.Errorf(
+			"node target does not yet support subscribe %q from(%s) at %s: no external event transport is generated; remove from(%s) for an in-process subscription or provide a transport adapter",
+			sub.Event, sub.From, sub.Location(), sub.From,
+		)
+	}
+	return nil
 }
 
 // Generate implements codegen.Generator by building Files and persisting them.
@@ -167,9 +253,12 @@ func toFKAccessInfo(fk resolve.FKAccess) fkAccessInfo {
 // resolved via the shared internal/resolve package.
 func (g *Generator) fkAccessesInExpr(e ast.Expr, ctx *emitCtx) []fkAccessInfo {
 	src := resolve.FKAccessesInExpr(e, g.models, ctx.varModels)
-	out := make([]fkAccessInfo, len(src))
-	for i, fk := range src {
-		out[i] = toFKAccessInfo(fk)
+	out := make([]fkAccessInfo, 0, len(src))
+	for _, fk := range src {
+		if eagerRelationRequested(ctx, fk.VarName, fk.FieldName) {
+			continue
+		}
+		out = append(out, toFKAccessInfo(fk))
 	}
 	return out
 }
@@ -178,11 +267,30 @@ func (g *Generator) fkAccessesInExpr(e ast.Expr, ctx *emitCtx) []fkAccessInfo {
 // resolved via the shared internal/resolve package.
 func (g *Generator) fkAccessesInStmt(stmt ast.ArrowStmt, ctx *emitCtx) []fkAccessInfo {
 	src := resolve.FKAccessesInStmt(stmt, g.models, ctx.varModels)
-	out := make([]fkAccessInfo, len(src))
-	for i, fk := range src {
-		out[i] = toFKAccessInfo(fk)
+	out := make([]fkAccessInfo, 0, len(src))
+	for _, fk := range src {
+		if eagerRelationRequested(ctx, fk.VarName, fk.FieldName) {
+			continue
+		}
+		out = append(out, toFKAccessInfo(fk))
 	}
 	return out
+}
+
+func eagerRelationRequested(ctx *emitCtx, variable, relation string) bool {
+	if ctx == nil {
+		return false
+	}
+	requested := ctx.eagerRelations[variable]
+	if len(requested) == 0 {
+		requested = ctx.eagerRelations[toCamelCase(variable)]
+	}
+	for _, name := range requested {
+		if name == relation {
+			return true
+		}
+	}
+	return false
 }
 
 // emitFKSubQuery emits a sub-query to fetch a related record for an FK access pattern.
@@ -190,8 +298,13 @@ func (g *Generator) fkAccessesInStmt(stmt ast.ArrowStmt, ctx *emitCtx) []fkAcces
 func (g *Generator) emitFKSubQuery(b *strings.Builder, fk fkAccessInfo, indent string) string {
 	alias := "_" + toCamelCase(fk.fieldName)
 	schemaTable := "schema." + toCamelCase(fk.targetModel)
-	fmt.Fprintf(b, "%sconst %s = (await db.select().from(%s).where(eq(%s.id, %s.%s)))[0];\n",
-		indent, alias, schemaTable, schemaTable, fk.varName, fk.fkColumn)
+	row := fmt.Sprintf("(await db.select().from(%s).where(eq(%s.id, %s.%s)))[0]",
+		schemaTable, schemaTable, fk.varName, fk.fkColumn)
+	if target := g.findModel(fk.targetModel); target != nil && len(target.ComputedFields) > 0 {
+		row = fmt.Sprintf("schema.compute%s(%s as typeof %s.$inferSelect)",
+			toPascalCase(fk.targetModel), row, schemaTable)
+	}
+	fmt.Fprintf(b, "%sconst %s = %s;\n", indent, alias, row)
 	return alias
 }
 
@@ -347,10 +460,22 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	bp := g.file.Blueprint
-	hasDB := blueprintEntry(bp, "database") != ""
+	// Models require the generated Drizzle/Postgres layer even when the
+	// optional database entry is omitted. An explicit database with no models
+	// still receives an empty schema module so db.ts is always importable.
+	hasDB := blueprintEntry(bp, "database") != "" || len(models) > 0
 	hasCache := blueprintEntry(bp, "cache") != ""
 	hasStorage := blueprintEntry(bp, "storage") != ""
 	g.hasStorage = hasStorage
+
+	if g.propertyTests {
+		if g.frontendOnly {
+			return nil, fmt.Errorf("property tests require the runnable Node service; frontend-only generation is not supported")
+		}
+		if err := g.validatePropertyTestSupport(endpoints, types, aliases, fns, pipes); err != nil {
+			return nil, err
+		}
+	}
 
 	// Extra infra env vars referenced directly by generated code that may not
 	// be hand-declared as secrets: REDIS_URL is read by src/lib/cache.ts and
@@ -426,8 +551,8 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		files = append(files, g.genTypes(types, aliases, enums, states))
 	}
 
-	// src/models/schema.ts
-	if len(models) > 0 {
+	// src/models/schema.ts (also emitted empty for database-only projects).
+	if hasDB {
 		files = append(files, g.genSchema(models, enums))
 	}
 
@@ -658,8 +783,17 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// Auto-generated contract tests + in-memory (PGlite) harness (opt-in).
-	if g.genTests && len(endpoints) > 0 {
-		files = append(files, g.genAutoTests(endpoints, secrets)...)
+	// Property tests build on the same harness and deliberately imply contract
+	// tests; the long-standing --gen-tests mode remains contract-only.
+	if (g.genTests || g.propertyTests) && len(endpoints) > 0 {
+		files = append(files, g.genAutoTests(endpoints, secrets, hasDB)...)
+	}
+	if g.propertyTests {
+		propertyFiles, err := g.genPropertyTests(endpoints, hasDB, types, aliases)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, propertyFiles...)
 	}
 
 	return files, nil
@@ -812,6 +946,9 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 	if ctx.paginatedVars == nil {
 		ctx.paginatedVars = make(map[string]bool)
 	}
+	if ctx.eagerRelations == nil {
+		ctx.eagerRelations = make(map[string][]string)
+	}
 	if ctx.fkAliases == nil {
 		ctx.fkAliases = make(map[string]string)
 	}
@@ -832,6 +969,10 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 			ctx.singleVars[f.Name] = true
 		case resolve.PaginatedCard:
 			ctx.paginatedVars[f.Name] = true
+		}
+		if len(f.Relationships) > 0 {
+			ctx.eagerRelations[f.Name] = append([]string(nil), f.Relationships...)
+			ctx.eagerRelations[toCamelCase(f.Name)] = append([]string(nil), f.Relationships...)
 		}
 	}
 	for _, f := range facts.MapResults {
@@ -956,6 +1097,15 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 							innerCtx.varModels[k] = v
 						}
 						innerCtx.varModels[itemVar] = modelName
+						innerCtx.eagerRelations = make(map[string][]string, len(ctx.eagerRelations)+1)
+						for k, relations := range ctx.eagerRelations {
+							innerCtx.eagerRelations[k] = append([]string(nil), relations...)
+						}
+						if relations := ctx.eagerRelations[ident.Name]; len(relations) > 0 {
+							innerCtx.eagerRelations[itemVar] = append([]string(nil), relations...)
+						} else if relations := ctx.eagerRelations[collectionVar]; len(relations) > 0 {
+							innerCtx.eagerRelations[itemVar] = append([]string(nil), relations...)
+						}
 						innerCtx.fkAliases = make(map[string]string)
 						for k, v := range ctx.fkAliases {
 							innerCtx.fkAliases[k] = v
@@ -1126,6 +1276,17 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 			}
 
 		case *ast.OutputStmt:
+			// Output expressions can traverse a ref-backed relationship just
+			// like step and guard expressions. Fetch those rows before rendering
+			// the response so exprToJSWithCtx can replace the traversal with the
+			// materialized alias.
+			for _, fk := range g.fkAccessesInStmt(stmt, &ctx) {
+				key := fk.varName + "." + fk.fieldName
+				if _, already := ctx.fkAliases[key]; !already {
+					alias := g.emitFKSubQuery(b, fk, indent)
+					ctx.fkAliases[key] = alias
+				}
+			}
 			status := s.Status
 			if status == "" {
 				status = "200"

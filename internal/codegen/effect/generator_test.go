@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/abdul-hamid-achik/blueprint/internal/ast"
+	"github.com/abdul-hamid-achik/blueprint/internal/lexer"
 	"github.com/abdul-hamid-achik/blueprint/internal/parser"
 )
 
@@ -70,5 +72,34 @@ GET /api/things {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should name %q; got: %v", want, err)
 		}
+	}
+}
+
+func TestEffect_PreviouslySilentDeclarationsFailClosed(t *testing.T) {
+	loc := lexer.Loc{File: "x.bp", Line: 2, Col: 1}
+	cases := []struct {
+		name  string
+		block ast.TopLevel
+		want  string
+	}{
+		{name: "enum", block: &ast.Enum{Loc: loc, Name: "plan"}, want: "`enum` declarations"},
+		{name: "external", block: &ast.External{Loc: loc, Name: "billing"}, want: "`external` declarations"},
+		{name: "test", block: &ast.Test{Loc: loc, Name: "contract"}, want: "authored `test` declarations"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &ast.File{
+				Loc:       loc,
+				Blueprint: &ast.Blueprint{Loc: loc, Name: "x"},
+				Blocks:    []ast.TopLevel{tc.block},
+			}
+			_, err := New().Files(file)
+			if err == nil {
+				t.Fatalf("expected %s to be rejected", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should contain %q; got %v", tc.want, err)
+			}
+		})
 	}
 }

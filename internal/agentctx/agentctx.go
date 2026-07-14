@@ -285,24 +285,25 @@ func blueprintMeta(version string) BlueprintMeta {
 func commandRegistry() []CommandInfo {
 	return []CommandInfo{
 		{"check", "bp check <file.bp> [--json]", "Parse + semantic check."},
-		{"build", "bp build <file.bp> [--out <dir>] [--target node|python|effect] [--gen-tests]", "Compile to a runnable project (idempotent)."},
-		{"diff", "bp diff <file.bp> [--out <dir>] [--exit-code] [--apply]", "Show pending changes; --exit-code is the CI idempotency gate."},
+		{"build", "bp build <file.bp> [--out <dir>] [--target node|python|effect] [--gen-tests] [--gen-property-tests]", "Compile to a target project; properties are Node-only and fail closed (idempotent)."},
+		{"diff", "bp diff <file.bp> [--out <dir>] [--gen-property-tests] [--exit-code] [--apply]", "Show pending changes; --exit-code is the CI idempotency gate."},
 		{"fmt", "bp fmt <file.bp> [--write] [--check]", "Format a .bp file (round-trip safe)."},
 		{"lint", "bp lint <file.bp>", "Stylistic lint."},
 		{"docs", "bp docs <file.bp> [--out <file.json>]", "Emit OpenAPI 3.1 from declared inputs/outputs."},
 		{"run", "bp run <file.bp> [--out <dir>]", "Build + start the server."},
 		{"dev", "bp dev <file.bp> [--out <dir>]", "Watch + rebuild + restart on change."},
-		{"test", "bp test <file.bp> [--out <dir>]", "Build with --gen-tests + run the generated suite."},
+		{"test", "bp test <file.bp> [--out <dir>] [--target node|python] [--gen-property-tests]", "Build with contract tests and run Vitest (Node, optionally fast-check) or pytest (Python)."},
 		{"migrate", "bp migrate <file.bp> generate|push|check [--target node|python]", "Drizzle (node) or Alembic (python) migrations."},
 		{"deploy", "bp deploy <file.bp> [--target docker|fly] [--tag <image>] [--no-run]", "Build + smoke-run Docker image; fly currently exits as 'not implemented'."},
 		{"generate", "bp generate <file.bp> [--write]", "Resolve @> slots via LLM (requires ANTHROPIC_API_KEY)."},
 		{"init", "bp init [name]", "Scaffold a new project."},
+		{"import", "bp import [path] --from ts [--out <file.bp>]", "Recover static TypeScript structure as a TODO/501 review scaffold; handler behavior is never imported."},
 		{"eject", "bp eject <dir>", "Strip Blueprint markers from a generated project."},
 		{"explain", "bp explain <code>", "Print docs for a structured error code (Cxxx/Lxxx/Pxxx)."},
 		{"context", "bp context [topic] [--format md|json]", "Agent-facing language + CLI surface, by topic."},
 		{"llms", "bp llms [--out <file>]", "Print the complete one-shot agent/LLM guide (every topic in one document); --out writes an llms.txt."},
 		{"doctor", "bp doctor", "Check toolchain dependencies."},
-		{"lsp", "bp lsp", "Start the LSP server (stdin/stdout JSON-RPC)."},
+		{"lsp", "bp lsp", "Start stdio LSP diagnostics, hover, definition, completion, and local-workspace symbols."},
 		{"stats", "bp stats <file.bp> [--json]", "Code statistics."},
 		{"completion", "bp completion <bash|zsh|fish>", "Generate a shell completion script."},
 		{"version", "bp version", "Print version."},
@@ -311,8 +312,8 @@ func commandRegistry() []CommandInfo {
 
 func targetRegistry() []TargetInfo {
 	return []TargetInfo{
-		{"node", "Hono + Drizzle + Zod + Pino", "Default. Bun or Node.js runtime. Tests via Vitest + in-memory PGlite (self-contained)."},
-		{"python", "FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic", "`--target python`. uv-managed. Tests via pytest + testcontainers[postgresql] (Docker)."},
+		{"node", "Hono + Drizzle + Zod", "Default. Vitest + PGlite, opt-in deterministic fast-check properties, pure computed fields, and one-level ref-backed relationship loading."},
+		{"python", "FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic", "`--target python`. Advanced supported subset with an exhaustive fail-closed gate. Generated contracts run via pytest + testcontainers[postgresql] (Docker)."},
 		{"effect", "Effect (effect-ts): @effect/platform HttpApi + Schema + @effect/sql", "`--target effect`. Early scaffold — emits the project shell + Config-based secrets; endpoint/model emit is in design. Opt-in/experimental, not the default."},
 	}
 }

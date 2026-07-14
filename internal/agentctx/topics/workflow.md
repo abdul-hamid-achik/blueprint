@@ -43,12 +43,39 @@ grep -l '^ws '               examples/*.bp     # WebSocket
 
 ## Tests are cheap to generate
 
-`bp test <file.bp>` will:
+`bp test <file.bp> [--target node|python]` will:
 1. Build with `--gen-tests`.
 2. Emit a Vitest suite (Node) or pytest suite (Python) from the endpoint declarations.
 3. Run it against an in-memory Postgres (Node) or a testcontainers Postgres (Python).
 
-You don't have to author the tests yourself for a sanity check — let the generator do it.
+The node target is the default and needs no external database. The Python path
+uses `uv run pytest` and requires Docker for its Postgres testcontainer. You
+don't have to author the contract tests yourself for a sanity check — let the
+generator do it.
+
+For supported Node REST services, `bp test <file> --gen-property-tests` adds
+deterministic fast-check valid-request properties (32 runs with stable seeds)
+and implies the contract suite. Property generation rejects the entire build
+for unsupported auth/header/input surfaces, impossible path/email/URL domains,
+ref-backed `save`/`seed`/`update` fields, reachable recursive inline `fn`/`pipe`
+graphs, native/external side effects, queues/storage/events/realtime, sleep, or
+wall-clock behavior; it never reports green by silently skipping a route.
+
+Authored Node tests are deliberately narrower than the grammar: setup supports
+`seed`/`save` plus simple unbound `log`; request keys are unique lowercase
+`body`/`auth`, repeats are positive, GET/HEAD bodies and calls/interpolation
+reject; assertions must use strict executable forms and safe literal RHS values,
+with at most one model assertion. Native preflight scans dependencies from all
+app-loaded modules, not only the target route. See `docs/testing-guide.md` for
+the complete boundary.
+
+`bp import <path> --from ts --out scaffold.bp` can bootstrap a rewrite from
+static Drizzle/Hono structure and named Zod objects used by static,
+transport-compatible `zValidator` calls. Nullable/type-changing Zod fields are
+skipped; SQL identity and dropped Drizzle options are warned. Never treat it as
+a code migration: every handler is intentionally dropped, printed in the
+fidelity report, and replaced by a TODO/501 route that must be restored and
+tested manually.
 
 ## Reading the codebase
 

@@ -39,6 +39,9 @@ func New() *Generator { return &Generator{} }
 // as in-memory OutputFiles without touching disk. It returns an error naming
 // the constructs this scaffold does not yet translate.
 func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
+	if err := codegen.RejectUnresolvedGenerateSteps(file); err != nil {
+		return nil, err
+	}
 	g.file = file
 	g.sourceFile = file.Loc.File
 	if g.sourceFile == "" {
@@ -90,8 +93,28 @@ func (g *Generator) unsupportedFeatures() []string {
 		switch b.(type) {
 		case *ast.Secret, *ast.Env:
 			// handled
+		case *ast.Locale:
+			seen["`locale` declarations"] = true
+		case *ast.Translation:
+			seen["`translation` declarations"] = true
+		case *ast.StateMachine:
+			seen["`state` machines"] = true
+		case *ast.Analytics:
+			seen["`analytics` declarations"] = true
+		case *ast.SaveSchema:
+			seen["`save` declarations"] = true
+		case *ast.Include:
+			seen["`include` declarations"] = true
+		case *ast.TypeDecl:
+			seen["`type` declarations"] = true
+		case *ast.Alias:
+			seen["`alias` declarations"] = true
+		case *ast.Enum:
+			seen["`enum` declarations"] = true
 		case *ast.Model:
 			seen["`model` declarations"] = true
+		case *ast.Content:
+			seen["`content` declarations"] = true
 		case *ast.Endpoint:
 			seen["endpoints"] = true
 		case *ast.StreamEndpoint:
@@ -108,6 +131,20 @@ func (g *Generator) unsupportedFeatures() []string {
 			seen["`pipe` declarations"] = true
 		case *ast.Middleware:
 			seen["`middleware` declarations"] = true
+		case *ast.External:
+			seen["`external` declarations"] = true
+		case *ast.Subscribe:
+			seen["`subscribe` declarations"] = true
+		case *ast.Test:
+			seen["authored `test` declarations"] = true
+		case *ast.TestGroup:
+			seen["`test_group` declarations"] = true
+		case *ast.Fixture:
+			seen["`fixture` declarations"] = true
+		default:
+			// Future AST declarations must fail closed until the Effect target
+			// explicitly decides how to preserve their semantics.
+			seen[fmt.Sprintf("unsupported declaration %T", b)] = true
 		}
 	}
 	out := make([]string, 0, len(seen))

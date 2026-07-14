@@ -1,0 +1,56 @@
+blueprint "relationships-computed" {
+  version  "1.0.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+model author {
+  id         uuid   primary
+  first_name string required
+  last_name  string required
+  computed full_name string = first_name + " " + last_name
+}
+
+model post {
+  id        uuid   primary
+  author_id uuid   required ref(author)
+  title     string required
+  computed headline string = title + "!"
+}
+
+GET /api/posts {
+  |> posts = query post with(author) order(title, asc)
+  -> 200 { posts: posts }
+}
+
+GET /api/latest-post {
+  |> latest = query post with(author) first
+  -> 200 { post: latest }
+}
+
+GET /api/post-page {
+  <- page int default(1)
+  <- per_page int default(20)
+  |> result = query post with(author) paginate(page, per_page)
+  -> 200 { result: result }
+}
+
+GET /api/authors/:id {
+  <- id uuid required
+  |> author = fetch author(id)
+  -> 200 { author: author }
+}
+
+GET /api/post-author/:id {
+  <- id uuid required
+  |> post = fetch post(id)
+  -> 200 { full_name: post.author.full_name }
+}
+
+POST /api/posts {
+  <- author_id uuid required
+  <- title string required
+  |> post = save post { author_id: author_id, title: title }
+  -> 201 { post: post }
+}

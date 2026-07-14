@@ -355,6 +355,9 @@ func (p *printer) printModel(n *Model) string {
 		sb.WriteString(p.printField(f))
 		sb.WriteString("\n")
 	}
+	for _, f := range n.ComputedFields {
+		fmt.Fprintf(&sb, "  computed %s %s = %s\n", f.Name, p.printType(f.Type), p.printExpr(f.Expr))
+	}
 	p.nameWidth, p.typeWidth = 0, 0
 	sb.WriteString("}\n")
 	return sb.String()
@@ -1156,15 +1159,15 @@ func isDataOpName(name string) bool {
 	return false
 }
 
-// isDataOpMarker reports whether e is a marker FnCall (where / order /
-// paginate) attached to a data operation.
+// isDataOpMarker reports whether e is a marker FnCall attached to a data
+// operation.
 func isDataOpMarker(e Expr) bool {
 	fn, ok := e.(*FnCall)
 	if !ok {
 		return false
 	}
 	switch fn.Name {
-	case "where", "order", "paginate":
+	case "where", "with", "order", "paginate":
 		return true
 	}
 	return false

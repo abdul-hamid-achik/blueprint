@@ -33,7 +33,7 @@ import (
 // version is set by goreleaser ldflags at build time. Between releases this
 // stays at the next planned version with a `-dev` suffix so `bp version`
 // makes it obvious the binary was built from source rather than a release.
-var version = "0.11.0"
+var version = "0.15.0-dev"
 
 // Supported codegen targets. New targets register here and add a case to
 // dispatchTarget below. The flag default is targetNode, so existing usage is
@@ -231,7 +231,7 @@ func main() {
 		os.Exit(cmdCheck(os.Args[2], parsed.set["--json"]))
 	case "build":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("build", "build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--force]",
+			printCommandHelp("build", "build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--force]",
 				"Compile a .bp file to a runnable project.",
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
@@ -239,17 +239,18 @@ func main() {
 					{"--react-query", "Generate React Query hooks and add frontend deps (node target)"},
 					{"--frontend-only", "Emit only the standalone frontend package (node target)"},
 					{"--gen-tests", "Generate contract tests. node: PGlite-backed Vitest. python: testcontainers-backed pytest (Docker required)"},
+					{"--gen-property-tests", "Generate deterministic fast-check endpoint properties (node only; implies --gen-tests)"},
 					{"--force", "Overwrite a non-empty --out directory even if it has no Blueprint manifest"},
 				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--force]")
+			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--force]")
 			os.Exit(1)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{
 			"--out": true, "--target": true, "--react-query": false,
-			"--frontend-only": false, "--gen-tests": false, "--force": false,
+			"--frontend-only": false, "--gen-tests": false, "--gen-property-tests": false, "--force": false,
 		})
 		exitOnArgError(err)
 		exitOnArgError(rejectPositional(parsed.positional))
@@ -261,9 +262,9 @@ func main() {
 		if v, ok := parsed.values["--target"]; ok {
 			target = v
 		}
-		os.Exit(cmdBuildWithOptions(os.Args[2], outDir, target,
+		os.Exit(cmdBuildWithPropertyOptions(os.Args[2], outDir, target,
 			parsed.set["--react-query"], parsed.set["--frontend-only"], false,
-			parsed.set["--gen-tests"], parsed.set["--force"]))
+			parsed.set["--gen-tests"], parsed.set["--gen-property-tests"], parsed.set["--force"]))
 	case "frontend":
 		if len(os.Args) >= 3 && os.Args[2] == "publish" {
 			if hasHelpFlag(os.Args[3:]) {
@@ -353,26 +354,32 @@ func main() {
 		os.Exit(cmdDocs(os.Args[2], parsed.values["--out"]))
 	case "test":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("test", "test <file.bp> [--out <dir>] [--force]",
-				"Build and run the Vitest test suite.",
+			printCommandHelp("test", "test <file.bp> [--out <dir>] [--target <name>] [--gen-property-tests] [--force]",
+				"Build and run the generated test suite.",
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
+					{"--target <name>", "Test target: node (default, PGlite + Vitest) or python (Postgres testcontainer + pytest)"},
+					{"--gen-property-tests", "Also generate and run deterministic fast-check endpoint properties (node only)"},
 					{"--force", "Overwrite a non-empty --out directory even if it has no Blueprint manifest"},
 				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp test <file.bp> [--out <dir>] [--force]")
+			fmt.Fprintln(os.Stderr, "Usage: bp test <file.bp> [--out <dir>] [--target <name>] [--gen-property-tests] [--force]")
 			os.Exit(1)
 		}
-		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--force": false})
+		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--target": true, "--gen-property-tests": false, "--force": false})
 		exitOnArgError(err)
 		exitOnArgError(rejectPositional(parsed.positional))
 		outDir := "generated"
 		if v, ok := parsed.values["--out"]; ok {
 			outDir = v
 		}
-		os.Exit(cmdTest(os.Args[2], outDir, parsed.set["--force"]))
+		target := targetNode
+		if v, ok := parsed.values["--target"]; ok {
+			target = v
+		}
+		os.Exit(cmdTestWithPropertyTests(os.Args[2], outDir, target, parsed.set["--force"], parsed.set["--gen-property-tests"]))
 	case "migrate":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("migrate", "migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>] [--force]",
@@ -440,6 +447,29 @@ func main() {
 			name = os.Args[2]
 		}
 		os.Exit(cmdInit(name))
+	case "import":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("import", "import [path] --from ts [--out <file.bp>] [--name <name>] [--force]",
+				"Scaffold a Blueprint rewrite from TypeScript structure.\nExtracts Drizzle tables, Hono routes, and referenced Zod inputs. Handler behavior is never imported; every route is emitted as a loud TODO returning 501.",
+				[][2]string{
+					{"--from <kind>", "Required source kind; currently ts/typescript"},
+					{"--out <file.bp>", "Write the scaffold to a file (default: Blueprint source on stdout)"},
+					{"--name <name>", "Override the inferred blueprint name"},
+					{"--force", "Replace an existing --out file"},
+				})
+			os.Exit(0)
+		}
+		parsed, err := parseArgs(os.Args[2:], flagSpec{"--from": true, "--out": true, "--name": true, "--force": false})
+		exitOnArgError(err)
+		if len(parsed.positional) > 1 {
+			fmt.Fprintf(os.Stderr, "Error: unexpected argument %q\n", parsed.positional[1])
+			os.Exit(1)
+		}
+		inputPath := "."
+		if len(parsed.positional) == 1 {
+			inputPath = parsed.positional[0]
+		}
+		os.Exit(cmdImport(inputPath, parsed.values["--from"], parsed.values["--out"], parsed.values["--name"], parsed.set["--force"]))
 	case "run":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("run", "run <file.bp> [--out <dir>] [--force]",
@@ -498,13 +528,15 @@ func main() {
 		os.Exit(cmdEject(os.Args[2]))
 	case "diff":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("diff", "diff <file.bp> [--out <dir>] [--react-query] [--frontend-only] [--gen-tests] [--apply] [--exit-code] [--no-color]",
+			printCommandHelp("diff", "diff <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply] [--exit-code] [--no-color]",
 				"Show what changes bp build would make, without overwriting.",
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
+					{"--target <name>", "Codegen target: node (default), python, or effect"},
 					{"--react-query", "Compare output as if build ran with React Query hooks enabled"},
 					{"--frontend-only", "Compare output as if build emitted only the standalone frontend package"},
 					{"--gen-tests", "Compare output as if build emitted the auto-generated test harness"},
+					{"--gen-property-tests", "Compare output including deterministic Node endpoint properties (implies --gen-tests)"},
 					{"--apply", "Write the changes (equivalent to bp build) after showing the diff"},
 					{"--exit-code", "Exit 1 if there are any changes (for CI)"},
 					{"--no-color", "Disable ANSI color in diff output"},
@@ -512,12 +544,12 @@ func main() {
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>] [--react-query] [--frontend-only] [--gen-tests] [--apply] [--exit-code] [--no-color]")
+			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply] [--exit-code] [--no-color]")
 			os.Exit(1)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{
 			"--out": true, "--target": true, "--react-query": false,
-			"--frontend-only": false, "--gen-tests": false, "--apply": false,
+			"--frontend-only": false, "--gen-tests": false, "--gen-property-tests": false, "--apply": false,
 			"--exit-code": false, "--no-color": false,
 		})
 		exitOnArgError(err)
@@ -530,8 +562,8 @@ func main() {
 		if v, ok := parsed.values["--target"]; ok {
 			target = v
 		}
-		os.Exit(cmdDiff(os.Args[2], outDir, target, parsed.set["--react-query"], parsed.set["--frontend-only"],
-			parsed.set["--gen-tests"], parsed.set["--apply"], parsed.set["--exit-code"], parsed.set["--no-color"]))
+		os.Exit(cmdDiffWithPropertyTests(os.Args[2], outDir, target, parsed.set["--react-query"], parsed.set["--frontend-only"],
+			parsed.set["--gen-tests"], parsed.set["--gen-property-tests"], parsed.set["--apply"], parsed.set["--exit-code"], parsed.set["--no-color"]))
 	case "deploy":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("deploy", "deploy <file.bp> [--out <dir>] [--tag <tag>] [--target <name>] [--no-run]",
@@ -734,6 +766,10 @@ func cmdBuild(filename, outDir, target string, reactQuery, frontendOnly, genTest
 }
 
 func cmdBuildWithOptions(filename, outDir, target string, reactQuery, frontendOnly, preserveNodeModules, genTests, force bool) int {
+	return cmdBuildWithPropertyOptions(filename, outDir, target, reactQuery, frontendOnly, preserveNodeModules, genTests, false, force)
+}
+
+func cmdBuildWithPropertyOptions(filename, outDir, target string, reactQuery, frontendOnly, preserveNodeModules, genTests, propertyTests, force bool) int {
 	// Validate target before any work — keeps errors visible and short.
 	canonical, err := resolveTarget(target)
 	if err != nil {
@@ -741,6 +777,14 @@ func cmdBuildWithOptions(filename, outDir, target string, reactQuery, frontendOn
 		return 2
 	}
 	target = canonical
+	if propertyTests && target != targetNode {
+		fmt.Fprintln(os.Stderr, "Error: --gen-property-tests is supported only with --target node")
+		return 2
+	}
+	if propertyTests && frontendOnly {
+		fmt.Fprintln(os.Stderr, "Error: --gen-property-tests requires the runnable Node service and cannot be combined with --frontend-only")
+		return 2
+	}
 
 	// Pre-flight: refuse to clobber a foreign, non-Blueprint directory. Safe
 	// no-op for outDirs bp already built into (they carry the manifest) or
@@ -787,7 +831,7 @@ func cmdBuildWithOptions(filename, outDir, target string, reactQuery, frontendOn
 
 	switch target {
 	case targetNode:
-		gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly).WithGenTests(genTests)
+		gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly).WithGenTests(genTests).WithPropertyTests(propertyTests)
 		if err := gen.Generate(file, outDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
 			return 4
@@ -1366,13 +1410,44 @@ func cmdRun(filename, outDir string, force bool) int {
 	return 0
 }
 
-func cmdTest(filename, outDir string, force bool) int {
-	// Enable auto-generated contract tests with the in-memory (PGlite) harness so
-	// `bp test` runs end-to-end without a live database.
-	if code := cmdBuildWithOptions(filename, outDir, targetNode, false, false, false, true, force); code != 0 {
+func cmdTest(filename, outDir, target string, force bool) int {
+	return cmdTestWithPropertyTests(filename, outDir, target, force, false)
+}
+
+func cmdTestWithPropertyTests(filename, outDir, target string, force, propertyTests bool) int {
+	canonical, err := resolveTarget(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return 2
+	}
+	target = canonical
+	if propertyTests && target != targetNode {
+		fmt.Fprintln(os.Stderr, "Error: --gen-property-tests is supported only with --target node")
+		return 2
+	}
+	if target == targetEffect {
+		fmt.Fprintln(os.Stderr, "Error: --target effect does not support generated tests yet.")
+		return 2
+	}
+	if target == targetNode {
+		if issues := preflightNodeAuthoredTests(filename, outDir); len(issues) > 0 {
+			printNodeTestPreflightIssues(issues)
+			return 2
+		}
+	}
+
+	// Both supported targets enable their auto-generated contract harness here:
+	// node uses in-process PGlite + Vitest; python uses pytest + a real Postgres
+	// testcontainer (and therefore requires Docker when the tests actually run).
+	if code := cmdBuildWithPropertyOptions(filename, outDir, target, false, false, false, true, propertyTests, force); code != 0 {
 		return code
 	}
 	copyProjectEnv(filename, outDir)
+
+	if target == targetPython {
+		return runPythonTests(outDir)
+	}
+
 	if err := installIfNeeded(outDir); err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		return 2
@@ -1380,6 +1455,27 @@ func cmdTest(filename, outDir string, force bool) int {
 
 	fmt.Printf("Running tests in %s...\n", outDir)
 	cmd := exec.Command("bun", "run", "test")
+	cmd.Dir = outDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return 1
+	}
+	return 0
+}
+
+// runPythonTests shells to `uv run pytest`. uv resolves the generated
+// dependency group before running, while the generated testcontainers harness
+// reports a focused Docker error when the daemon is unavailable.
+func runPythonTests(outDir string) int {
+	if _, err := exec.LookPath("uv"); err != nil {
+		fmt.Fprintln(os.Stderr, "Error: uv not found on PATH. Install uv to run Python tests.")
+		fmt.Fprintln(os.Stderr, "See https://docs.astral.sh/uv/ for installation instructions.")
+		return 2
+	}
+
+	fmt.Printf("Running pytest in %s (Docker required for Postgres testcontainers)...\n", outDir)
+	cmd := exec.Command("uv", "run", "pytest")
 	cmd.Dir = outDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1660,12 +1756,24 @@ func isManifestPath(dir, path string) bool {
 }
 
 func cmdDiff(filename, outDir, target string, reactQuery, frontendOnly, genTests, apply, exitOnDiff, noColor bool) int {
+	return cmdDiffWithPropertyTests(filename, outDir, target, reactQuery, frontendOnly, genTests, false, apply, exitOnDiff, noColor)
+}
+
+func cmdDiffWithPropertyTests(filename, outDir, target string, reactQuery, frontendOnly, genTests, propertyTests, apply, exitOnDiff, noColor bool) int {
 	canonical, err := resolveTarget(target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		return 2
 	}
 	target = canonical
+	if propertyTests && target != targetNode {
+		fmt.Fprintln(os.Stderr, "Error: --gen-property-tests is supported only with --target node")
+		return 2
+	}
+	if propertyTests && frontendOnly {
+		fmt.Fprintln(os.Stderr, "Error: --gen-property-tests requires the runnable Node service and cannot be combined with --frontend-only")
+		return 2
+	}
 
 	src, err := os.ReadFile(filename)
 	if err != nil {
@@ -1705,7 +1813,7 @@ func cmdDiff(filename, outDir, target string, reactQuery, frontendOnly, genTests
 
 	switch target {
 	case targetNode:
-		gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly).WithGenTests(genTests)
+		gen := js.New().WithReactQuery(reactQuery).WithFrontendOnly(frontendOnly).WithGenTests(genTests).WithPropertyTests(propertyTests)
 		if err := gen.Generate(file, tmpDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Codegen error: %s\n", err)
 			return 4
@@ -1811,7 +1919,7 @@ func cmdDiff(filename, outDir, target string, reactQuery, frontendOnly, genTests
 	if apply {
 		fmt.Println()
 		fmt.Println("Applying changes...")
-		if code := cmdBuild(filename, outDir, target, reactQuery, frontendOnly, genTests); code != 0 {
+		if code := cmdBuildWithPropertyOptions(filename, outDir, target, reactQuery, frontendOnly, false, genTests, propertyTests, false); code != 0 {
 			return code
 		}
 		return 0
@@ -1988,6 +2096,11 @@ func cmdDeploy(filename, outDir, tag, deployTarget string, noRun bool) int {
 		fmt.Fprintf(os.Stderr, "Error: No Dockerfile found in %s\n", outDir)
 		return 2
 	}
+	port, err := generatedDockerPort(dockerfilePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return 2
+	}
 
 	// Build Docker image
 	fmt.Printf("Building Docker image: %s\n", tag)
@@ -2003,28 +2116,48 @@ func cmdDeploy(filename, outDir, tag, deployTarget string, noRun bool) int {
 	// Smoke-test the built image to honor Pillar 5 row 1 ("build and run").
 	// Skipped via --no-run for CI flows that only want to validate the build.
 	if !noRun {
-		if code := dockerSmokeTest(tag); code != 0 {
+		if code := dockerSmokeTest(tag, port); code != 0 {
 			return code
 		}
 	}
 
 	fmt.Printf("\nDeploy complete! Image: %s\n", tag)
-	fmt.Println("Run with: docker run -p 3000:3000", tag)
+	fmt.Printf("Run with: docker run -p %d:%d %s\n", port, port, tag)
 	return 0
+}
+
+// generatedDockerPort reads the port emitted by the node generator. Keeping
+// deploy coupled to the generated artifact avoids a second, potentially
+// divergent interpretation of the source Blueprint.
+func generatedDockerPort(dockerfilePath string) (int, error) {
+	content, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		return 0, fmt.Errorf("read generated Dockerfile: %w", err)
+	}
+	match := regexp.MustCompile(`(?m)^EXPOSE[ \t]+([0-9]+)[ \t]*$`).FindSubmatch(content)
+	if len(match) != 2 {
+		return 0, fmt.Errorf("generated Dockerfile does not declare an EXPOSE port")
+	}
+	var port int
+	if _, err := fmt.Sscanf(string(match[1]), "%d", &port); err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("generated Dockerfile declares invalid port %q", match[1])
+	}
+	return port, nil
 }
 
 // dockerSmokeTest runs the freshly-built image, hits /health, then tears it down.
 // Returns a non-zero exit code if the container fails to start or /health does
 // not respond. The container is named bp-smoke so a stale instance from a
 // previous run cannot wedge the host.
-func dockerSmokeTest(tag string) int {
+func dockerSmokeTest(tag string, port int) int {
 	const containerName = "bp-smoke"
+	portMapping := fmt.Sprintf("%d:%d", port, port)
 
 	// Best-effort: remove any leftover container from a previous interrupted run.
 	_ = exec.Command("docker", "rm", "-f", containerName).Run()
 
-	fmt.Printf("Smoke-testing image %s (docker run -d -p 3000:3000 --name %s)...\n", tag, containerName)
-	runCmd := exec.Command("docker", "run", "-d", "-p", "3000:3000", "--name", containerName, tag)
+	fmt.Printf("Smoke-testing image %s (docker run -d -p %s --name %s)...\n", tag, portMapping, containerName)
+	runCmd := exec.Command("docker", "run", "-d", "-p", portMapping, "--name", containerName, tag)
 	runCmd.Stdout = os.Stdout
 	runCmd.Stderr = os.Stderr
 	if err := runCmd.Run(); err != nil {
@@ -2039,9 +2172,10 @@ func dockerSmokeTest(tag string) int {
 	time.Sleep(2 * time.Second)
 
 	// Probe /health from inside the container so we don't depend on host curl.
-	// The generated server exposes /health on port 3000 by default.
+	// The generated server always exposes /health on its configured port.
+	healthURL := fmt.Sprintf("http://127.0.0.1:%d/health", port)
 	healthCmd := exec.Command("docker", "exec", containerName,
-		"sh", "-c", "wget -qO- http://127.0.0.1:3000/health || curl -fsS http://127.0.0.1:3000/health")
+		"sh", "-c", "wget -qO- "+healthURL+" || curl -fsS "+healthURL)
 	healthCmd.Stdout = os.Stdout
 	healthCmd.Stderr = os.Stderr
 	if err := healthCmd.Run(); err != nil {
@@ -2070,8 +2204,8 @@ var cliCommands = []cliCommand{
 	{name: "diff", desc: "Show changes without overwriting", takesBpFile: true},
 	{name: "run", desc: "Build and start the server", takesBpFile: true},
 	{name: "dev", desc: "Watch mode - rebuild and restart", takesBpFile: true},
-	{name: "test", desc: "Build and run vitest", takesBpFile: true},
-	{name: "migrate", desc: "Run drizzle-kit migration", takesBpFile: true},
+	{name: "test", desc: "Build and run generated tests", takesBpFile: true},
+	{name: "migrate", desc: "Run target migration tooling", takesBpFile: true},
 	{name: "generate", desc: "Resolve @> slots via LLM", takesBpFile: true},
 	{name: "docs", desc: "Generate OpenAPI 3.1 JSON", takesBpFile: true},
 	{name: "fmt", desc: "Format a .bp file", takesBpFile: true},
@@ -2079,6 +2213,7 @@ var cliCommands = []cliCommand{
 	{name: "stats", desc: "Show code statistics", takesBpFile: true},
 	{name: "deploy", desc: "Build and run Docker container", takesBpFile: true},
 	{name: "init", desc: "Scaffold a new project"},
+	{name: "import", desc: "Scaffold a rewrite from TypeScript structure"},
 	{name: "eject", desc: "Remove Blueprint markers"},
 	{name: "doctor", desc: "Check environment dependencies"},
 	{name: "explain", desc: "Print docs for an error code"},
@@ -2144,14 +2279,22 @@ func bashCompletionScript() string {
             _filedir "@(.bp)"
             return 0
             ;;
-        publish)
-            _filedir "@(.bp)"
-            return 0
-            ;;
-        completion)
-            COMPREPLY=( $(compgen -W "bash zsh fish" -- ${cur}) )
-            return 0
-            ;;
+		publish)
+			_filedir "@(.bp)"
+			return 0
+			;;
+		import)
+			_filedir
+			return 0
+			;;
+		completion)
+			COMPREPLY=( $(compgen -W "bash zsh fish" -- ${cur}) )
+			return 0
+			;;
+		--from)
+			COMPREPLY=( $(compgen -W "ts typescript" -- ${cur}) )
+			return 0
+			;;
         --out)
             _filedir -d
             return 0
@@ -2164,7 +2307,7 @@ func bashCompletionScript() string {
     fi
 
     if [[ ${cur} == -* ]]; then
-        COMPREPLY=( $(compgen -W "--out --target --react-query --frontend-only --gen-tests --force --skip-install --write --check --tag --json --format --apply --exit-code --no-color --no-run --help -h" -- ${cur}) )
+		COMPREPLY=( $(compgen -W "--out --target --from --name --react-query --frontend-only --gen-tests --gen-property-tests --force --skip-install --write --check --tag --json --format --apply --exit-code --no-color --no-run --help -h" -- ${cur}) )
         return 0
     fi
 }
@@ -2197,9 +2340,12 @@ _bp() {
             ;;
         args)
             case "$line[1]" in
-                %s)
-                    _files -g "*.bp"
-                    ;;
+				%s)
+					_files -g "*.bp"
+					;;
+				import)
+					_files
+					;;
                 completion)
                     _values 'shell' 'bash' 'zsh' 'fish'
                     ;;
@@ -2225,13 +2371,17 @@ func fishCompletionScript() string {
 		strings.Join(bpFileCommandNames(), " "))
 	sb.WriteString(`complete -c bp -n "__fish_seen_subcommand_from frontend; and not __fish_seen_subcommand_from publish" -a "publish" -d "Build and dry-run frontend package publish flow"
 complete -c bp -n "__fish_seen_subcommand_from publish" -a "(__fish_complete_suffix .bp)"
+complete -c bp -n "__fish_seen_subcommand_from import" -F
 complete -c bp -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
 
 complete -c bp -l out -d "Output directory"
 complete -c bp -l target -d "Codegen/deploy target"
+complete -c bp -l from -a "ts typescript" -d "Import source kind"
+complete -c bp -l name -d "Blueprint name"
 complete -c bp -l react-query -d "Generate React Query hooks"
 complete -c bp -l frontend-only -d "Emit only the standalone frontend package"
 complete -c bp -l gen-tests -d "Generate contract tests"
+complete -c bp -l gen-property-tests -d "Generate deterministic Node endpoint properties"
 complete -c bp -l force -d "Overwrite a non-empty --out directory with no Blueprint manifest"
 complete -c bp -l skip-install -d "Skip bun install before frontend publish dry-run"
 complete -c bp -l write -d "Write output back to file"
@@ -2313,13 +2463,14 @@ func printUsage() {
 	fmt.Println("  diff       <file.bp> [--out dir]           Show changes without overwriting")
 	fmt.Println("  run        <file.bp> [--out dir]           Build and start the server")
 	fmt.Println("  dev        <file.bp> [--out dir]           Watch mode — rebuild and restart on changes")
-	fmt.Println("  test       <file.bp> [--out dir]           Build and run vitest")
+	fmt.Println("  test       <file.bp> [--out dir]           Build and run Vitest or pytest (--target python)")
 	fmt.Println("  migrate    <file.bp> [generate|push|…]     Build and run drizzle-kit (node) or alembic (--target python)")
 	fmt.Println("  generate   <file.bp> [--write]             Resolve @> slots via LLM (needs ANTHROPIC_API_KEY)")
 	fmt.Println("  docs       <file.bp> [--out file.json]     Generate OpenAPI 3.1 JSON spec")
 	fmt.Println("  fmt        <file.bp> [--write]             Format a .bp file")
 	fmt.Println("  lint       <file.bp>                       Lint a .bp file for best practices")
 	fmt.Println("  init       [name]                          Scaffold a new Blueprint project")
+	fmt.Println("  import     [path] --from ts                Scaffold a rewrite; handler bodies become loud TODO/501 stubs")
 	fmt.Println("  eject      <dir>                           Remove Blueprint markers from generated code")
 	fmt.Println("  deploy     <file.bp> [--tag <image>]       Build and smoke-run Docker image (--target docker default; fly reserved for a future release)")
 	fmt.Println("  completion <bash|zsh|fish>                 Generate shell completion script")
@@ -2362,6 +2513,8 @@ func suggestCommand(input string) string {
 		"fnt":     "fmt",
 		"fromat":  "fmt",
 		"int":     "init",
+		"improt":  "import",
+		"imprt":   "import",
 		"ejet":    "eject",
 		"deply":   "deploy",
 		"complet": "completion",

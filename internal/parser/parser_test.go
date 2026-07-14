@@ -1533,8 +1533,8 @@ GET /api/test {
 
 // --- Control-Flow Keyword Diagnostics (P002) ---
 //
-// Blueprint has no if/else or loops (SPEC.md "flat by force" / "no if/else" /
-// "no loops"). Writing `|> if cond { ... }` used to degrade into a generic
+// Blueprint has no if/else or loops. Writing `|> if cond { ... }` used to
+// degrade into a generic
 // "Expected '}', got 'Ident'" followed by panic-mode recovery that misparsed
 // the *next* step as a top-level `save` schema block (see AGENTS.md /
 // BACKLOG.md). These tests pin the dedicated diagnostic and the bounded

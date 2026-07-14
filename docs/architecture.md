@@ -24,7 +24,7 @@ Each pass is a separate package under `internal/`. They communicate through shar
 
 ```
 cmd/bp/             CLI entry point (check, build, frontend, diff, run, dev, test,
-                    migrate, generate, docs, fmt, lint, init, eject, deploy,
+                    migrate, generate, import, docs, fmt, lint, init, eject, deploy,
                     completion, stats, explain, context, llms, doctor, lsp, version)
 internal/
   lexer/            Tokenizer (~95 token kinds)
@@ -41,11 +41,14 @@ internal/
   linter/           Style linter (intent annotations, block ordering, empty endpoints)
   docs/             OpenAPI 3.1 JSON generator
   generate/         LLM code generation (@> slots via Anthropic API)
-  lsp/              Language Server Protocol server (bp lsp)
+  importer/         Conservative static TypeScript-to-.bp scaffolding
+  lsp/              LSP diagnostics, hover, definition, completion, workspace symbols
   agentctx/         Agent-facing context surface (bp context / bp llms)
-  registry/         Package sharing/reuse system
+  registry/         Package registry groundwork (no add/search/publish CLI yet)
 packages/
   runtime/          npm package for Blueprint runtime helpers
+editors/
+  vscode-blueprint/ Packaged VS Code stdio client + TextMate grammar
 ```
 
 `internal/codegen/codegen.go` defines the `Generator` interface and `OutputFile` type shared by all targets; `writer.go` defines `WriteOutputFiles`. See [Multi-Target Code Generation](./multi-target-codegen.md) for the authoritative target contract.
@@ -85,7 +88,7 @@ MIME types (`image/png`, `application/json`) are assembled in the lexer: when a 
 
 ### Adding a token kind
 
-1. Add the constant to the `TokenKind` iota block in `tokens.go`
+1. Add the constant to the `TokenKind` iota block in `token.go`
 2. If it's a keyword, add it to the `keywords` map in `lexer.go`
 3. Add display name to `tokenKindString()` for error messages
 
@@ -99,8 +102,8 @@ Pure data. No methods, no logic, just node types. This package is imported by pa
 
 ```go
 type Node interface {
-    node()
-    GetLoc() Loc
+    nodeType() string
+    Location() lexer.Loc
 }
 
 type TopLevel interface {
@@ -146,7 +149,7 @@ type TypeExpr interface {
 | `*ast.Ident` | Bare name: `foo` |
 | `*ast.FieldAccess` | `foo.bar` |
 | `*ast.FnCall` | `foo(args...)` |
-| `*ast.ObjectLit` | `{ key: value, ... }` |
+| `*ast.BlockExpr` | `{ key: value, ... }` |
 | `*ast.StringLit`, `*ast.IntLit`, `*ast.FloatLit`, `*ast.BoolLit` | Literals |
 | `*ast.EndpointMeta` | `use`, `auth`, `limit`, `cache`, `tags`, `timeout` |
 
@@ -154,8 +157,9 @@ type TypeExpr interface {
 
 ```go
 type File struct {
-    Loc    Loc
-    Blocks []TopLevel  // all top-level declarations in order
+    Loc       lexer.Loc
+    Blueprint *Blueprint
+    Blocks    []TopLevel  // non-blueprint declarations in source order
 }
 ```
 
@@ -170,8 +174,7 @@ A recursive-descent parser with Pratt expression parsing. Converts `[]Token` int
 ### Entry point
 
 ```go
-p := parser.New(tokens)
-file, errs := p.ParseFile()
+file, errs := parser.ParseFile(filename, src)
 ```
 
 Errors are collected and returned; the parser attempts panic-mode recovery so multiple errors can be reported in one pass.
@@ -212,17 +215,23 @@ Errors are collected and returned; the parser attempts panic-mode recovery so mu
 
 The semantic pass. Walks the `*ast.File` and reports errors for:
 
-- Undefined names (references to models, middleware, functions that don't exist)
+- Undefined top-level references (models, middleware, functions, and external services)
 - Naming conventions (identifiers must be `snake_case`, blueprint names `kebab-case`)
-- Structural rules (blueprint block must appear before endpoints, required fields present)
-- Type mismatches where statically detectable
+- Structural rules (blueprint block must appear before endpoints, required fields present,
+  settings are unique, setting values have the required scalar shape, and ports are in range)
+- Selected structural/type errors where statically detectable
 
 ### Entry point
 
 ```go
-c := checker.New()
-errs := c.Check(file)
+errs := checker.Check(file)
 ```
+
+The checker now covers local binding/input duplication, unbound and
+use-before-bind names, callable arity, builtin collisions, and direct fields on
+known model values. It does not yet provide full nested JSON/FK leaf typing or
+general assignability; closing that remaining gap is a current
+[roadmap priority](/roadmap#strengthen-semantic-checking).
 
 ### How it works
 
@@ -242,9 +251,13 @@ The first slice of the resolver / typed-IR work. It produces **semantic facts** 
 
 Today it records, for each `ArrowStmt` that binds a variable from a data operation (or `map`), the target model and the result's **cardinality**:
 
-- `SingleCard` — one record, produced by `fetch`
+- `SingleCard` — one record, produced by `fetch` or `query ... first`
 - `CollectionCard` — an unordered list, produced by `query` without `paginate()` and by `map(...)`
 - `PaginatedCard` — the `{ items, total, page, per_page }` shape produced by `query ... paginate(page, per_page)`
+
+Each data-operation fact also carries ref-backed relationship names requested
+by `query ... with(...)`. Generators consume that target-neutral list while
+choosing target-specific join syntax; unsupported targets reject it.
 
 Subsequent slices move FK access, async-ness, and `let`/`const` decisions out of the codegen heuristics into this package.
 
@@ -309,6 +322,7 @@ err := g.Generate(file, outDir) // build + persist via WriteOutputFiles
 | `genPipe` | One `src/pipes/<name>.ts` |
 | `genFunction` | One `src/functions/<name>.ts` |
 | `genTest` | One `test/<name>.test.ts` |
+| `genPropertyTestFile` | One deterministic `test/generated/<resource>.property.test.ts` when property mode is enabled |
 | `genEnvExample` | `.env.example` |
 | `genDockerfile` | `Dockerfile` |
 
@@ -359,6 +373,13 @@ Endpoints are grouped by the first path segment to determine the route file name
 - `POST /webhooks/stripe` → `src/routes/webhooks.ts`
 
 Multiple endpoints in the same group are emitted into the same file.
+
+Node query emission can materialize one-level ref-backed relationships and
+computed fields. `with(author)` resolves through `author_id ref(target)` and
+renders a `LEFT JOIN`; the checker rejects aliases/self joins/repeated targets
+that the emitter cannot represent. Computed fields are not Drizzle columns:
+`genSchema` emits pure materializers, and response/frontend/OpenAPI paths expose
+the resulting read-only values. Python and Effect reject both AST slices.
 
 ---
 
@@ -450,25 +471,68 @@ issues := l.Lint(file)
 
 Resolves `@>` generation slots by calling the Anthropic API (Claude).
 
-### Entry point
+### Entry points
 
 ```go
-g := generate.New(apiKey)
-results, err := g.Generate(file)
+slots := generate.FindSlots(file)
+replacements, err := generate.GenerateAll(slots, apiKey)
+updatedSource := generate.Apply(src, replacements)
 ```
 
 ### How it works
 
-1. Walks the AST looking for `@>` (GenerateSlot) nodes inside `fn` blocks
-2. Builds a prompt from the function signature (inputs, output type) + the `@>` text
+1. Walks arrow-statement bodies for quoted `@>` (`GenerateStep`) nodes
+2. Builds a prompt from the enclosing block context + the `@>` text and hints
 3. Calls the Anthropic Messages API with Claude
-4. Parses the response and writes the implementation scaffold under `src/impl/functions/...`
+4. Parses returned Blueprint arrow statements and replaces the source line in memory
 
 ### Configuration
 
 - Requires `ANTHROPIC_API_KEY` environment variable
 - Uses Claude as the default model
-- The `--write` flag controls whether resolved code is written to disk
+- Without `--write`, the CLI prints the updated `.bp` source; with `--write`,
+  it rewrites that source file
+
+---
+
+## `internal/importer`
+
+`ImportTypeScript` is a structural rewrite scaffolder, not a transpiler. It
+sorts supplied sources, extracts conservative static forms of Drizzle
+`pgTable`/`pgEnum`, Hono route calls/base paths, and named Zod object inputs from
+static, transport-compatible `zValidator` calls, then prints and
+re-parses/re-checks the resulting AST. Nullable/nullish or type-changing Zod
+fields are skipped. Static SQL column names are preserved when representable;
+SQL identity changes and dropped Drizzle builder/table/reference options are
+recorded as warnings.
+
+Every recovered route deliberately drops the imperative handler body, emits a
+`TODO(import)` plus 501 output, and records mapped/dropped facts in a fidelity
+report. Dynamic routes, unsupported methods/types, route mounts, incomplete
+refs, duplicates, and renamed identifiers are skipped or weakened only with an
+explicit warning. `cmd/bp/import.go` owns directory scanning, safety limits,
+atomic output, and overwrite refusal.
+
+---
+
+## `internal/lsp`
+
+`bp lsp` is a dependency-free stdio JSON-RPC server. It keeps full-text open
+documents and parser/checker indexes for diagnostics, hover, definition, and
+context-aware completion. Completion combines the recovery AST with lightweight
+source context so it can suggest declarations, types, constraints, settings,
+model/ref/relationship names, local bindings, fields, and arrow steps while a
+line is incomplete. It does not implement completion resolve.
+
+`workspace/symbol` merges unsaved open documents with `.bp` files scanned from
+local workspace folders. Open text wins over disk; common VCS, dependency,
+generated, build, and virtual-environment directories are ignored. Remote
+workspace roots, rename, references, code actions, and incremental document
+sync/indexing are not implemented.
+
+`editors/vscode-blueprint` packages the TextMate grammar with
+`vscode-languageclient`. It starts `bp lsp`, watches `.bp` files, exposes
+`blueprint.server.path`/`blueprint.server.args`, and provides a restart command.
 
 ---
 
@@ -506,9 +570,10 @@ The CLI entry point. Parses `os.Args` and dispatches to the appropriate pipeline
 | `bp diff` | build, but show changes without overwriting |
 | `bp run` | build + `bun install && bun run start` |
 | `bp dev` | build + watch loop |
-| `bp test` | build + run vitest |
+| `bp test` | build + run Vitest (Node) or pytest (Python); optional Node property mode |
 | `bp migrate` | build + `drizzle-kit <subcommand>` (node) or `alembic` (`--target python`) |
 | `bp generate` | parse + find `@>` slots + call Anthropic API |
+| `bp import` | scan TypeScript → recover static structure → validate + print TODO/501 `.bp` scaffold |
 | `bp docs` | lex → parse → check → OpenAPI generation |
 | `bp fmt` | lex → parse → pretty-print AST |
 | `bp lint` | lex → parse → check → lint rules |
@@ -524,21 +589,20 @@ The CLI entry point. Parses `os.Args` and dispatches to the appropriate pipeline
 | `bp completion` | generate a shell completion script |
 | `bp version` | print version string |
 
-The codegen `--target` (`node` default, `python`, `effect`) is accepted by `build` and `diff`; `migrate` accepts `node`/`python` only. `bp deploy` has a same-named but unrelated `--target` flag — a deploy target (`docker`; `fly` not yet implemented) — and always builds the node codegen target internally. Neither flag exists on `bp test`.
+The codegen `--target` (`node` default, `python`, `effect`) is accepted by
+`build` and `diff`; `test` and `migrate` accept `node`/`python` only. `bp deploy`
+has a same-named but unrelated `--target` flag — a deploy target (`docker`;
+`fly` not yet implemented) — and always builds the Node codegen target
+internally. `--gen-property-tests` is accepted by `build`, `diff`, and `test`
+for Node only and implies generated contract tests.
 
 ---
 
 ## Testing
 
-Tests live next to the code they test.
-
-| Package | Test file | Count |
-|---------|-----------|-------|
-| `internal/lexer` | `lexer_test.go` | 50+ |
-| `internal/parser` | `parser_test.go` + `testdata/` | 61+ |
-| `internal/checker` | `checker_test.go` + `testdata/` | 57+ |
-| `internal/codegen/js` | `generator_test.go` | 30+ |
-| `internal/docs` | `docs_test.go` | 10+ |
+Tests live next to the Go packages they cover. Shared valid/invalid language
+fixtures live under the repository-level `testdata/`; generator packages also
+carry focused source strings and golden output.
 
 ### Running tests
 
@@ -552,13 +616,11 @@ Or with the Taskfile:
 task test
 ```
 
-### Parser fixture tests
+### Parser and checker fixtures
 
-`internal/parser/testdata/` contains `.bp` fixture files. Tests in `parser_test.go` call `parseFixture("name.bp")` and assert on the resulting AST. This is the preferred way to test complex parse scenarios.
-
-### Checker fixture tests
-
-`internal/checker/testdata/invalid/` contains `.bp` files expected to produce specific errors. Tests assert that the error message contains the expected substring.
+`testdata/valid/` contains sources expected to parse and check. `testdata/invalid/`
+contains focused failures. Parser/checker tests consume these shared fixtures so
+one source can pin behavior across the frontend.
 
 ### Codegen tests
 
@@ -649,4 +711,8 @@ The codegen uses `strings.Builder` and direct string writes instead of `text/tem
 
 ### No runtime package
 
-Generated code has zero Blueprint dependencies. Everything uses `hono`, `drizzle-orm`, `zod`, `bullmq`, and `node-cron` — standard libraries the user already knows and can maintain independently.
+Generated code has zero Blueprint dependencies. The Node target uses familiar
+packages such as `hono`, `drizzle-orm`, `zod`, `bullmq`, and `redis`; the Python
+target uses FastAPI, SQLAlchemy, Pydantic, and Alembic. The optional
+`@blueprint/runtime` package exists for projects that want shared helpers, but
+generated services do not depend on it.

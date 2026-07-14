@@ -70,7 +70,7 @@
     },
     "declarations": {
       "name": "keyword.declaration.blueprint",
-      "match": "\\b(blueprint|model|fn|pipe|middleware|worker|schedule|secret|env|type|alias|enum|include|external|subscribe|test|fixture|test_group)\\b"
+      "match": "\\b(blueprint|model|computed|fn|pipe|middleware|worker|schedule|secret|env|type|alias|enum|include|external|subscribe|test|fixture|test_group)\\b"
     },
     "sections": {
       "name": "keyword.other.section.blueprint",

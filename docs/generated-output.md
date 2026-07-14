@@ -10,7 +10,7 @@ When you run `bp build my-service.bp`, Blueprint compiles your `.bp` file into a
 generated/
 ├── package.json
 ├── tsconfig.json
-├── drizzle.config.ts
+├── drizzle.config.ts        # when database or any model is declared
 ├── Dockerfile
 ├── .env.example
 ├── .gitignore
@@ -25,7 +25,7 @@ generated/
 │       ├── client.ts
 │       ├── i18n.ts
 │       └── react-query.ts   # optional via --react-query
-└── src/
+├── src/
     ├── index.ts
     ├── types.ts
     ├── types/
@@ -42,12 +42,13 @@ generated/
     │   ├── db.ts
     │   ├── env.ts
     │   ├── errors.ts
+    │   ├── external.ts          # conditional: external service declarations
     │   ├── i18n.ts
     │   ├── save-migrations.ts
     │   ├── storage.ts
     │   ├── state.ts
-    │   ├── cache.ts
-    │   └── queue.ts
+    │   ├── cache.ts           # conditional: cache redis
+    │   └── events.ts          # conditional: STREAM / WS / subscribe
     ├── routes/
     │   └── <resource>.ts
     ├── functions/
@@ -58,13 +59,20 @@ generated/
     │   └── <name>.ts
     ├── workers/
     │   └── <name>.ts
+    ├── subscriptions/
+    │   └── <event>.ts
     ├── saves/
     │   └── <name>.ts
     └── schedules/
         └── <name>.ts
+└── test/                    # opt-in generated tests
+    ├── _harness/
+    └── generated/
+        ├── <resource>.test.ts
+        └── <resource>.property.test.ts # --gen-property-tests
 ```
 
-Tests are **opt-in**. When you build with `--gen-tests` (or run `bp test`), Blueprint also emits a PGlite-backed Vitest contract suite and a top-level `vitest.config.ts`:
+Tests are **opt-in**. When you build with `--gen-tests` (or run `bp test`), Blueprint also emits a PGlite-backed Vitest contract suite and a top-level `vitest.config.ts`. Node `--gen-property-tests` implies that suite and adds deterministic fast-check files:
 
 ```
 generated/
@@ -75,7 +83,8 @@ generated/
     │   ├── ddl.ts     # in-memory schema (mirrors models/schema.ts)
     │   └── setup.ts   # dummy env vars for import-time validation
     └── generated/
-        └── <resource>.test.ts   # one file per resource, not per `test` block
+        ├── <resource>.test.ts            # contract suite
+        └── <resource>.property.test.ts   # property mode only
 ```
 
 ## Technology Stack
@@ -87,11 +96,11 @@ generated/
 | Validation | Zod | Request/response schemas |
 | Background jobs | BullMQ | Redis-based job queue |
 | Testing | Vitest | Fast, ESM-native |
+| Property generation (optional) | fast-check | Stable seeds; valid-request arbitraries |
 | File storage | `@aws-sdk/client-s3` | S3 and compatible APIs |
-| Auth (JWT) | jose | Standards-compliant |
-| Logging | pino | Structured JSON logs |
 | Migrations | Drizzle Kit | Pairs with Drizzle ORM |
-| Redis | ioredis | Cache and queue backend |
+| Redis | `redis` | Cache and multi-instance event transport |
+| Queue / schedules | BullMQ | Redis-backed workers and repeatable jobs |
 
 The generated code has **no Blueprint runtime dependency**. Everything uses standard, widely-adopted libraries.
 
@@ -157,6 +166,12 @@ export const todos = pgTable('todos', {
   created: timestamp('created').defaultNow(),
 });
 ```
+
+Persisted fields become Drizzle columns. A Blueprint
+`computed label string = title + "!"` declaration instead contributes a
+read-only field to the exported model type plus a pure record materializer; it
+is not added to the table. Computed values are included when Node materializes
+supported query/fetch/save results and in frontend/OpenAPI response contracts.
 
 ### `src/validation/schemas.ts`
 
@@ -365,6 +380,12 @@ todosRoutes.post('/api/todos',
 );
 ```
 
+A `query post with(author)` route selects the base row and related table,
+emits a one-level `leftJoin` through `post.authorId = author.id`, and
+materializes an `author` value that may be null. It does not recursively join
+the author's relationships. Join aliases, self/repeated-target joins, and
+`fetch ... with(...)` are rejected before this file is generated.
+
 ### `src/middleware/<name>.ts`
 
 Hono middleware functions.
@@ -454,15 +475,18 @@ new Worker('watermark_jobs', async (job) => {
 
 ### `src/schedules/<name>.ts`
 
-Cron job handlers using `node-cron`.
+Schedule handlers and their cron expressions. `src/index.ts` registers
+repeatable BullMQ jobs and a scheduler consumer that dispatches to these
+functions.
 
 ```typescript
-import cron from 'node-cron';
 import { db } from '../lib/db.js';
 
-cron.schedule('0 4 * * 0', async () => {
+export const cleanupCron = '0 4 * * 0';
+
+export async function cleanup(): Promise<void> {
   // ... cleanup logic
-});
+}
 ```
 
 ### `src/lib/db.ts`
@@ -563,6 +587,25 @@ The suite is backed by a small harness:
 
 Because PGlite runs entirely in memory, the suite needs no Docker or external Postgres. Run it with `bp test my-service.bp`, or with `bun run test` (or `npm run test`) inside the generated project.
 
+### `test/generated/<resource>.property.test.ts` (opt-in via `--gen-property-tests`)
+
+Property files import fast-check and call the Hono app in-process with generated
+valid path/query/JSON-body values. Each method/path has a stable seed and 32
+runs. A failing run includes fast-check's replay seed/path. Database-backed
+routes call `resetDb()` for every generated input; database-free projects do not
+emit the DB harness or PGlite dependency.
+
+Property generation is fail-closed. If any REST route needs an unsupported
+input transport, credentials/headers/rate-limit state, a native/user function,
+ref-backed `save`/`seed`/`update` field, an impossible path/email/URL domain, a
+reachable recursive inline `fn`/`pipe` graph, or non-hermetic
+external/queue/storage/event/realtime/time behavior, `Files` returns an error
+and no project is emitted. Ref-backed writes require a hand-written suite that
+creates parent rows because generated runs reset to an empty database.
+Supported properties accept only statuses declared by the route and its
+reachable guards/error paths; they do not treat an undeclared 400/500 as
+success.
+
 ---
 
 ## Running the Generated Project
@@ -647,7 +690,9 @@ bun run start
 
 ### Run Tests
 
-Build with `--gen-tests` (or use `bp test`) first — a plain `bp build` emits no test files. Then:
+Build with `--gen-tests` (or use `bp test`) first. Add
+`--gen-property-tests` for the Node property suite; it implies contract tests.
+A plain `bp build` emits no test files. Then:
 
 ```bash
 bun run test

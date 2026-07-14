@@ -43,6 +43,11 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsEncoder := false
 	needsNow := false
 	needsTimedelta := false
+	needsUUID := false
+	needsBody := false
+	needsQuery := false
+	needsHeader := false
+	needsEnv := false
 	userFnCalls := map[string]bool{}
 	middlewares := map[string]bool{}
 	for _, ep := range eps {
@@ -57,8 +62,19 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			needsPaginate = true
 		}
 		for _, s := range ep.Stmts {
+			if input, ok := s.(*ast.InputStmt); ok {
+				needsUUID = needsUUID || typeContainsPrimitive(input.Type, "uuid")
+				needsNow = needsNow || typeContainsPrimitive(input.Type, "timestamp")
+				if !common.IsPathParam(input.Name, ep.Path) {
+					if strings.EqualFold(ep.Method, "GET") || strings.EqualFold(ep.Method, "DELETE") {
+						needsQuery = true
+					} else {
+						needsBody = true
+					}
+				}
+			}
 			if outStmt, ok := s.(*ast.OutputStmt); ok {
-				if _, isBlock := outStmt.Value.(*ast.BlockExpr); isBlock {
+				if _, isText := outStmt.Value.(*ast.StringLit); !isText && outStmt.Status != "204" {
 					needsEncoder = true
 				}
 			}
@@ -70,6 +86,14 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			}
 			// Duration expressions (N.days.ago, N.hours) need timedelta.
 			if fa, ok := e.(*ast.FieldAccess); ok {
+				if base, ok := fa.Base.(*ast.Ident); ok {
+					if base.Name == "header" {
+						needsHeader = true
+					}
+					if base.Name == "env" {
+						needsEnv = true
+					}
+				}
 				if fa.Field == "ago" || pyDurationField(fa.Field) != "" {
 					needsTimedelta = true
 					needsNow = true // ago uses datetime.now(timezone.utc)
@@ -93,6 +117,15 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	}
 
 	fastapiImports := []string{"APIRouter"}
+	if needsBody {
+		fastapiImports = append(fastapiImports, "Body")
+	}
+	if needsQuery {
+		fastapiImports = append(fastapiImports, "Query")
+	}
+	if needsHeader {
+		fastapiImports = append(fastapiImports, "Header")
+	}
 	if needsDB || needsGuard {
 		fastapiImports = append(fastapiImports, "Depends")
 	}
@@ -140,6 +173,12 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 		}
 		fmt.Fprintf(b, "from datetime import %s\n", strings.Join(dtImports, ", "))
 	}
+	if needsUUID {
+		b.WriteString("from uuid import UUID\n")
+	}
+	if needsEnv {
+		b.WriteString("from src.lib.env import env\n")
+	}
 	// `use <middleware>` requires Depends + the middleware module import.
 	if len(middlewares) > 0 {
 		if !needsDB && !needsGuard {
@@ -165,6 +204,21 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 		for _, n := range names {
 			fmt.Fprintf(b, "from src.functions.%s import %s\n", n, n)
 		}
+	}
+}
+
+func typeContainsPrimitive(t ast.TypeExpr, name string) bool {
+	switch v := t.(type) {
+	case *ast.PrimitiveType:
+		return v.Name == name
+	case *ast.TypedJSONType:
+		return typeContainsPrimitive(v.Inner, name)
+	case *ast.ListType:
+		return typeContainsPrimitive(v.Element, name)
+	case *ast.MapType:
+		return typeContainsPrimitive(v.Key, name) || typeContainsPrimitive(v.Value, name)
+	default:
+		return false
 	}
 }
 
@@ -275,7 +329,13 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 		}
 	}
 
-	params := signatureParams(ep.Path, inputs)
+	params := signatureParams(ep.Method, ep.Path, inputs)
+	for _, header := range endpointHeaderFields(ep) {
+		if params != "" {
+			params += ", "
+		}
+		params += fmt.Sprintf("%s: str | None = Header(None, alias=%q)", pythonHeaderParamName(header), header)
+	}
 	// `use <middleware>` becomes a Depends() parameter. Multiple `use` markers
 	// chain. The alias name + model come from `inject X as Y` inside the
 	// middleware's before block.
@@ -393,27 +453,90 @@ func endpointHasComplexBody(ep *ast.Endpoint) bool {
 	return false
 }
 
-// signatureParams renders the FastAPI handler signature. Path params come
-// first (FastAPI requires them, and they're not Optional). Other inputs
-// follow with their type annotations; optionals get `= None` defaults.
-func signatureParams(path string, inputs []*ast.InputStmt) string {
-	// Python forbids a non-default parameter after a default one. Order
-	// path params first, then required body/query inputs, then optional
-	// inputs (which carry `= None`).
-	var pathParams, required, optional []string
+// signatureParams renders the FastAPI handler signature. Path parameters stay
+// ordinary required arguments. Every other input gets an explicit Body/Query
+// marker so the generated transport matches the Blueprint HTTP contract.
+func signatureParams(method, path string, inputs []*ast.InputStmt) string {
+	var pathParams, requestParams []string
+	query := strings.EqualFold(method, "GET") || strings.EqualFold(method, "DELETE")
 	for _, in := range inputs {
 		typ := pythonTypeAnnotation(in.Type)
-		switch {
-		case common.IsPathParam(in.Name, path):
+		if common.IsPathParam(in.Name, path) {
 			pathParams = append(pathParams, fmt.Sprintf("%s: %s", in.Name, typ))
-		case isOptional(in.Constraints):
-			optional = append(optional, fmt.Sprintf("%s: %s | None = None", in.Name, typ))
-		default:
-			required = append(required, fmt.Sprintf("%s: %s", in.Name, typ))
+			continue
+		}
+
+		defaultValue := "..."
+		if value, ok := inputDefaultValue(in.Constraints); ok {
+			defaultValue = value
+		} else if isOptional(in.Constraints) {
+			defaultValue = "None"
+			typ += " | None"
+		}
+		args := []string{defaultValue}
+		if !query {
+			args = append(args, "embed=True")
+		}
+		args = append(args, inputValidationArgs(in.Type, in.Constraints)...)
+		marker := "Body"
+		if query {
+			marker = "Query"
+		}
+		requestParams = append(requestParams,
+			fmt.Sprintf("%s: %s = %s(%s)", in.Name, typ, marker, strings.Join(args, ", ")))
+	}
+	parts := append(pathParams, requestParams...)
+	return strings.Join(parts, ", ")
+}
+
+func endpointHeaderFields(ep *ast.Endpoint) []string {
+	seen := map[string]bool{}
+	var headers []string
+	walkEndpointExprs(ep, func(expr ast.Expr) {
+		field, ok := expr.(*ast.FieldAccess)
+		if !ok {
+			return
+		}
+		base, ok := field.Base.(*ast.Ident)
+		if !ok || base.Name != "header" || seen[field.Field] {
+			return
+		}
+		seen[field.Field] = true
+		headers = append(headers, field.Field)
+	})
+	return headers
+}
+
+func inputDefaultValue(constraints []*ast.Constraint_) (string, bool) {
+	for _, constraint := range constraints {
+		if constraint.Kind == "default" && constraint.Value != nil {
+			return exprToPy(constraint.Value), true
 		}
 	}
-	parts := append(append(pathParams, required...), optional...)
-	return strings.Join(parts, ", ")
+	return "", false
+}
+
+func inputValidationArgs(t ast.TypeExpr, constraints []*ast.Constraint_) []string {
+	var args []string
+	for _, constraint := range constraints {
+		if constraint.Kind != "min" && constraint.Kind != "max" {
+			continue
+		}
+		name := "ge"
+		if constraint.Kind == "max" {
+			name = "le"
+		}
+		switch primitive := t.(type) {
+		case *ast.PrimitiveType:
+			if primitive.Name == "string" || primitive.Name == "text" {
+				name = constraint.Kind + "_length"
+			}
+		case *ast.ListType, *ast.MapType:
+			name = constraint.Kind + "_length"
+		}
+		args = append(args, fmt.Sprintf("%s=%s", name, exprToPy(constraint.Value)))
+	}
+	return args
 }
 
 func isOptional(cs []*ast.Constraint_) bool {
@@ -478,10 +601,9 @@ func emitOutputReturn(b *strings.Builder, status string, value ast.Expr) {
 			pyStringLiteral(v.Value), status)
 	case *ast.BlockExpr:
 		body := blockExprToPyDict(v)
-		fmt.Fprintf(b, "    return JSONResponse(%s, status_code=%s)\n", body, status)
+		fmt.Fprintf(b, "    return JSONResponse(jsonable_encoder(%s), status_code=%s)\n", body, status)
 	default:
-		// Fallback: assume the expression evaluates to a JSON-able value.
-		fmt.Fprintf(b, "    return JSONResponse(%s, status_code=%s)\n",
+		fmt.Fprintf(b, "    return JSONResponse(jsonable_encoder(%s), status_code=%s)\n",
 			exprToPy(value), status)
 	}
 }
@@ -522,9 +644,21 @@ func exprToPy(e ast.Expr) string {
 		return "None"
 	case *ast.NowLit:
 		return "datetime.now(timezone.utc)"
+	case *ast.DurationLit:
+		return durationLiteralToPy(v.Value)
+	case *ast.SizeLit:
+		return sizeLiteralToPy(v.Value)
+	case *ast.RateLit:
+		return pyStringLiteral(v.Value)
 	case *ast.Ident:
 		return v.Name
 	case *ast.FieldAccess:
+		if base, ok := v.Base.(*ast.Ident); ok && base.Name == "env" {
+			return "env." + v.Field
+		}
+		if base, ok := v.Base.(*ast.Ident); ok && base.Name == "header" {
+			return pythonHeaderParamName(v.Field)
+		}
 		return exprToPy(v.Base) + "." + v.Field
 	case *ast.IndexAccess:
 		return exprToPy(v.Base) + "[" + exprToPy(v.Index) + "]"
@@ -541,6 +675,12 @@ func exprToPy(e ast.Expr) string {
 		return v.Op + exprToPy(v.Operand)
 	case *ast.ParenExpr:
 		return "(" + exprToPy(v.Expr) + ")"
+	case *ast.ListExpr:
+		parts := make([]string, len(v.Elements))
+		for i, el := range v.Elements {
+			parts[i] = exprToPy(el)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
 	case *ast.BlockExpr:
 		parts := make([]string, 0, len(v.Entries))
 		for _, kv := range v.Entries {
@@ -553,9 +693,61 @@ func exprToPy(e ast.Expr) string {
 			args[i] = exprToPy(a)
 		}
 		return v.Name + "(" + strings.Join(args, ", ") + ")"
+	case *ast.PathExpr:
+		return pyStringLiteral(v.Value)
 	default:
 		return fmt.Sprintf("None  # TODO(python): unsupported expression %T", e)
 	}
+}
+
+// durationLiteralToPy converts the duration tokens accepted by the lexer to
+// an integer millisecond expression, matching the Node target's contract.
+func durationLiteralToPy(value string) string {
+	for _, unit := range []struct {
+		suffix string
+		factor string
+	}{
+		{"hours", "60 * 60 * 1000"},
+		{"hour", "60 * 60 * 1000"},
+		{"days", "24 * 60 * 60 * 1000"},
+		{"day", "24 * 60 * 60 * 1000"},
+		{"min", "60 * 1000"},
+		{"ms", "1"},
+		{"h", "60 * 60 * 1000"},
+		{"d", "24 * 60 * 60 * 1000"},
+		{"s", "1000"},
+	} {
+		if strings.HasSuffix(value, unit.suffix) {
+			num := strings.TrimSuffix(value, unit.suffix)
+			if unit.factor == "1" {
+				return num
+			}
+			return num + " * " + unit.factor
+		}
+	}
+	return value
+}
+
+// sizeLiteralToPy converts the size tokens accepted by the lexer to bytes.
+func sizeLiteralToPy(value string) string {
+	for _, unit := range []struct {
+		suffix string
+		factor string
+	}{
+		{"gb", "1024 * 1024 * 1024"},
+		{"mb", "1024 * 1024"},
+		{"kb", "1024"},
+		{"b", "1"},
+	} {
+		if strings.HasSuffix(value, unit.suffix) {
+			num := strings.TrimSuffix(value, unit.suffix)
+			if unit.factor == "1" {
+				return num
+			}
+			return num + " * " + unit.factor
+		}
+	}
+	return value
 }
 
 // pyStringLiteral renders a .bp string literal as a Python literal,
@@ -578,23 +770,27 @@ func pythonTypeAnnotation(t ast.TypeExpr) string {
 	switch v := t.(type) {
 	case *ast.PrimitiveType:
 		switch v.Name {
-		case "string", "text", "uuid":
+		case "string", "text":
 			return "str"
-		case "int":
+		case "uuid":
+			return "UUID"
+		case "int", "money":
 			return "int"
 		case "float":
 			return "float"
 		case "bool":
 			return "bool"
 		case "timestamp":
-			return "str"
+			return "datetime"
 		case "json":
 			return "dict"
 		}
-	case *ast.ListType:
-		return "list"
-	case *ast.MapType:
+	case *ast.TypedJSONType:
 		return "dict"
+	case *ast.ListType:
+		return "list[" + pythonTypeAnnotation(v.Element) + "]"
+	case *ast.MapType:
+		return "dict[" + pythonTypeAnnotation(v.Key) + ", " + pythonTypeAnnotation(v.Value) + "]"
 	}
 	return "str  # TODO(python): unmapped Blueprint type"
 }
@@ -625,5 +821,9 @@ func orderedResources(eps []*ast.Endpoint) []string {
 // segment. Hyphens become underscores and the name is lowercased.
 func pyModuleName(s string) string {
 	s = strings.ReplaceAll(s, "-", "_")
-	return strings.ToLower(s)
+	s = strings.ToLower(s)
+	if pythonKeywords[s] {
+		return "_" + s
+	}
+	return s
 }

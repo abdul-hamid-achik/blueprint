@@ -15,8 +15,8 @@ import (
 // suite that runs against an in-memory Postgres (PGlite) instead of a live
 // database. It produces:
 //
-//   test/_harness/ddl.ts     CREATE TABLE DDL mirroring src/models/schema.ts
-//   test/_harness/db.ts      PGlite-backed drizzle `db` + resetDb()
+//   test/_harness/ddl.ts     CREATE TABLE DDL mirroring src/models/schema.ts (database services)
+//   test/_harness/db.ts      PGlite-backed drizzle `db` + resetDb() (database services)
 //   test/_harness/setup.ts   dummy env so src/lib/env.ts import-time parse passes
 //   vitest.config.ts         registers the setup file
 //   test/generated/<res>.ts  one contract+happy-path test per route group
@@ -32,10 +32,12 @@ import (
 const zeroUUID = "00000000-0000-0000-0000-000000000000"
 
 // genAutoTests builds the in-memory test harness and per-endpoint contract tests.
-func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, secrets []*ast.Secret) []codegen.OutputFile {
+func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, secrets []*ast.Secret, hasDB bool) []codegen.OutputFile {
 	var files []codegen.OutputFile
-	files = append(files, g.genTestDDLFile())
-	files = append(files, g.genTestDBFile())
+	if hasDB {
+		files = append(files, g.genTestDDLFile())
+		files = append(files, g.genTestDBFile())
+	}
 	files = append(files, g.genTestSetupFile(secrets))
 	files = append(files, g.genVitestConfig())
 
@@ -50,7 +52,7 @@ func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, secrets []*ast.Secre
 	}
 	sort.Strings(order)
 	for _, res := range order {
-		files = append(files, g.genContractTestFile(res, groups[res]))
+		files = append(files, g.genContractTestFile(res, groups[res], hasDB))
 	}
 	return files
 }
@@ -250,7 +252,7 @@ export default defineConfig({
 
 // --- Per-endpoint contract tests ---
 
-func (g *Generator) genContractTestFile(resource string, eps []*ast.Endpoint) codegen.OutputFile {
+func (g *Generator) genContractTestFile(resource string, eps []*ast.Endpoint, hasDB bool) codegen.OutputFile {
 	var body strings.Builder
 	needsSeed := false
 	for _, ep := range eps {
@@ -262,19 +264,25 @@ func (g *Generator) genContractTestFile(resource string, eps []*ast.Endpoint) co
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { describe, it, expect, beforeEach, vi } from 'vitest';\n\n")
-	b.WriteString("vi.mock('../../src/lib/db', async () => ({ db: (await import('../_harness/db.js')).db }));\n\n")
-	b.WriteString("import app from '../../src/index.js';\n")
-	b.WriteString("import { resetDb")
-	if needsSeed {
-		b.WriteString(", db")
+	if hasDB {
+		b.WriteString("vi.mock('../../src/lib/db', async () => ({ db: (await import('../_harness/db.js')).db }));\n\n")
 	}
-	b.WriteString(" } from '../_harness/db.js';\n")
-	if needsSeed {
-		b.WriteString("import * as schema from '../../src/models/schema.js';\n")
+	b.WriteString("import app from '../../src/index.js';\n")
+	if hasDB {
+		b.WriteString("import { resetDb")
+		if needsSeed {
+			b.WriteString(", db")
+		}
+		b.WriteString(" } from '../_harness/db.js';\n")
+		if needsSeed {
+			b.WriteString("import * as schema from '../../src/models/schema.js';\n")
+		}
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "describe('%s (generated contract)', () => {\n", resource)
-	b.WriteString("  beforeEach(async () => { await resetDb(); });\n\n")
+	if hasDB {
+		b.WriteString("  beforeEach(async () => { await resetDb(); });\n\n")
+	}
 	b.WriteString(body.String())
 	b.WriteString("});\n")
 
