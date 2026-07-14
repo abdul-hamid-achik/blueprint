@@ -13,6 +13,7 @@ import (
 type importCollector struct {
 	needsEnv        bool
 	needsAnalytics  bool
+	needsEvents     bool
 	fnCalls         map[string]bool // user-declared fn names called
 	pipeCalls       map[string]bool // user-declared pipe names called
 	storageOps      map[string]bool // storage operations (upload, download)
@@ -47,6 +48,9 @@ func (ic *importCollector) merge(other *importCollector) {
 	}
 	if other.needsAnalytics {
 		ic.needsAnalytics = true
+	}
+	if other.needsEvents {
+		ic.needsEvents = true
 	}
 	for k := range other.fnCalls {
 		ic.fnCalls[k] = true
@@ -99,6 +103,10 @@ func (g *Generator) collectImports(stmts []ast.ArrowStmt) *importCollector {
 		case *ast.FnCall:
 			if v.Name == "track" {
 				ic.needsAnalytics = true
+				return
+			}
+			if v.Name == "emit" {
+				ic.needsEvents = true
 				return
 			}
 			if v.Name == "transition" && len(v.Args) >= 1 {
@@ -165,6 +173,9 @@ func (ic *importCollector) writeImports(b *strings.Builder, hasStorage bool) {
 	}
 	if ic.needsAnalytics {
 		b.WriteString("import { track } from '../lib/analytics.js';\n")
+	}
+	if ic.needsEvents {
+		b.WriteString("import { emit } from '../lib/events.js';\n")
 	}
 	if len(ic.saveHelpers) > 0 {
 		names := sortedKeys2(ic.saveHelpers)

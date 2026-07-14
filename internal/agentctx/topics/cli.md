@@ -31,8 +31,8 @@
 ## Common flags
 
 - `--out <dir>` — where to write generated project (default `./generated`).
-- `--target {node,python,effect}` — codegen target. Default `node`. `build` + `diff` accept all three; `test` + `migrate` accept `node`/`python`. `deploy` uses a separate `docker|fly` target. `effect` is an experimental scaffold.
-- `--gen-tests` — emit an auto-generated contract suite with `build`/`diff`; `bp test` enables it automatically.
+- `--target {node,python,effect}` — codegen target. Default `node`. `build` + `diff` accept all three; `test` + `migrate` accept `node`/`python`. `deploy` uses a separate `docker|fly` target. `effect` is an experimental runnable health/config scaffold.
+- `--gen-tests` — emit an auto-generated contract suite with `build`/`diff` for Node/Python; Effect rejects the flag. `bp test` enables it automatically.
 - `--gen-property-tests` — Node-only on `build`/`diff`/`test`; implies contract tests and emits deterministic fast-check valid-request properties. Unsupported/non-hermetic routes reject the whole build.
 - `--exit-code` — make `diff` return 1 if anything would change (CI gate).
 - `--no-color` — disable ANSI color (`diff`, error rendering). Also honors `NO_COLOR=1`.

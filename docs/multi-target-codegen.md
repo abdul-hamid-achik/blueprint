@@ -21,7 +21,13 @@ lean on instead of re-deriving.
 | Python | `--target python` | 🚧 Advanced supported subset; exhaustive fail-closed gate rejects relationships/computed fields and the rest | FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic |
 | Go | `--target go` | 🗺️ Planned | Chi + sqlc + validator |
 | Ruby | `--target ruby` | 🗺️ Planned | TBD (Rails API / Roda) |
-| TypeScript on Effect | `--target effect` | 🧱 Scaffold (emits the project shell + a `Config` secrets module; endpoint/model emit is the long tail) | `@effect/platform` HttpApi + `@effect/schema` + `@effect/sql` |
+| TypeScript on Effect | `--target effect` | 🧱 Runnable health/config scaffold; authored endpoints/models fail closed | Effect core `Config` + Node HTTP (`@effect/platform`/Schema/SQL remain future slices) |
+
+The Effect scaffold pins its used dependencies, emits a real `src/index.ts`,
+loads typed `Config` for required/optional secrets and supported env defaults,
+and serves `GET /health` on the declared port. Unsupported blueprint settings,
+middleware uses, declarations, and env expressions fail before any files are
+returned. It is a generator foundation, not an application backend yet.
 
 Target selection is the **`--target` flag**, but not every command accepts the
 same set of values — see [Per-command target dispatch](#per-command-target-dispatch)
@@ -30,8 +36,8 @@ below. In short: `bp build` and `bp diff` accept `node` (default), `python`, or
 `bp deploy`'s `--target` flag is a *different* concept entirely — a deploy target (`docker`,
 with `fly` not yet implemented) — `bp deploy` always builds the node codegen
 target internally. `--target` is also distinct from the `runtime` entry inside
-the `blueprint` block, which is a *node-target* concern (e.g. `node` vs other
-JS runtimes).
+the `blueprint` block. The current Node and Effect targets require
+`runtime node`; codegen target selection remains a separate choice.
 
 ## Per-command target dispatch
 
@@ -40,8 +46,8 @@ Verified against `resolveTarget` and each command's dispatch switch in
 
 | Command | `node` | `python` | `effect` | Notes |
 |---------|--------|----------|----------|-------|
-| `bp build` | ✅ default | ✅ | ✅ (scaffold) | `--react-query`/`--frontend-only`/`--gen-property-tests` are Node-only |
-| `bp diff` | ✅ default | ✅ | ✅ (scaffold) | must match the target the `--out` dir was built with; properties are Node-only |
+| `bp build` | ✅ default | ✅ | ✅ (health/config scaffold) | `--react-query`/`--frontend-only`/`--gen-property-tests` are Node-only; Effect also rejects `--gen-tests` |
+| `bp diff` | ✅ default | ✅ | ✅ (health/config scaffold) | must match the target the `--out` dir was built with; Effect rejects test/property flags |
 | `bp migrate` | ✅ default (`drizzle-kit`) | ✅ (`alembic` via `uv`) | ❌ rejected before build; Effect has no migration tool | |
 | `bp deploy` | always builds node internally | n/a | n/a | `--target` here means something else entirely — see below |
 | `bp test` | ✅ default (Vitest + PGlite; optional fast-check) | ✅ (pytest + Postgres testcontainer via `uv`; Docker required) | ❌ rejected before build | enables generated contract tests automatically; `--gen-property-tests` is Node-only |
@@ -108,8 +114,9 @@ harness — it is how
 `bp build --gen-tests` (and `bp test`, which always enables it) turns on the
 auto-generated contract-test suite for that target: an in-memory PGlite-backed
 Vitest suite for node, a `testcontainers[postgresql]`-backed pytest suite for
-python. A scaffold target such as Effect is rejected by `bp test` instead of
-pretending to emit tests. `WithReactQuery`/`WithFrontendOnly` are node-only today — a new target
+python. Effect rejects `--gen-tests` on both `bp build` and `bp diff`, and is
+also rejected by `bp test`, instead of pretending to emit tests.
+`WithReactQuery`/`WithFrontendOnly` are node-only today — a new target
 only needs to add the options it actually has a behavior for; there's no
 required interface beyond `Generator` itself, so an option with no effect for
 your target simply shouldn't exist rather than being a silent no-op.
@@ -251,7 +258,7 @@ Effect's exhaustive scaffold gate rejects those model/endpoint surfaces too.
 | `timestamp` | `Date` | `datetime` | `time.Time` |
 | `json` | `unknown` | `dict` / typed model | `json.RawMessage` |
 | `money` | `number` (integer cents) | `int` (integer cents) | `decimal.Decimal` |
-| `file` | upload handle | rejected for endpoint inputs until multipart emission ships | `multipart.File` |
+| `file` | `File` in functions; endpoint inputs rejected until multipart emission ships | rejected for endpoint inputs until multipart emission ships | `multipart.File` |
 
 ## Naming conventions
 

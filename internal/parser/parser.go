@@ -53,7 +53,7 @@ type Parser struct {
 
 // ParseFile tokenizes and parses a .bp source file, returning the AST and any errors.
 func ParseFile(filename string, src []byte) (*ast.File, []ParseError) {
-	tokens, lexErrors := lexer.Tokenize(filename, src)
+	tokens, comments, lexErrors := lexer.TokenizeWithTrivia(filename, src)
 
 	p := &Parser{
 		tokens:     tokens,
@@ -74,13 +74,15 @@ func ParseFile(filename string, src []byte) (*ast.File, []ParseError) {
 	}
 
 	file := p.parseFile()
+	file.Comments = comments
+	file.SourceTokens = tokens
 	return file, p.errors
 }
 
 // ParsePartialFile tokenizes and parses a .bp fragment (e.g., an included file)
 // that does not require a leading blueprint block. Returns only the top-level blocks.
 func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
-	tokens, lexErrors := lexer.Tokenize(filename, src)
+	tokens, comments, lexErrors := lexer.TokenizeWithTrivia(filename, src)
 
 	p := &Parser{
 		tokens:     tokens,
@@ -98,7 +100,7 @@ func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
 		p.lexOffsets[le.Loc.Offset] = true
 	}
 
-	f := &ast.File{Loc: p.peek().Loc}
+	f := &ast.File{Loc: p.peek().Loc, Comments: comments, SourceTokens: tokens}
 
 	// If included file starts with a blueprint block, parse and attach it
 	// but don't require it (unlike ParseFile).

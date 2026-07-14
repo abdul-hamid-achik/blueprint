@@ -104,7 +104,11 @@ func (g *Generator) genTypes(types []*ast.TypeDecl, aliases []*ast.Alias, enums 
 func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
-	b.WriteString("import { pgTable, pgEnum, text, integer, real, boolean, uuid, timestamp, jsonb } from 'drizzle-orm/pg-core';\n\n")
+	b.WriteString("import { pgTable, pgEnum, text, integer, real, boolean, uuid, timestamp, jsonb")
+	if modelsHaveIndexes(models) {
+		b.WriteString(", index")
+	}
+	b.WriteString(" } from 'drizzle-orm/pg-core';\n\n")
 
 	namedTypes := collectNamedTypesFromModels(models)
 	if len(namedTypes) > 0 {
@@ -207,7 +211,16 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 			g.writeFieldConstraints(&b, f)
 			b.WriteString(",\n")
 		}
-		b.WriteString("});\n\n")
+		indexedFields := modelIndexedFields(m)
+		if len(indexedFields) == 0 {
+			b.WriteString("});\n\n")
+		} else {
+			b.WriteString("}, (table) => [\n")
+			for _, field := range indexedFields {
+				fmt.Fprintf(&b, "  index('%s_%s_idx').on(table.%s),\n", tableName, field.Name, toCamelCase(field.Name))
+			}
+			b.WriteString("]);\n\n")
+		}
 
 		// Emit TypeScript types. Computed fields extend the selected record but
 		// never the insert shape because they are not persisted columns.
@@ -238,6 +251,31 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 	}
 
 	return codegen.OutputFile{Path: "src/models/schema.ts", Content: []byte(b.String())}
+}
+
+func modelsHaveIndexes(models []*ast.Model) bool {
+	for _, model := range models {
+		if len(modelIndexedFields(model)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func modelIndexedFields(model *ast.Model) []*ast.Field {
+	if model == nil {
+		return nil
+	}
+	var fields []*ast.Field
+	for _, field := range model.Fields {
+		for _, constraint := range field.Constraints {
+			if constraint.Kind == "index" {
+				fields = append(fields, field)
+				break
+			}
+		}
+	}
+	return fields
 }
 
 // computedExprToJS renders the pure expression subset accepted by the
@@ -420,7 +458,7 @@ func (g *Generator) genValidation(endpoints []*ast.Endpoint) codegen.OutputFile 
 		for _, inp := range inputs {
 			var zodType string
 			if isQuerySource {
-				zodType = typeToZodCoerce(inp.Type)
+				zodType = g.typeToZodCoerce(inp.Type)
 			} else {
 				zodType = typeToZod(inp.Type)
 			}

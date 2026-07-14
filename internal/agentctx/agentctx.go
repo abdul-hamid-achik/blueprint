@@ -275,7 +275,7 @@ func renderSurfaceMarkdown(s Surface, w io.Writer) error {
 func blueprintMeta(version string) BlueprintMeta {
 	return BlueprintMeta{
 		Version: version,
-		Summary: "Blueprint is a Go-based compiler. `.bp` DSL sources describe data models, business pipelines, HTTP endpoints, middleware, and streaming handlers; `bp build` emits a runnable project — TypeScript+Hono+Drizzle (default), Python+FastAPI+SQLAlchemy (`--target python`), or an early Effect-TS scaffold (`--target effect`).",
+		Summary: "Blueprint is a Go-based compiler. `.bp` DSL sources describe data models, business pipelines, HTTP endpoints, middleware, and streaming handlers; `bp build` emits a runnable project — TypeScript+Hono+Drizzle (default), Python+FastAPI+SQLAlchemy (`--target python`), or an experimental Effect-TS health/config scaffold (`--target effect`).",
 	}
 }
 
@@ -285,7 +285,7 @@ func blueprintMeta(version string) BlueprintMeta {
 func commandRegistry() []CommandInfo {
 	return []CommandInfo{
 		{"check", "bp check <file.bp> [--json]", "Parse + semantic check."},
-		{"build", "bp build <file.bp> [--out <dir>] [--target node|python|effect] [--gen-tests] [--gen-property-tests]", "Compile to a target project; properties are Node-only and fail closed (idempotent)."},
+		{"build", "bp build <file.bp> [--out <dir>] [--target node|python|effect] [--gen-tests] [--gen-property-tests]", "Compile to a target project; tests are Node/Python, properties are Node-only, and unsupported target flags fail closed (idempotent)."},
 		{"diff", "bp diff <file.bp> [--out <dir>] [--gen-property-tests] [--exit-code] [--apply]", "Show pending changes; --exit-code is the CI idempotency gate."},
 		{"fmt", "bp fmt <file.bp> [--write] [--check]", "Format a .bp file (round-trip safe)."},
 		{"lint", "bp lint <file.bp>", "Stylistic lint."},
@@ -314,7 +314,7 @@ func targetRegistry() []TargetInfo {
 	return []TargetInfo{
 		{"node", "Hono + Drizzle + Zod", "Default. Vitest + PGlite, opt-in deterministic fast-check properties, pure computed fields, and one-level ref-backed relationship loading."},
 		{"python", "FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic", "`--target python`. Advanced supported subset with an exhaustive fail-closed gate. Generated contracts run via pytest + testcontainers[postgresql] (Docker)."},
-		{"effect", "Effect (effect-ts): @effect/platform HttpApi + Schema + @effect/sql", "`--target effect`. Early scaffold — emits the project shell + Config-based secrets; endpoint/model emit is in design. Opt-in/experimental, not the default."},
+		{"effect", "Effect core Config + Node HTTP (application stack planned)", "`--target effect`. Early runnable scaffold — emits GET /health plus typed secret/env Config with pinned dependencies; endpoint/model/test emit fails closed. Opt-in/experimental, not the default."},
 	}
 }
 

@@ -67,10 +67,10 @@ bp build <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <dir>` | `generated/` | Output directory |
-| `--target <name>` | `node` | Codegen target. `node` emits the Hono + Drizzle + Zod reference project. `python` emits FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (advanced beta — see "Python target status" below). `effect` emits TypeScript on Effect (experimental scaffold — project shell + secrets module; endpoint/model emit is still in design) |
+| `--target <name>` | `node` | Codegen target. `node` emits the Hono + Drizzle + Zod reference project. `python` emits FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (advanced beta — see "Python target status" below). `effect` emits a runnable, health-only TypeScript/Effect scaffold with typed secret/env config and pinned dependencies; authored endpoints/models still reject |
 | `--react-query` | off | Generate `src/types/react-query.ts` and add TanStack React Query deps (node target only) |
 | `--frontend-only` | off | Emit only the standalone frontend contract package (node target only) |
-| `--gen-tests` | off | Generate contract + happy-path tests. **Node target:** Vitest suite under `test/generated/` with an in-memory (PGlite) database harness — runs with no external Postgres. **Python target:** pytest suite under `tests/` backed by `testcontainers[postgresql]` — Docker required, real Postgres per session, function-scoped TRUNCATE between tests |
+| `--gen-tests` | off | Generate contract + happy-path tests. **Node target:** Vitest suite under `test/generated/` with an in-memory (PGlite) database harness — runs with no external Postgres. **Python target:** pytest suite under `tests/` backed by `testcontainers[postgresql]` — Docker required, real Postgres per session, function-scoped TRUNCATE between tests. **Effect target:** rejected before writing because no test emitter ships yet |
 | `--gen-property-tests` | off | Node only. Generate deterministic fast-check valid-request properties and the contract suite (`--gen-tests` is implied). Unsupported or non-hermetic routes reject the whole build; nothing is silently skipped. Cannot be combined with `--frontend-only` |
 | `--force` | off | Overwrite a non-empty `--out` directory even if it has no `.blueprint/manifest.json`. Without it, `bp build` refuses to write into a foreign, non-empty directory it didn't create — see [Output directory safety](#output-directory-safety) below |
 
@@ -468,7 +468,9 @@ bp docs my-service.bp | bunx @redocly/cli lint /dev/stdin
 
 ## `bp fmt`
 
-Format a `.bp` file.
+Format a `.bp` file or an include fragment that intentionally omits the root
+`blueprint` block. `#` comments are preserved, including leading and inline
+comments.
 
 ```bash
 bp fmt <file.bp> [--write] [--check]
@@ -499,6 +501,7 @@ bp fmt my-service.bp --check
 - Aligned field declarations
 - Normalized whitespace around arrows
 - Consistent quote style (double quotes)
+- Preserved `#` comments
 
 ---
 
@@ -665,10 +668,10 @@ Shells out to `diff -u` for the unified patch.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--out <dir>` | `generated/` | Output directory to compare against |
-| `--target <name>` | `node` | Target to diff against (`node`, `python`, or `effect` — experimental scaffold) — must match the target the directory was built with |
+| `--target <name>` | `node` | Target to diff against (`node`, `python`, or runnable health-only `effect` scaffold) — must match the target the directory was built with |
 | `--react-query` | off | Compare as if `bp build --react-query` were used |
 | `--frontend-only` | off | Compare as if `bp build --frontend-only` were used |
-| `--gen-tests` | off | Compare as if `bp build --gen-tests` were used |
+| `--gen-tests` | off | Compare as if `bp build --gen-tests` were used (Node/Python only; Effect rejects the flag) |
 | `--gen-property-tests` | off | Node only. Compare output including deterministic property and implied contract suites; rejects unsupported routes just like `bp build` |
 | `--apply` | off | After showing the diff, actually write the changes (equivalent to running `bp build` afterwards) |
 | `--exit-code` | off | Exit `1` if there are any changes — useful in CI / pre-commit hooks |

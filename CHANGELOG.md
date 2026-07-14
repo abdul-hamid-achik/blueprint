@@ -31,6 +31,28 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed (2026-07-14 audit and polish pass)
 
+- **Formatting is source-safe.** The lexer now retains structured comment
+  trivia, `bp fmt` restores top-level, block, inline, trailing, and EOF `#`
+  comments idempotently, and include fragments without a root `blueprint`
+  block can be formatted and checked directly.
+- **`@blueprint/runtime` now publishes what it declares.** Its export map is
+  backed by tested ESM and CommonJS builds with Node typings, a reproducible
+  lockfile, package docs, and license. CI now builds/tests the runtime and
+  editor, builds the public docs site, executes generated Node contract and
+  property tests, and installs, builds, starts, and probes the Effect scaffold.
+- **Node query, schema, and event emission now preserve declared semantics.**
+  Query booleans parse `"false"` as false instead of JavaScript truthiness,
+  numeric/money aliases coerce URL values before applying constraints, model
+  `index` constraints emit real Drizzle indexes, and local `emit` calls now
+  generate/import and await the in-process event registry in every supported
+  context. External `emit ... to(service)` and file/MIME endpoint inputs fail
+  closed until their transport adapters exist instead of producing broken or
+  misdirected TypeScript.
+- **Generated Node dependency floors clear known high/critical advisories.**
+  New projects use Drizzle ORM `^0.45.2`, Drizzle Kit `^0.31.10`, and Vitest
+  `^4.1.10` instead of the older vulnerable ranges; the generated contract and
+  property suite is executed in CI against those dependencies, with npm audit
+  failing the build on high or critical findings.
 - **Property generation no longer admits false-green routes.** Impossible
   path/email/URL domains, ref-backed `save`/`seed`/`update` fields, and reachable
   recursive inline `fn`/`pipe` graphs now fail before any files are returned.
@@ -40,7 +62,7 @@ All notable changes to this project will be documented in this file.
 - **`bp deploy` respects the Blueprint port.** Docker run instructions, port mapping, and the `/health` smoke probe now use the port emitted in the generated Dockerfile instead of assuming `3000`.
 - **Source builds report an honest development version** (`0.15.0-dev`) instead of the stale `0.11.0`; release builds continue to receive their tag through GoReleaser ldflags.
 - **Unresolved `@>` slots fail codegen** instead of disappearing from generated behavior. All target `Files` entrypoints point to `bp generate --write`, and shared AST walking now covers test-group setup and fixture bodies.
-- **Experimental targets fail closed consistently.** Effect rejects every unimplemented top-level declaration. Python now uses an exhaustive declaration/expression allowlist and rejects authored tests, inline function logic, STREAM/WS placeholders, unsupported endpoint input types, middleware `after` bodies, and malformed `sum(...)` shapes before returning files; duration/size/rate/list/path expressions translate without TODO fallbacks.
+- **Experimental targets fail closed consistently.** Effect now emits a pinned, runnable health/config scaffold, preserves optional secret and supported typed env defaults, audits blueprint settings/uses/declaration contents, and rejects unsupported test flags before writing; every unimplemented top-level declaration still fails closed. Python now uses an exhaustive declaration/expression allowlist and rejects authored tests, inline function logic, STREAM/WS placeholders, unsupported endpoint input types, middleware `after` bodies, and malformed `sum(...)` shapes before returning files; duration/size/rate/list/path expressions translate without TODO fallbacks.
 - **Arrow-expression and blueprint checking now match generated contracts.** The checker rejects unbound/use-before-bind names, accidental `auth`/`token`/general `secret` globals, unknown data-operation models, out-of-scope conditional/worker bindings, undeclared interpolation roots, duplicate declarations/inputs/local bindings, callable arity mismatches, bare pipe calls, builtin-name collisions, direct model-field typos, duplicate blueprint settings, malformed setting value shapes, and ports outside 1–65535. Input reassignment, realtime path values, middleware injections, map bindings, collection/pagination properties, and FK aliases remain valid.
 - **Authored Node tests fail before an incomplete run.** `bp test` now admits only emitter shapes it can execute: setup is limited to `seed`/`save` and simple unbound `log`; request keys are lowercase and unique, repeats are positive, GET/HEAD bodies and calls/interpolation reject, and assertions use strict supported forms/literals with at most one model assertion. It also rejects dynamic targets, cleanup/shared setup, custom or multipart/file requests, unsupported auth/timing forms, and whole setup rows as auth values. Native dependency checks cover every app-loaded route, realtime/background/subscription, and middleware module rather than only the target route. Ordinary `bp build` remains available for hand-written test workflows.
 - **External subscription sources no longer masquerade as local delivery.** Node codegen rejects `subscribe "event" from(service)` with no files until a transport adapter exists; source-less subscriptions continue to use the in-process event bus.

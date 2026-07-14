@@ -314,11 +314,11 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			if len(v.Args) >= 2 {
 				eventName := exprToString(v.Args[0])
 				data := exprToJSWithCtx(v.Args[1], ctx)
-				return fmt.Sprintf("emit('%s', %s)", eventName, data)
+				return fmt.Sprintf("await emit('%s', %s)", eventName, data)
 			}
 			if len(v.Args) >= 1 {
 				eventName := exprToString(v.Args[0])
-				return fmt.Sprintf("emit('%s', {})", eventName)
+				return fmt.Sprintf("await emit('%s', {})", eventName)
 			}
 			return "/* emit: missing args */"
 		case "enqueue":
@@ -629,17 +629,35 @@ func typeToZod(t ast.TypeExpr) string {
 	}
 }
 
-// typeToZodCoerce converts a Blueprint type to a Zod schema with coercion (for query params).
-func typeToZodCoerce(t ast.TypeExpr) string {
+// typeToZodCoerce converts a Blueprint type to a Zod schema with coercion for
+// URL query parameters. Query values arrive as strings, so boolean conversion
+// must be lexical: JavaScript truthiness would otherwise turn "false" into
+// true. Numeric aliases are lowered to their primitive schema here so their
+// constraints run after coercion instead of rejecting the raw string.
+func (g *Generator) typeToZodCoerce(t ast.TypeExpr) string {
+	return g.typeToZodCoerceSeen(t, make(map[string]bool))
+}
+
+func (g *Generator) typeToZodCoerceSeen(t ast.TypeExpr, seen map[string]bool) string {
 	switch v := t.(type) {
 	case *ast.PrimitiveType:
 		switch v.Name {
 		case "int":
 			return "z.coerce.number().int()"
-		case "float":
+		case "float", "money":
 			return "z.coerce.number()"
 		case "bool":
-			return "z.coerce.boolean()"
+			return `z.enum(["true", "false"]).transform((value) => value === "true")`
+		}
+	case *ast.NamedType:
+		if seen[v.Name] {
+			return typeToZod(t)
+		}
+		if alias := g.lookupAlias(v.Name); alias != nil {
+			seen[v.Name] = true
+			result := g.typeToZodCoerceSeen(alias.Type, seen) + constraintsToZod(alias.Constraints)
+			delete(seen, v.Name)
+			return result
 		}
 	}
 	return typeToZod(t)

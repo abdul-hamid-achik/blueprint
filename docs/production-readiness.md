@@ -146,9 +146,10 @@ phase-by-phase here so the work does not drift:
 
 **The effect target is separate and much earlier.** `--target effect`
 (`internal/codegen/effect/`) exists and is wired into `bp build`/`bp diff`,
-but it is an early scaffold, not tracked phase-by-phase above: it emits the
-project shell and a `Config` secrets module; endpoint and model emission
-aren't implemented yet. Treat it as experimental/opt-in, not as a target with
+but it is an early scaffold, not tracked phase-by-phase above: it emits a
+pinned, runnable `GET /health` service plus typed Effect `Config` for secrets
+and supported env defaults. Endpoint/model/test emission is not implemented;
+those flags and constructs fail closed. Treat it as experimental/opt-in, not as a target with
 a 1.0-adjacent timeline.
 
 ---

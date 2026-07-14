@@ -36,9 +36,11 @@ type TypeExpr interface {
 
 // File represents an entire .bp file.
 type File struct {
-	Loc       lexer.Loc
-	Blueprint *Blueprint
-	Blocks    []TopLevel
+	Loc          lexer.Loc
+	Blueprint    *Blueprint
+	Blocks       []TopLevel
+	Comments     []lexer.Comment
+	SourceTokens []lexer.Token
 }
 
 func (n *File) nodeType() string    { return "File" }

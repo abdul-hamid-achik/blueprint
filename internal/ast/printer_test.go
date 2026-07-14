@@ -1,12 +1,68 @@
 package ast_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/parser"
 )
+
+func TestPrint_PreservesCommentsAndIsIdempotent(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "valid", "comments.bp")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	file := parseForPrint(t, string(src))
+	formatted := ast.Print(file)
+	if got, want := strings.Count(formatted, "#"), strings.Count(string(src), "#"); got != want {
+		t.Fatalf("formatting changed the comment count: got %d, want %d\n%s", got, want, formatted)
+	}
+
+	reparsed := parseForPrint(t, formatted)
+	second := ast.Print(reparsed)
+	if second != formatted {
+		t.Fatalf("comment-aware formatting is not idempotent\nfirst:\n%s\nsecond:\n%s", formatted, second)
+	}
+
+	for _, want := range []string{
+		"# Top-level comment",
+		"secret API_KEY required  # inline comment",
+		"  # Comment inside block",
+		`  -> 200 { status: "ok" }  # trailing comment`,
+	} {
+		if !strings.Contains(formatted, want) {
+			t.Errorf("formatted output lost comment placement %q", want)
+		}
+	}
+}
+
+func TestPrint_IncludeFragmentWithoutBlueprint(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "valid", "includes", "models.bp")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, errs := parser.ParsePartialFile(path, src)
+	if len(errs) > 0 {
+		t.Fatalf("parse fragment: %v", errs)
+	}
+	formatted := ast.Print(file)
+	if formatted != string(src) {
+		t.Fatalf("include fragment changed during formatting\nwant:\n%s\ngot:\n%s", src, formatted)
+	}
+	reparsed, errs := parser.ParsePartialFile(path, []byte(formatted))
+	if len(errs) > 0 {
+		t.Fatalf("reparse formatted fragment: %v", errs)
+	}
+	if second := ast.Print(reparsed); second != formatted {
+		t.Fatalf("include-fragment formatting is not idempotent")
+	}
+}
 
 // parseForPrint is a helper that parses src and fatals on errors.
 func parseForPrint(t *testing.T, src string) *ast.File {

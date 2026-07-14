@@ -145,7 +145,8 @@ Yes. The same `.bp` source can compile to three targets, selected with `--target
 
 - **`node`** (default) — TypeScript on Hono + Drizzle ORM + Zod.
 - **`python`** (`--target python`) — FastAPI + SQLAlchemy + Alembic.
-- **`effect`** (`--target effect`) — TypeScript on Effect; an early scaffold.
+- **`effect`** (`--target effect`) — TypeScript on Effect; a runnable,
+  health-only config scaffold. Models/endpoints/tests still fail closed.
 
 ```bash
 bp build my-api.bp --target python

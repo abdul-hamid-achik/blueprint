@@ -90,6 +90,12 @@ func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
 	if err := codegen.RejectUnresolvedGenerateSteps(file); err != nil {
 		return nil, err
 	}
+	if err := rejectUnsupportedEndpointFileInputs(file); err != nil {
+		return nil, err
+	}
+	if err := rejectExternalEmits(file); err != nil {
+		return nil, err
+	}
 	if err := rejectExternalSubscriptionSources(file); err != nil {
 		return nil, err
 	}
@@ -111,6 +117,159 @@ func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
 		return nil, fmt.Errorf("codegen: %w", err)
 	}
 	return files, nil
+}
+
+// rejectUnsupportedEndpointFileInputs prevents the Node target from claiming
+// that a JSON request can carry a browser File or MIME-typed payload. The
+// parser and checker retain these types for target-neutral tooling, but Node
+// must fail closed until route parsing and the generated SDK both support
+// multipart/form-data.
+func rejectUnsupportedEndpointFileInputs(file *ast.File) error {
+	if file == nil {
+		return nil
+	}
+
+	aliases := make(map[string]ast.TypeExpr)
+	namedFields := make(map[string][]*ast.Field)
+	for _, block := range file.Blocks {
+		switch decl := block.(type) {
+		case *ast.Alias:
+			aliases[decl.Name] = decl.Type
+		case *ast.TypeDecl:
+			namedFields[decl.Name] = decl.Fields
+		case *ast.Model:
+			namedFields[decl.Name] = decl.Fields
+		case *ast.Content:
+			model := decl.AsModel()
+			namedFields[decl.Name] = model.Fields
+		}
+	}
+
+	check := func(method, path string, stmts []ast.ArrowStmt) error {
+		for _, stmt := range stmts {
+			input, ok := stmt.(*ast.InputStmt)
+			if !ok || !endpointTypeNeedsMultipart(input.Type, aliases, namedFields, make(map[string]bool)) {
+				continue
+			}
+			return fmt.Errorf(
+				"node target does not yet support file inputs, including MIME-typed input %q on %s %s at %s: multipart/form-data route parsing and generated SDK FormData encoding are not implemented",
+				input.Name, method, path, input.Location(),
+			)
+		}
+		return nil
+	}
+
+	for _, block := range file.Blocks {
+		switch endpoint := block.(type) {
+		case *ast.Endpoint:
+			if err := check(endpoint.Method, endpoint.Path, endpoint.Stmts); err != nil {
+				return err
+			}
+		case *ast.StreamEndpoint:
+			if err := check("STREAM", endpoint.Path, endpoint.Stmts); err != nil {
+				return err
+			}
+		case *ast.WsEndpoint:
+			if err := check("WS", endpoint.Path, endpoint.OnConnect); err != nil {
+				return err
+			}
+			if err := check("WS", endpoint.Path, endpoint.OnMessage); err != nil {
+				return err
+			}
+			if err := check("WS", endpoint.Path, endpoint.OnDisconnect); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func endpointTypeNeedsMultipart(t ast.TypeExpr, aliases map[string]ast.TypeExpr, namedFields map[string][]*ast.Field, visiting map[string]bool) bool {
+	switch value := t.(type) {
+	case *ast.PrimitiveType:
+		return value.Name == "file"
+	case *ast.MimeTypeExpr:
+		return true
+	case *ast.TypedJSONType:
+		return endpointTypeNeedsMultipart(value.Inner, aliases, namedFields, visiting)
+	case *ast.ListType:
+		return endpointTypeNeedsMultipart(value.Element, aliases, namedFields, visiting)
+	case *ast.MapType:
+		return endpointTypeNeedsMultipart(value.Key, aliases, namedFields, visiting) ||
+			endpointTypeNeedsMultipart(value.Value, aliases, namedFields, visiting)
+	case *ast.NamedType:
+		if visiting[value.Name] {
+			return false
+		}
+		visiting[value.Name] = true
+		defer delete(visiting, value.Name)
+		if target, ok := aliases[value.Name]; ok {
+			return endpointTypeNeedsMultipart(target, aliases, namedFields, visiting)
+		}
+		if fields, ok := namedFields[value.Name]; ok {
+			for _, field := range fields {
+				if endpointTypeNeedsMultipart(field.Type, aliases, namedFields, visiting) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// rejectExternalEmits keeps `emit event to(service) { ... }` from being
+// silently lowered to an in-process emit with the service identifier as its
+// payload. External event delivery needs an explicit transport adapter.
+func rejectExternalEmits(file *ast.File) error {
+	if file == nil {
+		return nil
+	}
+	validator := &externalEmitValidator{}
+	ast.Walk(file, validator)
+	return validator.err
+}
+
+type externalEmitValidator struct {
+	ast.BaseVisitor
+	err error
+}
+
+func (v *externalEmitValidator) VisitFnCall(call *ast.FnCall) bool {
+	if v.err != nil || call.Name != "emit" || len(call.Args) < 2 {
+		return v.err == nil
+	}
+	service, external := call.Args[1].(*ast.Ident)
+	if !external {
+		return true
+	}
+	v.err = fmt.Errorf(
+		"node target does not yet support external emit to(%s) at %s: no external event transport adapter is generated; use an in-process emit or call an external HTTP service explicitly",
+		service.Name, call.Location(),
+	)
+	return false
+}
+
+func fileHasCall(file *ast.File, name string) bool {
+	if file == nil {
+		return false
+	}
+	visitor := &callPresenceVisitor{name: name}
+	ast.Walk(file, visitor)
+	return visitor.found
+}
+
+type callPresenceVisitor struct {
+	ast.BaseVisitor
+	name  string
+	found bool
+}
+
+func (v *callPresenceVisitor) VisitFnCall(call *ast.FnCall) bool {
+	if call.Name == v.name {
+		v.found = true
+		return false
+	}
+	return !v.found
 }
 
 func rejectWithLegacyQueryArgs(file *ast.File) error {
@@ -708,8 +867,10 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// src/subscriptions/<name>.ts + src/lib/events.ts
-	// Generate events lib when there are subscribe blocks, STREAM event handlers, or WS emit calls
-	needsEventsLib := len(subscribes) > 0
+	// Generate the shared event registry for subscribers, STREAM event handlers,
+	// or an in-process emit from any generated context (routes, functions,
+	// middleware, workers, schedules, STREAM, or WS).
+	needsEventsLib := len(subscribes) > 0 || fileHasCall(g.file, "emit")
 	if !needsEventsLib {
 		for _, se := range streams {
 			for _, h := range se.Handlers {
@@ -719,14 +880,6 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 				}
 			}
 			if needsEventsLib {
-				break
-			}
-		}
-	}
-	if !needsEventsLib {
-		for _, we := range ws {
-			if stmtsHaveCall(we.OnConnect, "emit") || stmtsHaveCall(we.OnMessage, "emit") || stmtsHaveCall(we.OnDisconnect, "emit") {
-				needsEventsLib = true
 				break
 			}
 		}

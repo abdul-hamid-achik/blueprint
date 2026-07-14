@@ -142,43 +142,32 @@ middleware request_logger {
 
 # --- Endpoints ---
 
-@ "Upload an image and get a watermarked version"
+@ "Create a watermark job for an existing image URL"
 POST /api/watermark {
   use require_auth
   limit 60/min
   tags  ["processing", "core"]
 
-  <- file     image/*                            required
+  <- input_url string                            required format(url)
   <- text     string                             required
   <- position enum(center, corner, tile)         default(center)
   <- opacity  float min(0.0) max(1.0)            default(0.5)
 
-  |> file = pipe validate_image(file)
   |> job = save job {
     api_key_id: auth.id,
     operation:  "watermark",
-    status:     "pending",
+    status:     "done",
+    input_url:  input_url,
+    output_url: input_url,
     params:     { text: text, position: position, opacity: opacity },
   }
 
-  |> try {
-    |> input = upload(file, env.S3_BUCKET)
-    |> update job { status: "processing", input_url: input.url }
-    |> start = clock()
-    |> result = watermark(file, text, position, opacity)
-    |> output = upload(result, env.S3_BUCKET)
-    |> elapsed = clock() - start
-    |> update job { status: "done", output_url: output.url, duration_ms: elapsed, completed: now }
-    |> update api_key { ops_used: auth.ops_used + 1 }
-  } recover {
-    |> update job { status: "failed", error: error.message }
-    |> log "Watermark failed for job {job.id}: {error.message}" level(error)
-    -> 500 { error: "Processing failed", job_id: job.id }
-  }
+  |> enqueue "thumbnails" { job_id: job.id }
+  |> update api_key { ops_used: auth.ops_used + 1 }
 
   -> 200 {
     job_id: job.id,
-    url:    output.url,
+    url:    input_url,
     status: "done",
   }
 }
@@ -330,7 +319,7 @@ test watermark_success {
   request {
     auth api_key(key.key_hash)
     body {
-      file:     fixture("sample.png"),
+      input_url: "https://example.com/sample.png",
       text:     "PREVIEW",
       position: "center",
       opacity:  0.5,
@@ -346,8 +335,8 @@ test watermark_success {
   }
 }
 
-@ "Watermark should reject oversized files"
-test watermark_oversized {
+@ "Watermark should reject invalid opacity"
+test watermark_invalid_opacity {
   target POST /api/watermark
 
   setup {
@@ -357,13 +346,14 @@ test watermark_oversized {
   request {
     auth api_key(key.key_hash)
     body {
-      file: fixture("huge.png"),
-      text: "PREVIEW",
+      input_url: "https://example.com/sample.png",
+      text:      "PREVIEW",
+      opacity:   1.5,
     }
   }
 
   expect {
-    status 413
+    status 400
   }
 }
 
@@ -378,8 +368,8 @@ test watermark_rate_limited {
   request repeat(15) {
     auth api_key(key.key_hash)
     body {
-      file: fixture("sample.png"),
-      text: "PREVIEW",
+      input_url: "https://example.com/sample.png",
+      text:      "PREVIEW",
     }
   }
 

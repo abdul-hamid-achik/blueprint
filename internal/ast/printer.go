@@ -2,7 +2,10 @@ package ast
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+
+	"github.com/abdul-hamid-achik/blueprint/internal/lexer"
 )
 
 // blueprintQuote wraps s in double quotes, escaping only backslashes and
@@ -28,7 +31,204 @@ func blueprintQuote(s string) string {
 // Print formats an AST back to canonical .bp source code.
 func Print(f *File) string {
 	var p printer
-	return p.printFile(f)
+	formatted := p.printFile(f)
+	if len(f.Comments) == 0 || len(f.SourceTokens) == 0 {
+		return formatted
+	}
+	return restoreComments(formatted, f.SourceTokens, f.Comments)
+}
+
+type tokenIdentity struct {
+	kind  lexer.TokenKind
+	value string
+}
+
+type placedComment struct {
+	comment lexer.Comment
+	indent  int
+}
+
+// restoreComments reattaches lexer trivia to canonical output. The parser does
+// not need comment productions: each comment is anchored to a neighboring
+// source token, and that token is matched to its canonical counterpart by
+// identity and occurrence. This keeps comments out of string contents and
+// makes a second formatting pass stable.
+func restoreComments(formatted string, sourceTokens []lexer.Token, comments []lexer.Comment) string {
+	formattedTokens, lexErrors := lexer.Tokenize("<formatted>", []byte(formatted))
+	if len(lexErrors) > 0 {
+		// The ordinary printer is expected to produce valid source. If it does
+		// not, returning its output unchanged is safer than guessing where
+		// trivia belongs.
+		return formatted
+	}
+
+	outputByIdentity := make(map[tokenIdentity][]int)
+	for i, token := range formattedTokens {
+		key := tokenIdentity{kind: token.Kind, value: token.Value}
+		outputByIdentity[key] = append(outputByIdentity[key], i)
+	}
+
+	sourceOccurrences := make(map[tokenIdentity]int)
+	tokenMap := make([]int, len(sourceTokens))
+	for i := range tokenMap {
+		tokenMap[i] = -1
+	}
+	for i, token := range sourceTokens {
+		key := tokenIdentity{kind: token.Kind, value: token.Value}
+		occurrence := sourceOccurrences[key]
+		sourceOccurrences[key] = occurrence + 1
+		if candidates := outputByIdentity[key]; occurrence < len(candidates) {
+			tokenMap[i] = candidates[occurrence]
+		}
+	}
+
+	leading := make(map[int][]placedComment)
+	inline := make(map[int][]placedComment)
+	for _, comment := range comments {
+		sourceAnchor, outputAnchor, ok := mappedCommentAnchor(comment, sourceTokens, tokenMap, formattedTokens)
+		if !ok {
+			continue
+		}
+
+		if comment.Inline {
+			line := lineAtOffset(formatted, outputAnchor.Loc.Offset+outputAnchor.Loc.Len)
+			inline[line] = append(inline[line], placedComment{comment: comment})
+			continue
+		}
+
+		line := outputAnchor.Loc.Line
+		indent := outputAnchor.Loc.Col - 1
+		// A comment immediately before a closing delimiter is indented inside
+		// that delimiter in the source. Preserve that relative indentation
+		// while still following any indentation changes made by the formatter.
+		if delta := comment.Loc.Col - sourceAnchor.Loc.Col; delta > 0 {
+			indent += delta
+		}
+		leading[line] = append(leading[line], placedComment{comment: comment, indent: indent})
+	}
+
+	// Canonicalization can collapse a multi-line expression onto one line. If
+	// that puts multiple former inline comments on the same line, only the last
+	// can remain inline; move the others above the line so no comment is hidden
+	// behind an earlier #.
+	for line, lineComments := range inline {
+		if len(lineComments) <= 1 {
+			continue
+		}
+		for _, item := range lineComments[:len(lineComments)-1] {
+			leading[line] = append(leading[line], item)
+		}
+		inline[line] = lineComments[len(lineComments)-1:]
+	}
+
+	for _, items := range []map[int][]placedComment{leading, inline} {
+		for line := range items {
+			sort.SliceStable(items[line], func(i, j int) bool {
+				return items[line][i].comment.Loc.Offset < items[line][j].comment.Loc.Offset
+			})
+		}
+	}
+
+	body := strings.TrimSuffix(formatted, "\n")
+	var lines []string
+	if body != "" {
+		lines = strings.Split(body, "\n")
+	}
+
+	var sb strings.Builder
+	writeLeading := func(line int) {
+		for _, item := range leading[line] {
+			if item.indent > 0 {
+				sb.WriteString(strings.Repeat(" ", item.indent))
+			}
+			sb.WriteString(item.comment.Text)
+			sb.WriteByte('\n')
+		}
+	}
+	for i, lineText := range lines {
+		line := i + 1
+		writeLeading(line)
+		sb.WriteString(lineText)
+		for _, item := range inline[line] {
+			sb.WriteString("  ")
+			sb.WriteString(item.comment.Text)
+		}
+		sb.WriteByte('\n')
+	}
+
+	// Comments anchored to EOF live after the printer's final newline. Compute
+	// the actual final trivia line so even a comment whose closest surviving
+	// anchor is EOF cannot be dropped.
+	lastTriviaLine := len(lines)
+	for line := range leading {
+		if line > lastTriviaLine {
+			lastTriviaLine = line
+		}
+	}
+	for line := range inline {
+		if line > lastTriviaLine {
+			lastTriviaLine = line
+		}
+	}
+	for line := len(lines) + 1; line <= lastTriviaLine; line++ {
+		writeLeading(line)
+		for _, item := range inline[line] {
+			sb.WriteString(item.comment.Text)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+func mappedCommentAnchor(comment lexer.Comment, sourceTokens []lexer.Token, tokenMap []int, formattedTokens []lexer.Token) (lexer.Token, lexer.Token, bool) {
+	anchor := comment.AnchorToken
+	if anchor < 0 || anchor >= len(sourceTokens) {
+		anchor = len(sourceTokens) - 1
+	}
+	if anchor < 0 {
+		return lexer.Token{}, lexer.Token{}, false
+	}
+
+	if mapped := tokenMap[anchor]; mapped >= 0 && mapped < len(formattedTokens) {
+		return sourceTokens[anchor], formattedTokens[mapped], true
+	}
+
+	// A canonical spelling may omit punctuation accepted by the parser. Fall
+	// back to the closest mapped token in the direction the trivia belongs.
+	if comment.Inline {
+		for i := anchor - 1; i >= 0; i-- {
+			if mapped := tokenMap[i]; mapped >= 0 && mapped < len(formattedTokens) {
+				return sourceTokens[i], formattedTokens[mapped], true
+			}
+		}
+		for i := anchor + 1; i < len(sourceTokens); i++ {
+			if mapped := tokenMap[i]; mapped >= 0 && mapped < len(formattedTokens) {
+				return sourceTokens[i], formattedTokens[mapped], true
+			}
+		}
+	} else {
+		for i := anchor + 1; i < len(sourceTokens); i++ {
+			if mapped := tokenMap[i]; mapped >= 0 && mapped < len(formattedTokens) {
+				return sourceTokens[i], formattedTokens[mapped], true
+			}
+		}
+		for i := anchor - 1; i >= 0; i-- {
+			if mapped := tokenMap[i]; mapped >= 0 && mapped < len(formattedTokens) {
+				return sourceTokens[i], formattedTokens[mapped], true
+			}
+		}
+	}
+	return lexer.Token{}, lexer.Token{}, false
+}
+
+func lineAtOffset(src string, offset int) int {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(src) {
+		offset = len(src)
+	}
+	return strings.Count(src[:offset], "\n") + 1
 }
 
 type printer struct {

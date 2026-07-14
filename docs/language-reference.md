@@ -139,6 +139,12 @@ video/*
 */*                 # any file
 ```
 
+MIME types are valid in target-neutral signatures and native functions. The
+Node target currently rejects MIME/file **endpoint inputs** because its routes
+and generated browser SDK do not yet emit multipart/form-data handling. Use a
+URL or another JSON-safe reference at the HTTP boundary until multipart
+generation ships.
+
 ### Lists
 
 ```bp
@@ -349,7 +355,7 @@ emits an importable empty schema/Base so migration tooling remains valid.
 |------------|-------------|----------------|
 | `primary` | Primary key (auto UUID) | `.primaryKey().defaultRandom()` |
 | `unique` | Unique constraint | `.unique()` |
-| `index` | Database index | `.index()` |
+| `index` | Database index | Drizzle `index(...).on(...)` |
 | `required` | NOT NULL (default) | `.notNull()` |
 | `optional` | Nullable | *(no `.notNull()`)* |
 | `auto` | Auto-updated | Trigger or app-level |
@@ -793,7 +799,7 @@ authentication, distributed rate limiting, timeouts, or response caching.
 ## 13. HTTP Endpoints
 
 ```bp
-@ "Upload and watermark an image"
+@ "Create a watermark job for an existing image URL"
 POST /api/watermark {
   # Metadata
   use    require_auth
@@ -804,24 +810,16 @@ POST /api/watermark {
   timeout 30s
 
   # Inputs
-  <- file     image/*                              required
+  <- input_url string                              required format(url)
   <- text     string                               required
   <- position enum(center, corner, tile)           default(center)
   <- opacity  float    min(0.0) max(1.0)           default(0.5)
 
   # Steps
-  |> file = pipe validate_image(file)
-  |> job  = save job { status: "pending", ... }
+  |> job = save job { status: "pending", input_url: input_url, ... }
+  |> enqueue "watermarks" { job_id: job.id }
 
-  |> try {
-    |> result = watermark(file, text, position, opacity)
-    |> update job { status: "done", output_url: result.url }
-  } recover {
-    |> update job { status: "failed", error: error.message }
-    -> 500 { error: "Processing failed" }
-  }
-
-  -> 200 { job_id: job.id, url: result.url }
+  -> 202 { job_id: job.id, status: "pending" }
 }
 ```
 
@@ -992,12 +990,20 @@ worker process_watermark {
 | Key | Syntax | Description |
 |-----|--------|-------------|
 | `trigger` | `trigger queue("name")` | BullMQ queue name |
-| `retry` | `retry 3 backoff(exponential, base: 1s, max: 30s)` | Retry policy |
+| `retry` | `retry 3 backoff(exponential, base: 1s, max: 30s)` | Parsed retry policy; see current limitation below |
 | `timeout` | `timeout 5min` | Max execution time |
+
+The Node generator currently exports retry/backoff metadata with each worker,
+but generated `enqueue` producers do not yet copy it into BullMQ job options.
+BullMQ therefore uses one attempt unless another producer supplies `attempts`
+and `backoff`. The generated timeout rejects the worker wait after the declared
+duration but does not cancel work already in progress.
 
 ### `on_fail`
 
-Runs after all retries are exhausted:
+Runs after the final BullMQ attempt. With the generated producer today, that is
+the first failure because worker retry metadata is not yet propagated into the
+job options:
 
 ```bp
 on_fail {
@@ -1417,9 +1423,14 @@ map <collection>: <expr>          # transform a collection
 call <service> GET /path          # external service call
 call <service> POST /path { body }
 emit <event> { data }             # publish event (in-process)
-emit <event> to(service) { data } # publish to specific service
+emit <event> to(service) { data } # reserved; targets reject without an adapter
 enqueue "queue" { data }          # enqueue a job to a BullMQ worker queue
 ```
+
+Node generates and awaits the in-process `emit` bus in routes, functions,
+middleware, workers, schedules, STREAM, and WS handlers. `emit ... to(service)`
+fails closed until an external event transport adapter is available; use an
+explicit external HTTP `call` when that is the intended transport.
 
 ### Utility
 

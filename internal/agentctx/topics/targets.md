@@ -2,7 +2,7 @@
 
 Blueprint compiles to one of three targets. Same `.bp` source, different
 runtimes: `node` is the reference backend, `python` is an advanced beta, and
-`effect` is an early, opt-in scaffold.
+`effect` is an early, opt-in health/config scaffold.
 
 ## `--target node` (default)
 
@@ -38,11 +38,11 @@ runtimes: `node` is the reference backend, `python` is an advanced beta, and
 - **Migrations**: `uv run alembic revision --autogenerate -m "..."` / `alembic upgrade head`
 - **Status**: supported HTTP/data examples compile and generated contract tests run through `bp test --target python`. GET/DELETE inputs use FastAPI `Query`, POST/PUT/PATCH inputs use embedded `Body`, hyphenated headers get aliased `Header` parameters, and the shared Node/Python database-activation rule applies. The exhaustive support gate rejects authored tests/fixtures, inline fn logic, STREAM/WS handlers, computed model fields, `query ... with(...)`, named types/enums/aliases, env declarations, file/named endpoint inputs, undeclared env fields, attribute access on JSON/map inputs or JSON-returning function results, unknown value calls, unsafe fn impl configuration, mismatched defaults/constraints, Python-keyword names, dynamic/bound `where(q)` values, and middleware steps outside `fetch`/`log`/declared-fn/`inject`/`guard` before files are returned. Bare `where(q)` is supported only for string/text endpoint inputs. Property-test mode is Node-only and is rejected at CLI dispatch.
 
-## `--target effect` (experimental scaffold)
+## `--target effect` (experimental health/config scaffold)
 
 - **Runtime**: Node.js
-- **Framework**: Effect (effect-ts) — `@effect/platform` HttpApi (routing), Effect `Schema` (validation + serialization), `@effect/sql` (database, `withTransaction`), `Config` (secrets), Layers (dependency injection)
-- **Status**: EARLY SCAFFOLD. `bp build --target effect` emits the project shell + a `Config` module for the spec's secrets, and reports the constructs it can't emit yet with a clear message (model/endpoint emit is in design). Opt-in/experimental — **not** the default. Supported by `bp build` and `bp diff` only.
+- **Current stack**: pinned Effect core `Config` plus Node HTTP; `@effect/platform` HttpApi, Schema, Layers, and `@effect/sql` are future application slices
+- **Status**: EARLY SCAFFOLD. `bp build --target effect` emits a runnable `GET /health` entrypoint, typed config for required/optional secrets and supported env defaults, `.env.example`, and pinned dependencies. It audits blueprint settings, uses, declarations, and env expressions and returns no files when semantics are unsupported. Model/endpoint emit remains in design. Opt-in/experimental — **not** the default. Supported by `bp build` and `bp diff` only; both reject `--gen-tests`, and `bp test`/`bp migrate` reject Effect before writing.
 - **Why**: typed errors, DI sandboxes, and `Schema → JSON-Schema` make every endpoint trivially exposable as an agent/MCP tool. See the contract in `docs/multi-target-codegen.md`.
 
 ## Choosing a target

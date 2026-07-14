@@ -17,6 +17,10 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Build
         run: go build ./...
 
@@ -191,19 +195,47 @@ jobs:
           echo "$output" | grep -Eq '`STREAM` endpoints|`WS` endpoints'
           echo "Supported Python examples build + parse + idempotent; unsupported semantics fail closed"
 
-      - name: Build with --gen-tests (verify harness emits cleanly)
-        # Exercises the contract-test + PGlite harness path so a regression in
-        # the autotest generator (DDL, harness imports, contract test shape)
-        # is caught here even though we don't run bun in this workflow.
+      - name: Build and run the Effect health scaffold
+        # The experimental target is intentionally narrow, but everything it
+        # does emit must install, type-check, start, and answer its advertised
+        # health endpoint. single_env.bp exercises typed scalar/list defaults.
+        run: |
+          rm -rf /tmp/effect-env
+          ./bin/bp build testdata/valid/single_env.bp --out /tmp/effect-env --target effect
+          ./bin/bp diff testdata/valid/single_env.bp --out /tmp/effect-env --target effect --no-color --exit-code
+          cd /tmp/effect-env
+          npm install
+          npm run build
+          npm start >/tmp/effect-start.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          if ! curl --retry 10 --retry-delay 1 --retry-connrefused --fail --silent http://127.0.0.1:3000/health | grep -q '"target":"effect"'; then
+            cat /tmp/effect-start.log
+            exit 1
+          fi
+          kill "$server_pid" 2>/dev/null || true
+          wait "$server_pid" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Build and run generated Node contract and property tests
+        # Exercise the full PGlite + fast-check path, including dependency
+        # resolution and execution. Shape-only checks can miss invalid imports,
+        # setup failures, runtime schema mismatches, and invalid arbitraries.
         run: |
           rm -rf /tmp/todo-gentests
-          ./bin/bp build examples/todo-api.bp --out /tmp/todo-gentests --gen-tests
+          ./bin/bp build examples/todo-api.bp --out /tmp/todo-gentests --gen-property-tests
           test -f /tmp/todo-gentests/test/_harness/ddl.ts || (echo "missing ddl.ts" && exit 1)
           test -f /tmp/todo-gentests/test/_harness/db.ts || (echo "missing db.ts" && exit 1)
           test -f /tmp/todo-gentests/test/_harness/setup.ts || (echo "missing setup.ts" && exit 1)
           test -f /tmp/todo-gentests/vitest.config.ts || (echo "missing vitest.config.ts" && exit 1)
           test -f /tmp/todo-gentests/test/generated/todos.test.ts || (echo "missing generated test" && exit 1)
-          echo "--gen-tests output OK"
+          test -f /tmp/todo-gentests/test/generated/todos.property.test.ts || (echo "missing generated property test" && exit 1)
+          cd /tmp/todo-gentests
+          npm install
+          npm audit --omit=dev --audit-level=moderate
+          npm audit --audit-level=high
+          npm test
+          echo "generated contract + property tests execute successfully"
 
       - name: Build with --target python --gen-tests (Phase 4 smoke)
         # Python Phase 4 emits a pytest contract suite backed by
@@ -250,3 +282,40 @@ jobs:
         run: |
           ./bin/bp docs examples/hello-world.bp --out /tmp/hello-openapi.json
           ./bin/bp docs examples/todo-api.bp --out /tmp/todo-openapi.json
+
+  tooling:
+    name: Runtime, docs, and editor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            packages/runtime/package-lock.json
+            editors/vscode-blueprint/package-lock.json
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.11'
+
+      - name: Build and test @blueprint/runtime
+        working-directory: packages/runtime
+        run: |
+          npm ci
+          npm test
+          npm pack --dry-run
+
+      - name: Test VS Code extension
+        working-directory: editors/vscode-blueprint
+        run: |
+          npm ci
+          npm run check
+
+      - name: Build documentation website
+        working-directory: docs
+        run: |
+          bun install --frozen-lockfile
+          bun run docs:build

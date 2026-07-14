@@ -9,6 +9,19 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
 
 ## Now
 
+- [ ] **Eliminate the remaining Drizzle Kit development-tool advisories.** The
+  generated production dependency graph is clean and CI rejects high/critical
+  findings, but current Drizzle Kit `0.31.10` still brings four moderate
+  `@esbuild-kit`/esbuild advisories. npm's suggested downgrade to `0.18.1` is
+  not compatible with the current Drizzle schema/tooling contract; move to a
+  patched upstream line (or isolate the migration CLI) when one is available.
+- [ ] **Apply worker retry/backoff and cancellation semantics.** Generated
+  workers export retry/backoff metadata, but `enqueue` does not yet put
+  `attempts`/`backoff` into BullMQ job options, so jobs default to one attempt
+  and `on_fail` runs on the first failure. The timeout uses `Promise.race`
+  without cancelling in-flight handler work. Wire producer options from the
+  declared worker queue and define a cooperative cancellation contract before
+  calling this production-safe.
 - [~] **Checker soundness.** Unbound/use-before-bind names, unknown data models,
   invalid lexical-scope leaks, accidental runtime globals, interpolation roots,
   duplicate declarations/local bindings/inputs, callable arity, reserved
@@ -171,8 +184,9 @@ _(detailed working notes live in the maintainer's Obsidian vault under
   disambiguate to `<model>_<field>`. Inline-enum emit is now deterministic. 2
   new tests. _(shipped 2026-06-16)_
 - [x] **`--target effect` scaffold.** New `internal/codegen/effect/` Generator
-  (emits project shell + `Config`-based secrets; gates models/endpoints with a
-  clear message), wired into `build`/`diff` dispatch. Proves the `Files()`
+  (emits a pinned, runnable health service + typed secret/env `Config`; audits
+  blueprint settings and gates models/endpoints/test flags with a clear
+  message), wired into `build`/`diff` dispatch. Proves the `Files()`
   contract accepts a 3rd target. Hand-written reference + go/no-go captured in
   the maintainer's review notes (Obsidian). **Verdict: opt-in/experimental,
   ~6-8wk MVP, not default.**
@@ -348,7 +362,8 @@ Prep work (must precede the Python generator):
 
 ## Later
 
-- [~] Multi-target codegen parity: Python/FastAPI is advanced; Effect remains a scaffold.
+- [~] Multi-target codegen parity: Python/FastAPI is advanced; Effect has a
+  fail-closed runnable health/config foundation, with application emit still open.
 - [x] LSP feature depth: context-aware completion, local-workspace symbol
   search, and a packaged VS Code language client that starts `bp lsp` are
   shipped. Completion is intentionally syntax/source-context based (no resolve

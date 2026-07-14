@@ -307,7 +307,7 @@ func main() {
 	case "fmt":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("fmt", "fmt <file.bp> [--write] [--check]",
-				"Format a .bp file. Prints formatted output to stdout by default.",
+				"Format a .bp file or include fragment while preserving # comments. Prints formatted output to stdout by default.",
 				[][2]string{
 					{"--write", "Write formatted output back to the file"},
 					{"--check", "Check if file is formatted; exit 1 if not (for CI)"},
@@ -535,7 +535,7 @@ func main() {
 					{"--target <name>", "Codegen target: node (default), python, or effect"},
 					{"--react-query", "Compare output as if build ran with React Query hooks enabled"},
 					{"--frontend-only", "Compare output as if build emitted only the standalone frontend package"},
-					{"--gen-tests", "Compare output as if build emitted the auto-generated test harness"},
+					{"--gen-tests", "Compare the auto-generated test harness (node/python only; effect rejects)"},
 					{"--gen-property-tests", "Compare output including deterministic Node endpoint properties (implies --gen-tests)"},
 					{"--apply", "Write the changes (equivalent to bp build) after showing the diff"},
 					{"--exit-code", "Exit 1 if there are any changes (for CI)"},
@@ -785,6 +785,10 @@ func cmdBuildWithPropertyOptions(filename, outDir, target string, reactQuery, fr
 		fmt.Fprintln(os.Stderr, "Error: --gen-property-tests requires the runnable Node service and cannot be combined with --frontend-only")
 		return 2
 	}
+	if genTests && target == targetEffect {
+		fmt.Fprintln(os.Stderr, "Error: --target effect does not support --gen-tests yet")
+		return 2
+	}
 
 	// Pre-flight: refuse to clobber a foreign, non-Blueprint directory. Safe
 	// no-op for outDirs bp already built into (they carry the manifest) or
@@ -998,6 +1002,16 @@ func cmdFmt(filename string, write, check bool) int {
 	}
 
 	file, parseErrors := parser.ParseFile(filename, src)
+	// Included .bp files are valid source fragments and intentionally omit the
+	// root blueprint block. If full-file parsing reports that specific absence,
+	// retry with the same partial-file parser used by include resolution. Any
+	// real fragment syntax errors are then reported normally.
+	for _, parseError := range parseErrors {
+		if parseError.Code == parser.CodeMissingBlueprint {
+			file, parseErrors = parser.ParsePartialFile(filename, src)
+			break
+		}
+	}
 	if len(parseErrors) > 0 {
 		for _, e := range parseErrors {
 			fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
@@ -1772,6 +1786,10 @@ func cmdDiffWithPropertyTests(filename, outDir, target string, reactQuery, front
 	}
 	if propertyTests && frontendOnly {
 		fmt.Fprintln(os.Stderr, "Error: --gen-property-tests requires the runnable Node service and cannot be combined with --frontend-only")
+		return 2
+	}
+	if genTests && target == targetEffect {
+		fmt.Fprintln(os.Stderr, "Error: --target effect does not support --gen-tests yet")
 		return 2
 	}
 

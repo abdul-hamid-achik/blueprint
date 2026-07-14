@@ -1,7 +1,7 @@
 # Roadmap
 
 Blueprint has a usable compiler, a mature Node target, an advanced Python
-target, and a deliberately experimental Effect scaffold. The roadmap is
+target, and a deliberately experimental Effect health/config scaffold. The roadmap is
 ordered around trust: the compiler should reject programs it cannot preserve
 before it adds more syntax or targets.
 
@@ -16,7 +16,7 @@ For implementation-sized work, see the repository
 | Language frontend | Stable core | Lexer, parser, AST, formatter, linter, diagnostics, and resolver facts |
 | Node target | Mature reference target | Hono, Drizzle, Zod, frontend contracts, Vitest/PGlite plus opt-in fast-check properties, migrations, one-level relationships, computed fields, workers, schedules, STREAM, and WebSocket transport |
 | Python target | Advanced beta | FastAPI, SQLAlchemy, Pydantic, Alembic, pytest/testcontainers for the supported HTTP/data subset; unsupported declarations fail closed |
-| Effect target | Experimental scaffold | Project shell and `Config` secrets; model and endpoint emission are not implemented |
+| Effect target | Experimental runnable scaffold | Pinned project, typed secret/env `Config`, and `GET /health`; model and endpoint emission are not implemented |
 | Developer tools | Available | `check`, `build`, `diff`, `fmt`, `lint`, `docs`, `test`, `migrate`, conservative TypeScript `import`, `doctor`, `stats`, `context`, `llms`, and LSP with a VS Code client |
 | Deployment | Docker | Image build and local health smoke; hosted deploy targets remain future work |
 
@@ -40,8 +40,9 @@ nested JSON/FK leaf typing and general assignability.
 
 ### Make every target fail closed
 
-A successful build must never silently discard source behavior. Effect has an
-exhaustive top-level AST gate, and Python now has an exhaustive declaration and
+A successful build must never silently discard source behavior. Effect audits
+blueprint settings, middleware uses, declaration contents, and top-level AST
+kinds before returning files; Python has an exhaustive declaration and
 expression gate: authored tests, inline function logic, STREAM/WS bodies,
 unsupported input types, undeclared env fields, attribute access on JSON/map
 inputs or JSON-returning function results, unknown value calls, unsafe native

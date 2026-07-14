@@ -1171,7 +1171,7 @@ func TestGenerateAllFeatures(t *testing.T) {
 		"src/schedules/cleanup.ts",
 		"src/schedules/reset-quotas.ts",
 		"test/watermark-success.test.ts",
-		"test/watermark-oversized.test.ts",
+		"test/watermark-invalid-opacity.test.ts",
 		".blueprint/manifest.json",
 	}
 

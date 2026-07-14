@@ -201,6 +201,45 @@ func TestComments(t *testing.T) {
 	assertTokens(t, "# line1\n# line2\n42", []Token{tok(TokenInt, "42")})
 }
 
+func TestTokenizeWithTriviaAnchorsComments(t *testing.T) {
+	input := "# leading\nsecret API_KEY required  # inline\n  # before endpoint\nGET /health {\n  -> 200\n  # before close\n}\n# at eof"
+	tokens, comments, errs := TokenizeWithTrivia("test.bp", []byte(input))
+	if len(errs) > 0 {
+		t.Fatalf("unexpected lex errors: %v", errs)
+	}
+	if len(comments) != 5 {
+		t.Fatalf("expected 5 comments, got %d: %#v", len(comments), comments)
+	}
+
+	assertAnchor := func(index int, text string, inline bool, kind TokenKind) {
+		t.Helper()
+		comment := comments[index]
+		if comment.Text != text || comment.Inline != inline {
+			t.Errorf("comment %d = %#v, want text %q inline=%v", index, comment, text, inline)
+		}
+		if comment.AnchorToken < 0 || comment.AnchorToken >= len(tokens) {
+			t.Fatalf("comment %d has invalid anchor %d", index, comment.AnchorToken)
+		}
+		if got := tokens[comment.AnchorToken].Kind; got != kind {
+			t.Errorf("comment %d anchors to %s, want %s", index, got, kind)
+		}
+	}
+
+	assertAnchor(0, "# leading", false, TokenSecret)
+	assertAnchor(1, "# inline", true, TokenRequired)
+	assertAnchor(2, "# before endpoint", false, TokenGetMethod)
+	assertAnchor(3, "# before close", false, TokenRBrace)
+	assertAnchor(4, "# at eof", false, TokenEOF)
+
+	_, stringComments, stringErrs := TokenizeWithTrivia("test.bp", []byte(`env VALUE "# not a comment"`))
+	if len(stringErrs) > 0 {
+		t.Fatalf("unexpected string lex errors: %v", stringErrs)
+	}
+	if len(stringComments) != 0 {
+		t.Fatalf("# inside a string was captured as trivia: %#v", stringComments)
+	}
+}
+
 func TestWhitespace(t *testing.T) {
 	assertTokens(t, "  42  ", []Token{tok(TokenInt, "42")})
 	assertTokens(t, "\t\n\r 42", []Token{tok(TokenInt, "42")})

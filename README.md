@@ -17,7 +17,7 @@ can also produce a FastAPI + SQLAlchemy project.
 |--------|--------|----------|
 | `node` (default) | TypeScript, Hono, Drizzle, Zod | Reference target; REST, models, migrations, frontend contracts, and generated tests are the mature path |
 | `python` | FastAPI, SQLAlchemy, Pydantic, Alembic | Advanced beta; supported HTTP/data slices build, unsupported realtime and declaration semantics fail closed |
-| `effect` | Effect-TS project and Config scaffold | Experimental; model and endpoint emission is not implemented |
+| `effect` | Runnable Effect-TS health/config scaffold | Experimental; emits `GET /health`, typed secret/env config, and pinned dependencies; authored models/endpoints fail closed |
 
 ## From `.bp` to a running endpoint
 
@@ -322,7 +322,7 @@ feature:
 | Job queue | [BullMQ](https://bullmq.io) | ^5.30 |
 | Redis client | `redis` | ^5.0 |
 | File storage | `@aws-sdk/client-s3` | ^3.700 |
-| Testing | [Vitest](https://vitest.dev); optional [fast-check](https://fast-check.dev) properties | ^2.1 / ^3.23 |
+| Testing | [Vitest](https://vitest.dev); optional [fast-check](https://fast-check.dev) properties | ^4.1 / ^3.23 |
 
 The generated code is clean, idiomatic TypeScript with zero Blueprint runtime dependencies.
 
@@ -382,7 +382,7 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
 | Command | What it does |
 |---------|--------------|
 | `bp check <file> [--json]` | Validate syntax and semantics |
-| `bp build <file> [--target node\|python\|effect] [--out <dir>] [--gen-tests] [--gen-property-tests]` | Generate a target project; properties, `--react-query`, and `--frontend-only` are Node-only |
+| `bp build <file> [--target node\|python\|effect] [--out <dir>] [--gen-tests] [--gen-property-tests]` | Generate a target project; tests support Node/Python, while properties, `--react-query`, and `--frontend-only` are Node-only |
 | `bp frontend <file>` | Generate only the standalone frontend SDK package |
 | `bp frontend publish <file>` | Build and dry-run the frontend package publish flow |
 | `bp diff <file> [--target ...] [--apply] [--exit-code]` | Preview generated changes or use them as a CI gate |
@@ -430,8 +430,9 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
   emits FastAPI `Body`/`Query` validation and aliased header parameters, while
   rejecting STREAM/WS handlers, undeclared env access, unsafe function config,
   richer middleware steps, and other semantics it cannot preserve. The Effect
-  target is an experimental scaffold and likewise rejects models/endpoints
-  rather than pretending to support them.
+  target is a runnable, health-only experimental scaffold with typed Effect
+  Config for secrets/env defaults; it rejects models/endpoints and test
+  generation rather than pretending to support them.
 - Workers, schedules, `enqueue`, subscriptions, STREAM, and WebSocket generation
   exist on Node, but realtime/queue behavior should be verified for each service.
 - `bp generate` is preview functionality that calls Anthropic. Review rewritten

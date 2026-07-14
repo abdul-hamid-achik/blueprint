@@ -56,8 +56,8 @@ in codegen.
   BullMQ, Redis, frontend contracts, Vitest, and PGlite.
 - `internal/codegen/python/` emits FastAPI, SQLAlchemy, Pydantic, Alembic, and
   pytest/testcontainers output.
-- `internal/codegen/effect/` is an experimental Effect-TS project/config
-  scaffold. It intentionally rejects unsupported service constructs.
+- `internal/codegen/effect/` is an experimental, runnable Effect-TS
+  health/config scaffold. It intentionally rejects unsupported service constructs.
 - `internal/codegen/writer.go` writes generator output and maintains
   `.blueprint/manifest.json`.
 
@@ -98,7 +98,7 @@ still emit an importable empty schema (`schema.ts` on Node, `Base` on Python).
 |--------|------------------|
 | `node` (default) | Reference target. REST/model/codegen, migrations, frontend contracts, and generated tests are the mature path. Realtime and queue surfaces exist but deserve feature-specific verification. |
 | `python` | Advanced beta. FastAPI/SQLAlchemy output and pytest/testcontainers generation ship; unsupported long-tail constructs should fail clearly instead of being silently mis-emitted. |
-| `effect` | Experimental scaffold. Project/config output ships, while model and endpoint generation remain unsupported. |
+| `effect` | Experimental scaffold. A pinned health service and typed secret/env config ship; model, endpoint, and test generation remain unsupported. |
 
 `bp build` and `bp diff` accept all three codegen targets. `bp test` and
 `bp migrate` accept `node` or `python`; `effect` is rejected for those flows.
@@ -169,6 +169,10 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
 - Node endpoint `cache <duration>` metadata is currently emitted as a comment,
   not as response caching. Endpoint `limit` is an in-process, per-instance rate
   limiter rather than a distributed guarantee.
+- The Node target rejects file/MIME endpoint inputs, including file-containing
+  named types, until route parsing and the generated SDK both support
+  multipart/form-data. File/MIME types remain valid in functions, pipes, and
+  native implementation signatures.
 - General generated expressions resolve declared environment values as
   `env.NAME`. Do not document arbitrary `secret.NAME` expression access;
   `secret.KEY` is specially interpreted by webhook-auth syntax.
@@ -189,6 +193,12 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
   a ref-backed field in a `save`/`seed`/`update` block, a reachable recursive
   inline `fn`/`pipe` call graph, native/user implementations, external services,
   queues/storage/analytics/events/realtime, sleep, or wall-clock behavior.
+- The Effect target is a health/config foundation, not an application emitter.
+  It accepts only `runtime node`, the declared version/port, secrets, and env
+  defaults that map faithfully to Effect `Config`; blueprint `use`, database,
+  models, endpoints, authored tests, and other declarations return no files.
+  `--gen-tests` and `--gen-property-tests` reject for Effect on both `build`
+  and `diff`.
 - Node relationship loading is one-level `query ... with(relation)` only. The
   relationship comes from `<relation>_id ref(target)` and emits a nullable LEFT
   JOIN against `target.id`. Aliases, self joins, two requested relations to the
@@ -217,11 +227,16 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
   middleware module. Basic auth still expects a pre-encoded value. Do not add
   examples that promise broader behavior without adding generator coverage.
 - `emit` dispatches the in-process event/subscription bus. Source-less
-  `subscribe "event" { ... }` consumes that bus; `subscribe ... from(service)`
-  is rejected until an external transport adapter exists. Use
-  `enqueue "queue" { ... }` to produce a BullMQ job for a worker.
+  `subscribe "event" { ... }` consumes that bus. `emit ... to(service)` and
+  `subscribe ... from(service)` are rejected until an external transport
+  adapter exists. Use `enqueue "queue" { ... }` to produce a BullMQ job for a
+  worker.
 - Workers, schedules, `enqueue`, and `subscribe` are implemented on the Node
   target; do not reintroduce old documentation that labels them absent.
+- Worker retry/backoff metadata is exported but is not yet propagated into the
+  generated BullMQ producer's job options, so generated jobs currently default
+  to one attempt. Worker timeouts reject the wait but do not cancel in-flight
+  handler work.
 - `bp generate --write` edits the source `.bp` file. It does not create a
   TypeScript implementation file.
 - Docker deploy smoke testing uses the port declared in the generated

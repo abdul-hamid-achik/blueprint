@@ -23,7 +23,7 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 		deps["@hono/zod-validator"] = "^0.4.2"
 	}
 	if hasDB {
-		deps["drizzle-orm"] = "^0.36.0"
+		deps["drizzle-orm"] = "^0.45.2"
 		deps["pg"] = "^8.13.0"
 	}
 	if hasCache {
@@ -50,10 +50,10 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 		"tsx":         "^4.19.0",
 		"@types/node": "^22.0.0",
 		"@types/pg":   "^8.11.0",
-		"vitest":      "^2.1.0",
+		"vitest":      "^4.1.10",
 	}
 	if hasDB {
-		devDeps["drizzle-kit"] = "^0.28.0"
+		devDeps["drizzle-kit"] = "^0.31.10"
 	}
 	if (g.genTests || g.propertyTests) && hasDB {
 		devDeps["@electric-sql/pglite"] = "^0.2.0"

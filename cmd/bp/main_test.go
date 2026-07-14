@@ -577,6 +577,97 @@ func TestFmtCheckAlreadyFormatted(t *testing.T) {
 	}
 }
 
+func TestFmtWritePreservesComments(t *testing.T) {
+	root := getProjectRoot()
+	src, err := os.ReadFile(filepath.Join(root, "testdata", "valid", "comments.bp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	filename := filepath.Join(t.TempDir(), "comments.bp")
+	if err := os.WriteFile(filename, src, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, exitCode := runBP(t, "fmt", filename, "--write")
+	if exitCode != 0 {
+		t.Fatalf("fmt --write failed with exit %d: %s", exitCode, stderr)
+	}
+
+	written, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"# Top-level comment",
+		"# inline comment",
+		"# Another comment",
+		"# Multiple lines of comments",
+		"# Comment before endpoint",
+		"# Comment inside block",
+		"# trailing comment",
+	} {
+		if strings.Count(string(written), want) != 1 {
+			t.Errorf("fmt --write did not preserve %q exactly once:\n%s", want, written)
+		}
+	}
+	if got, want := strings.Count(string(written), "#"), strings.Count(string(src), "#"); got != want {
+		t.Fatalf("fmt --write changed the comment count: got %d, want %d\n%s", got, want, written)
+	}
+
+	firstWrite := append([]byte(nil), written...)
+	_, stderr, exitCode = runBP(t, "fmt", filename, "--write")
+	if exitCode != 0 {
+		t.Fatalf("second fmt --write failed: %s", stderr)
+	}
+	written, err = os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(written) != string(firstWrite) {
+		t.Fatalf("fmt --write was not idempotent\nfirst:\n%s\nsecond:\n%s", firstWrite, written)
+	}
+
+	_, stderr, exitCode = runBP(t, "fmt", filename, "--check")
+	if exitCode != 0 {
+		t.Fatalf("comment-preserving output was not idempotent: %s", stderr)
+	}
+}
+
+func TestFmtIncludeFragmentWithoutBlueprint(t *testing.T) {
+	fragment := `# shared model
+model included_user {
+ id uuid primary # stable identifier
+ name string required
+}
+`
+	filename := filepath.Join(t.TempDir(), "models.bp")
+	if err := os.WriteFile(filename, []byte(fragment), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, exitCode := runBP(t, "fmt", filename)
+	if exitCode != 0 {
+		t.Fatalf("fmt rejected include fragment with exit %d: %s", exitCode, stderr)
+	}
+	want := `# shared model
+model included_user {
+  id   uuid   primary  # stable identifier
+  name string required
+}
+`
+	if stdout != want {
+		t.Fatalf("unexpected fragment formatting\nwant:\n%s\ngot:\n%s", want, stdout)
+	}
+
+	if err := os.WriteFile(filename, []byte(stdout), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, exitCode = runBP(t, "fmt", filename, "--check")
+	if exitCode != 0 {
+		t.Fatalf("formatted fragment was not idempotent: %s", stderr)
+	}
+}
+
 func TestLintValidFile(t *testing.T) {
 	root := getProjectRoot()
 	validFile := filepath.Join(root, "examples", "hello-world.bp")
@@ -1841,6 +1932,53 @@ func TestTestCommandRejectsEffectTarget(t *testing.T) {
 	}
 	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
 		t.Errorf("effect test rejection should happen before writing output; stat err=%v", err)
+	}
+}
+
+func TestEffectBuildAndDiffRejectGenTestsBeforeWriting(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "testdata", "valid", "single_env.bp")
+	for _, command := range []string{"build", "diff"} {
+		t.Run(command, func(t *testing.T) {
+			outDir := filepath.Join(t.TempDir(), "must-not-exist")
+			_, stderr, code := runBP(t, command, bp, "--out", outDir, "--target", "effect", "--gen-tests")
+			if code != 2 {
+				t.Fatalf("expected usage exit 2, got %d; stderr: %s", code, stderr)
+			}
+			if !strings.Contains(stderr, "--target effect does not support --gen-tests") {
+				t.Errorf("expected focused Effect test-generation error, got: %q", stderr)
+			}
+			if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+				t.Errorf("Effect flag rejection must happen before output is written; stat err=%v", err)
+			}
+		})
+	}
+}
+
+func TestEffectBuildScaffoldAndDiffIsIdempotent(t *testing.T) {
+	root := getProjectRoot()
+	bp := filepath.Join(root, "testdata", "valid", "single_env.bp")
+	outDir := filepath.Join(t.TempDir(), "effect-output")
+
+	stdout, stderr, code := runBP(t, "build", bp, "--out", outDir, "--target", "effect")
+	if code != 0 {
+		t.Fatalf("Effect build failed: %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	for _, rel := range []string{
+		"package.json", "tsconfig.json", "src/config.ts", "src/index.ts",
+		".env.example", ".gitignore", "README.md", ".blueprint/manifest.json",
+	} {
+		if _, err := os.Stat(filepath.Join(outDir, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("Effect build should emit %s: %v", rel, err)
+		}
+	}
+
+	stdout, stderr, code = runBP(t, "diff", bp, "--out", outDir, "--target", "effect", "--no-color", "--exit-code")
+	if code != 0 {
+		t.Fatalf("unchanged Effect diff should exit 0, got %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "No changes") {
+		t.Errorf("unchanged Effect diff should report no differences, got: %q", stdout)
 	}
 }
 

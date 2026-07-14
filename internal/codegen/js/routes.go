@@ -979,17 +979,6 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	if needsWebhookAuth {
 		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
 	}
-	// Import emit from events lib if any handler uses it
-	needsEmit := false
-	for _, ep := range endpoints {
-		if stmtsHaveCall(ep.OnConnect, "emit") || stmtsHaveCall(ep.OnMessage, "emit") || stmtsHaveCall(ep.OnDisconnect, "emit") {
-			needsEmit = true
-			break
-		}
-	}
-	if needsEmit {
-		b.WriteString("import { emit } from '../lib/events.js';\n")
-	}
 	if needsWebhookAuth {
 		ic.needsEnv = true
 	}

@@ -473,6 +473,21 @@ func (t Token) String() string {
 	return t.Kind.String()
 }
 
+// Comment is source trivia captured while lexing. Comments are deliberately
+// kept out of the parser's token stream, but retain the neighboring token they
+// belong to so source-aware tools such as the formatter can preserve them.
+//
+// Inline comments are anchored to the token immediately before them. Leading
+// comments are anchored to the next token (or EOF for comments at the end of a
+// file). AnchorToken is an index into the token slice returned alongside the
+// comment by TokenizeWithTrivia.
+type Comment struct {
+	Loc         Loc
+	Text        string
+	Inline      bool
+	AnchorToken int
+}
+
 // Loc represents a source location.
 type Loc struct {
 	File   string

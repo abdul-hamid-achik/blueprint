@@ -9,6 +9,7 @@ bin/
 # Build output
 generated/
 dist/
+node_modules/
 
 # Test artifacts
 *.test
@@ -37,7 +38,6 @@ Thumbs.db
 .bpconfig
 
 # Documentation site
-docs/node_modules/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 

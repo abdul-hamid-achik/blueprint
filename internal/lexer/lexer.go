@@ -2,6 +2,14 @@ package lexer
 
 // Tokenize lexes the source bytes and returns a list of tokens and any lexer errors.
 func Tokenize(filename string, src []byte) ([]Token, []LexError) {
+	tokens, _, errs := TokenizeWithTrivia(filename, src)
+	return tokens, errs
+}
+
+// TokenizeWithTrivia lexes source while also returning comments as structured
+// trivia. Comments do not appear in the token stream, so existing parsers and
+// token consumers retain their current behavior.
+func TokenizeWithTrivia(filename string, src []byte) ([]Token, []Comment, []LexError) {
 	l := &lexer{
 		file: filename,
 		src:  src,
@@ -9,18 +17,22 @@ func Tokenize(filename string, src []byte) ([]Token, []LexError) {
 		col:  1,
 	}
 	l.run()
+	l.anchorPendingComments(len(l.tokens))
 	l.tokens = append(l.tokens, Token{Kind: TokenEOF, Loc: l.loc()})
-	return l.tokens, l.errors
+	return l.tokens, l.comments, l.errors
 }
 
 type lexer struct {
-	file   string
-	src    []byte
-	pos    int
-	line   int
-	col    int
-	tokens []Token
-	errors []LexError
+	file            string
+	src             []byte
+	pos             int
+	line            int
+	col             int
+	tokens          []Token
+	comments        []Comment
+	pendingComments []int
+	errors          []LexError
+	lineHasCode     bool
 }
 
 func (l *lexer) loc() Loc {
@@ -52,6 +64,7 @@ func (l *lexer) advance() byte {
 	if ch == '\n' {
 		l.line++
 		l.col = 1
+		l.lineHasCode = false
 	} else {
 		l.col++
 	}
@@ -60,7 +73,16 @@ func (l *lexer) advance() byte {
 
 func (l *lexer) emit(kind TokenKind, value string, loc Loc) {
 	loc.Len = l.pos - loc.Offset
+	l.anchorPendingComments(len(l.tokens))
 	l.tokens = append(l.tokens, Token{Kind: kind, Value: value, Loc: loc})
+	l.lineHasCode = true
+}
+
+func (l *lexer) anchorPendingComments(tokenIndex int) {
+	for _, commentIndex := range l.pendingComments {
+		l.comments[commentIndex].AnchorToken = tokenIndex
+	}
+	l.pendingComments = l.pendingComments[:0]
 }
 
 func (l *lexer) addError(loc Loc, msg string) {
@@ -186,9 +208,28 @@ func (l *lexer) skipWhitespace() {
 }
 
 func (l *lexer) skipComment() {
-	// skip # and everything until end of line
+	loc := l.loc()
+	start := l.pos
+	inline := l.lineHasCode
+
+	// Capture # and everything until end of line. String scanning consumes its
+	// own contents, so a # inside a quoted string never reaches this path.
 	for !l.atEnd() && l.peek() != '\n' {
 		l.advance()
+	}
+	loc.Len = l.pos - loc.Offset
+	comment := Comment{
+		Loc:         loc,
+		Text:        string(l.src[start:l.pos]),
+		Inline:      inline,
+		AnchorToken: -1,
+	}
+	if inline {
+		comment.AnchorToken = len(l.tokens) - 1
+	}
+	l.comments = append(l.comments, comment)
+	if !inline {
+		l.pendingComments = append(l.pendingComments, len(l.comments)-1)
 	}
 }
 

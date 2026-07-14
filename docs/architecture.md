@@ -37,7 +37,7 @@ internal/
     common/         Path + string helpers shared across targets
     js/             JavaScript/TypeScript target (Hono + Drizzle + Zod) — the default
     python/         Python target (FastAPI + SQLAlchemy + Alembic), via --target python
-    effect/         Effect (TypeScript) target — early scaffold, via --target effect
+    effect/         Effect (TypeScript) target — runnable health/config scaffold, via --target effect
   linter/           Style linter (intent annotations, block ordering, empty endpoints)
   docs/             OpenAPI 3.1 JSON generator
   generate/         LLM code generation (@> slots via Anthropic API)
@@ -552,6 +552,7 @@ formatted := ast.Print(file)
 - Aligned field declarations within blocks
 - Normalized whitespace around arrows (`<-`, `|>`, `->`)
 - Consistent double-quote style
+- Source-aware preservation of leading and inline `#` comments
 - Trailing newline
 
 ---
@@ -675,7 +676,7 @@ func TestGen_MyFeature(t *testing.T) {
 
 ### Adding a new code generation target
 
-`internal/codegen/js` is the default target. Two more already exist: `internal/codegen/python` (FastAPI + SQLAlchemy + Alembic, via `--target python`) and `internal/codegen/effect` (an early Effect/TypeScript scaffold, via `--target effect`). Each is a concrete implementation of the `codegen.Generator` interface (see [`internal/codegen`](#internal-codegen-the-target-contract)):
+`internal/codegen/js` is the default target. Two more already exist: `internal/codegen/python` (FastAPI + SQLAlchemy + Alembic, via `--target python`) and `internal/codegen/effect` (a runnable, fail-closed Effect health/config scaffold, via `--target effect`). Each is a concrete implementation of the `codegen.Generator` interface (see [`internal/codegen`](#internal-codegen-the-target-contract)):
 
 ```go
 type Generator interface {
@@ -709,7 +710,7 @@ The codegen uses `strings.Builder` and direct string writes instead of `text/tem
 
 `query`, `save`, `update`, `delete` are not typed as special AST nodes — they're represented as `*ast.FnCall` with a known name. The codegen recognizes them by name and emits the appropriate Drizzle ORM code. This keeps the AST simpler at the cost of some codegen complexity.
 
-### No runtime package
+### No required runtime package
 
 Generated code has zero Blueprint dependencies. The Node target uses familiar
 packages such as `hono`, `drizzle-orm`, `zod`, `bullmq`, and `redis`; the Python
