@@ -30,6 +30,7 @@ type Generator struct {
 	structEnums       map[string]bool     // enums with struct-body variants (e.g., Plan)
 	declaredExternals map[string]bool     // normalized camelCase external service names
 	enumVariants      map[string][]string // enum name -> variant names (for test value synthesis)
+	queuePolicies     map[string]resolve.QueuePolicy
 	hasStorage        bool
 }
 
@@ -87,6 +88,7 @@ type emitCtx struct {
 // Files implements codegen.Generator: it returns the generated TypeScript/Node
 // project as in-memory OutputFiles without touching disk.
 func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
+	g.queuePolicies = nil
 	if err := codegen.RejectUnresolvedGenerateSteps(file); err != nil {
 		return nil, err
 	}
@@ -105,6 +107,11 @@ func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
 	if err := rejectWithLegacyQueryArgs(file); err != nil {
 		return nil, err
 	}
+	queueFacts, err := validateNodeQueuePolicies(file)
+	if err != nil {
+		return nil, err
+	}
+	g.queuePolicies = queueFacts.ByQueue
 	g.file = file
 	resolveTranslationKeyTypes(file)
 	g.sourceFile = file.Loc.File

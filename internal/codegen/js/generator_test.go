@@ -2635,6 +2635,8 @@ worker process_job {
 		`export const processJobTimeoutMs = 300000;`,
 		`export const processJobRetryCount = 3;`,
 		`export const processJobBackoff = { strategy: "exponential", base: 1 * 1000, max: 30 * 1000 };`,
+		`export const processJobJobOptions = { attempts: 4, backoff: { type: "blueprint_capped_exponential", delay: 1 * 1000 } };`,
+		`export const processJobBackoffStrategy = (attemptsMade: number, type?: string): number => { if (type !== "blueprint_capped_exponential") throw new Error('Unknown Blueprint backoff strategy: ' + type); return Math.min(1 * 1000 * Math.pow(2, Math.max(attemptsMade - 1, 0)), 30 * 1000); };`,
 		`export async function processJobOnFail(_bpData: any, _bpError: Error): Promise<void> {`,
 	} {
 		if !strings.Contains(workerStr, expected) {
@@ -2648,10 +2650,14 @@ worker process_job {
 	}
 	indexStr := string(indexContent)
 	for _, expected := range []string{
-		`import { processJob, processJobOnFail, processJobQueueName, processJobTimeoutMs } from './workers/process-job.js'`,
+		`import { processJob, processJobOnFail, processJobQueueName, processJobTimeoutMs, processJobBackoffStrategy } from './workers/process-job.js'`,
 		`new Worker(processJobQueueName, async (job) => {`,
 		`await Promise.race([processJob(job.data), new Promise((_, reject) => setTimeout(() => reject(new Error('Worker timeout')), processJobTimeoutMs))]);`,
+		`if (job.attemptsMade + 1 >= (job.opts.attempts ?? 1)) {`,
+		`Compensate ordinary processor exceptions only on the configured final attempt.`,
+		`Stalled-job exhaustion happens outside this catch; UnrecoverableError can terminate before this configured final attempt.`,
 		`await processJobOnFail(job.data, error instanceof Error ? error : new Error(String(error)));`,
+		`settings: { backoffStrategy: processJobBackoffStrategy }`,
 	} {
 		if !strings.Contains(indexStr, expected) {
 			t.Fatalf("expected worker runtime wiring %q\n%s", expected, indexStr)
@@ -2860,6 +2866,13 @@ model job {
   status string default("pending")
 }
 
+worker process_job {
+  trigger queue("jobs")
+  retry 2 backoff(exponential, base: 1s)
+  <- job_id uuid
+  |> log "Processing {job_id}"
+}
+
 POST /api/jobs {
   <- title string required
   |> job = save job { status: "pending" }
@@ -2891,15 +2904,28 @@ POST /api/jobs {
 	if !strings.Contains(jobsStr, "import { Queue } from 'bullmq'") {
 		t.Errorf("expected Queue import from bullmq, got:\n%s", jobsStr)
 	}
+	queueID := workerProducerQueueIdentifier("process_job")
+	optionsID := workerJobOptionsIdentifier("process_job")
+	if !strings.Contains(jobsStr, "import { processJobJobOptions as "+optionsID+" } from '../workers/process-job.js'") {
+		t.Errorf("expected resolved worker job-options import, got:\n%s", jobsStr)
+	}
 
 	// Must create a module-level Queue instance
-	if !strings.Contains(jobsStr, "const _jobsQueue = new Queue('jobs'") {
-		t.Errorf("expected _jobsQueue module-level Queue instance, got:\n%s", jobsStr)
+	if !strings.Contains(jobsStr, "const "+queueID+` = new Queue("jobs"`) {
+		t.Errorf("expected worker-derived module-level Queue instance, got:\n%s", jobsStr)
 	}
 
 	// Must call .add() in the handler
-	if !strings.Contains(jobsStr, "await _jobsQueue.add('job'") {
-		t.Errorf("expected _jobsQueue.add() call in handler, got:\n%s", jobsStr)
+	if !strings.Contains(jobsStr, "await "+queueID+".add('job', { jobId: job.id }, "+optionsID+")") {
+		t.Errorf("expected worker-derived Queue.add() call with worker policy in handler, got:\n%s", jobsStr)
+	}
+
+	workerContent, err := os.ReadFile(filepath.Join(outDir, "src/workers/process-job.ts"))
+	if err != nil {
+		t.Fatal("src/workers/process-job.ts should exist")
+	}
+	if !strings.Contains(string(workerContent), `export const processJobJobOptions = { attempts: 3, backoff: { type: "exponential", delay: 1 * 1000 } };`) {
+		t.Errorf("expected retry count and BullMQ backoff in worker job options, got:\n%s", workerContent)
 	}
 
 	// Must import env (Queue uses env.REDIS_URL)

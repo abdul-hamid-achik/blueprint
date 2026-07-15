@@ -35,8 +35,12 @@ database with zero models emits an importable empty schema/Base.
 `bp check` now rejects unbound and use-before-bind arrow references, unknown
 data-operation models, invalid conditional scope leaks, duplicate declarations,
 callable arity mismatches, direct model-field typos, duplicate enum variants,
-and duplicate or malformed blueprint settings. The remaining semantic depth is
-nested JSON/FK leaf typing and general assignability.
+and duplicate or malformed blueprint settings. It also checks conservative
+primitive/enum/model/list/map/optional/null assignability across declared calls,
+input reassignments, and known model writes, including nullable fetch results
+and truthy-guard narrowing. The remaining semantic depth is nested JSON/FK leaf
+typing, composite function-output recovery, and broader expression/operator
+assignability.
 
 ### Make every target fail closed
 

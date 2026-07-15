@@ -434,7 +434,10 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
   Config for secrets/env defaults; it rejects models/endpoints and test
   generation rather than pretending to support them.
 - Workers, schedules, `enqueue`, subscriptions, STREAM, and WebSocket generation
-  exist on Node, but realtime/queue behavior should be verified for each service.
+  exist on Node. REST endpoint `enqueue` inherits its worker's retry/backoff
+  policy and ambiguous or unsupported producer shapes fail closed; cooperative
+  timeout cancellation and terminal stall/`UnrecoverableError` compensation
+  remain open, so queue behavior should still be verified for each service.
 - `bp generate` is preview functionality that calls Anthropic. Review rewritten
   Blueprint and run `bp check` before building.
 

@@ -31,6 +31,25 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed (2026-07-14 audit and polish pass)
 
+- **Worker delivery policy now reaches every supported producer.** REST
+  endpoint `enqueue` calls resolve to exactly one worker and pass BullMQ
+  `attempts: retry + 1` plus fixed/exponential backoff into `Queue.add`.
+  Declared caps use a generated custom strategy instead of an ignored option;
+  malformed or duplicate triggers, missing/ambiguous workers, incomplete
+  enqueue calls, unsupported producer contexts, and invalid backoff shapes fail
+  before files are returned. Queue strings no longer become unsafe TypeScript
+  identifiers, and every lexer-supported hour/day duration spelling translates
+  correctly. Ordinary processor compensation remains final-attempt-only;
+  cooperative cancellation and terminal stall/`UnrecoverableError` hooks remain
+  tracked limitations.
+- **The checker now catches high-confidence type mismatches before codegen.**
+  Primitive, enum, model, list, map, optional, and null facts validate typed
+  input reassignments, declared function/pipe arguments, and known model write
+  fields. `fetch` and `query ... first` results remain nullable until a positive
+  truthy guard, heterogeneous composite literals are checked member by member,
+  and try/recover or inline-when scopes no longer leak invalid type facts.
+  Dynamic JSON and unrecoverable composite function outputs remain deliberately
+  conservative.
 - **Formatting is source-safe.** The lexer now retains structured comment
   trivia, `bp fmt` restores top-level, block, inline, trailing, and EOF `#`
   comments idempotently, and include fragments without a root `blueprint`

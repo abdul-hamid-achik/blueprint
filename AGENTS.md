@@ -233,10 +233,14 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
   worker.
 - Workers, schedules, `enqueue`, and `subscribe` are implemented on the Node
   target; do not reintroduce old documentation that labels them absent.
-- Worker retry/backoff metadata is exported but is not yet propagated into the
-  generated BullMQ producer's job options, so generated jobs currently default
-  to one attempt. Worker timeouts reject the wait but do not cancel in-flight
-  handler work.
+- Node `enqueue` is currently supported only in HTTP endpoint bodies and must
+  resolve to exactly one worker queue. `retry N` means N additional attempts;
+  generated producers pass `attempts: N + 1` plus fixed/exponential backoff,
+  with `max` enforced through a generated custom BullMQ strategy. Unsupported
+  producer contexts and malformed or ambiguous queue policies fail before any
+  files are returned. Worker timeouts reject the wait but do not cancel
+  in-flight handler work, and `on_fail` compensation does not yet cover
+  terminal stall exhaustion or an early BullMQ `UnrecoverableError`.
 - `bp generate --write` edits the source `.bp` file. It does not create a
   TypeScript implementation file.
 - Docker deploy smoke testing uses the port declared in the generated

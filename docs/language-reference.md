@@ -990,20 +990,31 @@ worker process_watermark {
 | Key | Syntax | Description |
 |-----|--------|-------------|
 | `trigger` | `trigger queue("name")` | BullMQ queue name |
-| `retry` | `retry 3 backoff(exponential, base: 1s, max: 30s)` | Parsed retry policy; see current limitation below |
+| `retry` | `retry 3 backoff(exponential, base: 1s, max: 30s)` | Three retries after the initial attempt, with capped exponential delay |
 | `timeout` | `timeout 5min` | Max execution time |
 
-The Node generator currently exports retry/backoff metadata with each worker,
-but generated `enqueue` producers do not yet copy it into BullMQ job options.
-BullMQ therefore uses one attempt unless another producer supplies `attempts`
-and `backoff`. The generated timeout rejects the worker wait after the declared
-duration but does not cancel work already in progress.
+On the Node target, `retry N` means N additional attempts after the initial
+attempt, so the generated BullMQ producer receives `attempts: N + 1`. A plain
+`retry N` retries immediately. `backoff(fixed, base: ...)` and
+`backoff(exponential, base: ...)` emit BullMQ backoff options; `max` is enforced
+by a generated custom capped strategy. A backoff clause must declare `base` or
+`delay`, and unsupported strategies or keys fail before files are returned.
+
+`enqueue` is currently supported only inside HTTP endpoint bodies. Its static
+queue name must resolve to exactly one worker trigger and its payload is
+required. Missing or ambiguous workers, malformed calls, and enqueue calls in
+functions, pipes, middleware, realtime handlers, workers, schedules,
+subscriptions, or authored test setup fail closed instead of producing a
+module with an undefined queue binding.
+
+The generated timeout rejects the worker wait after the declared duration but
+does not cancel work already in progress.
 
 ### `on_fail`
 
-Runs after the final BullMQ attempt. With the generated producer today, that is
-the first failure because worker retry metadata is not yet propagated into the
-job options:
+Runs after the final ordinary processor attempt declared by `retry`. Earlier
+processor failures are rethrown for BullMQ to retry without running the
+compensation body:
 
 ```bp
 on_fail {
@@ -1011,6 +1022,10 @@ on_fail {
   |> emit job_failed { job_id: job.id }
 }
 ```
+
+This hook currently runs from the generated processor catch. BullMQ terminal
+paths that bypass that catch—notably stall exhaustion or an early
+`UnrecoverableError`—do not yet invoke `on_fail`.
 
 ---
 

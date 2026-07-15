@@ -38,10 +38,12 @@ func (k SymbolKind) String() string {
 
 // Symbol represents a named declaration in a scope.
 type Symbol struct {
-	Name string
-	Kind SymbolKind
-	Loc  lexer.Loc
-	Node ast.Node
+	Name     string
+	Kind     SymbolKind
+	Loc      lexer.Loc
+	Node     ast.Node
+	value    valueType
+	declared valueType
 }
 
 // Scope represents a lexical scope for name resolution.

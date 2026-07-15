@@ -6,7 +6,36 @@ import (
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen"
+	"github.com/abdul-hamid-achik/blueprint/internal/resolve"
 )
+
+func validateNodeQueuePolicies(file *ast.File) (*resolve.QueuePolicyFacts, error) {
+	if file != nil {
+		for _, block := range file.Blocks {
+			worker, ok := block.(*ast.Worker)
+			if !ok {
+				continue
+			}
+			if err := validateWorkerDeliveryPolicy(worker); err != nil {
+				return nil, fmt.Errorf("node target cannot generate worker delivery policy: %w", err)
+			}
+		}
+	}
+	facts, err := resolve.ResolveQueuePolicies(file)
+	if err != nil {
+		return nil, fmt.Errorf("node target cannot resolve enqueue delivery policy: %w", err)
+	}
+	for _, site := range facts.Enqueues {
+		if site.Context == resolve.QueueEnqueueEndpoint {
+			continue
+		}
+		return nil, fmt.Errorf(
+			"node target supports enqueue only in HTTP endpoint bodies; enqueue queue %q in %s %q (%s) at %s would generate a producer without a BullMQ Queue binding",
+			site.Queue, site.Context, site.Owner, site.Section, site.Loc,
+		)
+	}
+	return facts, nil
+}
 
 // --- Index (entrypoint) ---
 
@@ -123,8 +152,12 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 		onFailName := name + "OnFail"
 		queueName := name + "QueueName"
 		timeoutName := name + "TimeoutMs"
-		fmt.Fprintf(&b, "import { %s, %s, %s, %s } from './workers/%s.js';\n",
-			name, onFailName, queueName, timeoutName, toKebabCase(w.Name))
+		imports := []string{name, onFailName, queueName, timeoutName}
+		if workerCustomBackoffStrategyExpr(w) != "" {
+			imports = append(imports, name+"BackoffStrategy")
+		}
+		fmt.Fprintf(&b, "import { %s } from './workers/%s.js';\n",
+			strings.Join(imports, ", "), toKebabCase(w.Name))
 	}
 	if len(schedules) > 0 {
 		b.WriteString("import { Queue } from 'bullmq';\n")
@@ -233,6 +266,8 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 			name := toCamelCase(w.Name)
 			queueName := name + "QueueName"
 			timeoutName := name + "TimeoutMs"
+			customBackoffStrategy := workerCustomBackoffStrategyExpr(w)
+			backoffStrategyName := name + "BackoffStrategy"
 			fmt.Fprintf(&b, "  new Worker(%s, async (job) => {\n", queueName)
 			b.WriteString("    try {\n")
 			fmt.Fprintf(&b, "      if (%s > 0) {\n", timeoutName)
@@ -241,14 +276,20 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 			fmt.Fprintf(&b, "        await %s(job.data);\n", name)
 			b.WriteString("      }\n")
 			b.WriteString("    } catch (error) {\n")
-			b.WriteString("      // Only compensate on the final attempt — BullMQ retries earlier failures.\n")
+			b.WriteString("      // Compensate ordinary processor exceptions only on the configured final attempt.\n")
+			b.WriteString("      // Stalled-job exhaustion happens outside this catch; UnrecoverableError can terminate before this configured final attempt.\n")
 			b.WriteString("      if (job.attemptsMade + 1 >= (job.opts.attempts ?? 1)) {\n")
 			fmt.Fprintf(&b, "        await %sOnFail(job.data, error instanceof Error ? error : new Error(String(error)));\n", name)
 			b.WriteString("      }\n")
 			b.WriteString("      throw error;\n")
 			b.WriteString("    }\n")
 			b.WriteString("  }, {\n")
-			b.WriteString("    connection: { url: env.REDIS_URL }\n")
+			if customBackoffStrategy != "" {
+				b.WriteString("    connection: { url: env.REDIS_URL },\n")
+				fmt.Fprintf(&b, "    settings: { backoffStrategy: %s }\n", backoffStrategyName)
+			} else {
+				b.WriteString("    connection: { url: env.REDIS_URL }\n")
+			}
 			b.WriteString("  });\n")
 		}
 		b.WriteString("\n")
@@ -371,12 +412,10 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	// Detect enqueue calls to know which BullMQ Queue instances to create.
 	enqueueQueues := map[string]bool{}
 	for _, ep := range endpoints {
-		walkEndpointStmts(ep.Stmts, func(s ast.ArrowStmt) {
-			if step, ok := s.(*ast.StepStmt); ok {
-				if fc, ok := step.Expr.(*ast.FnCall); ok && fc.Name == "enqueue" && len(fc.Args) >= 1 {
-					if name := exprToString(fc.Args[0]); name != "" {
-						enqueueQueues[name] = true
-					}
+		walkStmts(ep.Stmts, func(expr ast.Expr) {
+			if call, ok := expr.(*ast.FnCall); ok && call.Name == "enqueue" && len(call.Args) == 2 {
+				if name := exprToString(call.Args[0]); name != "" {
+					enqueueQueues[name] = true
 				}
 			}
 		})
@@ -407,6 +446,14 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
 	if len(enqueueQueues) > 0 {
 		b.WriteString("import { Queue } from 'bullmq';\n")
+		for _, queueName := range sortedKeys2(enqueueQueues) {
+			policy := g.queuePolicies[queueName]
+			fmt.Fprintf(
+				&b,
+				"import { %sJobOptions as %s } from '../workers/%s.js';\n",
+				toCamelCase(policy.WorkerName), workerJobOptionsIdentifier(policy.WorkerName), toKebabCase(policy.WorkerName),
+			)
+		}
 	}
 	if needsWebhookAuth {
 		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
@@ -490,7 +537,8 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	// Module-level BullMQ Queue instances for enqueue calls.
 	if len(enqueueQueues) > 0 {
 		for _, qName := range sortedKeys2(enqueueQueues) {
-			fmt.Fprintf(&b, "const _%sQueue = new Queue('%s', { connection: { url: env.REDIS_URL } });\n", toCamelCase(qName), qName)
+			policy := g.queuePolicies[qName]
+			fmt.Fprintf(&b, "const %s = new Queue(%q, { connection: { url: env.REDIS_URL } });\n", workerProducerQueueIdentifier(policy.WorkerName), qName)
 		}
 		b.WriteString("\n")
 	}

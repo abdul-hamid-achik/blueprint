@@ -1,6 +1,7 @@
 package js
 
 import (
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -91,6 +92,14 @@ func exprToString(e ast.Expr) string {
 	default:
 		return fmt.Sprintf("%v", e)
 	}
+}
+
+func workerProducerQueueIdentifier(workerName string) string {
+	return "_bpQueue_" + hex.EncodeToString([]byte(workerName))
+}
+
+func workerJobOptionsIdentifier(workerName string) string {
+	return "_bpJobOptions_" + hex.EncodeToString([]byte(workerName))
 }
 
 // exprToJS converts an AST expression into JavaScript source code.
@@ -323,12 +332,20 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			return "/* emit: missing args */"
 		case "enqueue":
 			// enqueue queue_name { data } — enqueue a job to a BullMQ queue.
-			// The _<queueName>Queue variable is created at module level by
-			// genRoute when any endpoint in the file uses enqueue.
+			// genRoute creates worker-derived producer identifiers so arbitrary
+			// static queue strings never become TypeScript identifiers.
 			if len(v.Args) >= 2 {
 				queueName := exprToString(v.Args[0])
 				data := exprToJSWithCtx(v.Args[1], ctx)
-				return fmt.Sprintf("await _%sQueue.add('job', %s)", toCamelCase(queueName), data)
+				if ctx != nil && ctx.generator != nil {
+					if policy, ok := ctx.generator.queuePolicies[queueName]; ok {
+						return fmt.Sprintf(
+							"await %s.add('job', %s, %s)",
+							workerProducerQueueIdentifier(policy.WorkerName), data, workerJobOptionsIdentifier(policy.WorkerName),
+						)
+					}
+				}
+				return "await Promise.reject(new Error(\"Blueprint internal error: unresolved enqueue policy\"))"
 			}
 			return "/* enqueue: missing args */"
 		case "map":
@@ -788,27 +805,57 @@ func constraintsToZod(constraints []*ast.Constraint_) string {
 
 // durationToMS converts a duration string like "5s" to milliseconds.
 func durationToMS(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasSuffix(s, "ms") {
-		return strings.TrimSuffix(s, "ms")
-	}
-	if strings.HasSuffix(s, "s") {
-		num := strings.TrimSuffix(s, "s")
-		return num + " * 1000"
-	}
-	if strings.HasSuffix(s, "min") {
-		num := strings.TrimSuffix(s, "min")
-		return num + " * 60 * 1000"
-	}
-	if strings.HasSuffix(s, "h") {
-		num := strings.TrimSuffix(s, "h")
-		return num + " * 60 * 60 * 1000"
+	number, multiplier, ok := splitDurationLiteral(s)
+	if ok {
+		switch multiplier {
+		case 1:
+			return number
+		case 1000:
+			return number + " * 1000"
+		case 60 * 1000:
+			return number + " * 60 * 1000"
+		case 60 * 60 * 1000:
+			return number + " * 60 * 60 * 1000"
+		case 24 * 60 * 60 * 1000:
+			return number + " * 24 * 60 * 60 * 1000"
+		}
 	}
 	// Check if the value is purely numeric (no unit) — pass through as-is
+	s = strings.TrimSpace(s)
 	if _, err := strconv.Atoi(s); err == nil {
 		return s
 	}
 	return fmt.Sprintf("/* INVALID DURATION: %s */ 0", s)
+}
+
+func splitDurationLiteral(s string) (string, int, bool) {
+	s = strings.TrimSpace(s)
+	units := []struct {
+		suffix     string
+		multiplier int
+	}{
+		{"hours", 60 * 60 * 1000},
+		{"hour", 60 * 60 * 1000},
+		{"days", 24 * 60 * 60 * 1000},
+		{"day", 24 * 60 * 60 * 1000},
+		{"min", 60 * 1000},
+		{"ms", 1},
+		{"h", 60 * 60 * 1000},
+		{"d", 24 * 60 * 60 * 1000},
+		{"s", 1000},
+	}
+	for _, unit := range units {
+		if !strings.HasSuffix(s, unit.suffix) {
+			continue
+		}
+		number := strings.TrimSpace(strings.TrimSuffix(s, unit.suffix))
+		value, err := strconv.ParseFloat(number, 64)
+		if err != nil || value < 0 {
+			return "", 0, false
+		}
+		return number, unit.multiplier, true
+	}
+	return "", 0, false
 }
 
 // sizeToBytes converts a size string like "10mb" to bytes.

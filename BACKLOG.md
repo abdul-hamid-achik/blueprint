@@ -15,13 +15,16 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   `@esbuild-kit`/esbuild advisories. npm's suggested downgrade to `0.18.1` is
   not compatible with the current Drizzle schema/tooling contract; move to a
   patched upstream line (or isolate the migration CLI) when one is available.
-- [ ] **Apply worker retry/backoff and cancellation semantics.** Generated
-  workers export retry/backoff metadata, but `enqueue` does not yet put
-  `attempts`/`backoff` into BullMQ job options, so jobs default to one attempt
-  and `on_fail` runs on the first failure. The timeout uses `Promise.race`
-  without cancelling in-flight handler work. Wire producer options from the
-  declared worker queue and define a cooperative cancellation contract before
-  calling this production-safe.
+- [~] **Complete worker cancellation and terminal-failure semantics.** REST
+  endpoint producers now resolve exactly one worker, translate `retry N` to
+  BullMQ `attempts: N + 1`, propagate fixed/exponential backoff, enforce `max`
+  through a generated custom strategy, and reject malformed, missing,
+  ambiguous, or unsupported producer contexts before returning files. Normal
+  processor failures compensate through `on_fail` only on the final declared
+  attempt. Remaining: define cooperative cancellation instead of the current
+  `Promise.race` timeout, and cover terminal stall exhaustion or early
+  `UnrecoverableError` paths that bypass the processor catch. _(retry/backoff
+  slice shipped 2026-07-14)_
 - [~] **Checker soundness.** Unbound/use-before-bind names, unknown data models,
   invalid lexical-scope leaks, accidental runtime globals, interpolation roots,
   duplicate declarations/local bindings/inputs, callable arity, reserved
@@ -30,8 +33,12 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   invalid ports, and malformed runtime/database/cache/storage values also fail
   before generators can fall back to defaults. Valid query fields, explicit
   REST/realtime path values, local middleware injections, input reassignment,
-  and implicit map results remain accepted. Remaining: deeper nested JSON/FK
-  leaf typing and general assignability. _(partially shipped 2026-07-14)_
+  and implicit map results remain accepted. Conservative primitive/enum/model/
+  list/map/optional/null assignability now covers input reassignments,
+  declared function and pipe arguments, known model writes, optional
+  `fetch`/`query ... first` results, and truthy-guard narrowing. Remaining:
+  deeper nested JSON/FK leaf typing, composite function-output recovery, and
+  broader expression/operator assignability. _(partially shipped 2026-07-14)_
 - [x] **Fail closed when a target cannot preserve semantics.** Effect rejects
   every unimplemented top-level AST kind. Python now uses an exhaustive
   declaration allowlist, rejects authored tests/fixtures, inline `fn logic`,

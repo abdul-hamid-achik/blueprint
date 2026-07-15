@@ -843,7 +843,7 @@ GET /api/items/:id {
 	expectNoErrors(t, errs)
 }
 
-func TestModelInputReassignmentClearsFieldMetadata(t *testing.T) {
+func TestModelInputReassignmentRejectsWrongTypeWithoutStaleFieldDiagnostic(t *testing.T) {
 	errs := check(t, headerWithDB+`
 model user {
   id uuid primary
@@ -858,9 +858,8 @@ fn stringify_user {
   }
 }
 `)
-	// Assignability is a future checker layer. This assertion specifically
-	// protects against reporting a stale user-field error after reassignment.
-	expectNoErrors(t, errs)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `cannot assign string "plain" to input "account" of type model user`)
 }
 
 func TestRestPathParameterRequiresInputBinding(t *testing.T) {
@@ -1579,6 +1578,326 @@ POST /api/test {
 `)
 	expectErrors(t, errs, 1)
 	expectErrorContaining(t, errs, `function "label_value" expects 2 arguments, got 1`)
+}
+
+func TestDeclaredFunctionCallArgumentTypes(t *testing.T) {
+	tests := []struct {
+		name      string
+		inputType string
+		argument  string
+		setup     string
+		wantError string
+	}{
+		{
+			name:      "primitive mismatch",
+			inputType: "int",
+			argument:  `"many"`,
+			wantError: `argument 1 to function "consume_value" expects int, got string "many"`,
+		},
+		{
+			name:      "numeric widening",
+			inputType: "float",
+			argument:  `1`,
+		},
+		{
+			name:      "unknown json stays conservative",
+			inputType: "int",
+			argument:  `payload`,
+			setup:     `<- payload json required`,
+		},
+		{
+			name:      "optional to required",
+			inputType: "string",
+			argument:  `value`,
+			setup:     `<- value string optional`,
+			wantError: `argument 1 to function "consume_value" expects string, got optional string`,
+		},
+		{
+			name:      "guard narrows optional",
+			inputType: "string",
+			argument:  `value`,
+			setup:     "<- value string optional\n  |> guard value -> 400 \"value required\"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := check(t, header+`
+fn consume_value {
+  <- value `+tt.inputType+`
+  -> string
+  impl node { module: "./internal/consume-value" }
+}
+
+POST /api/test {
+  `+tt.setup+`
+  |> result = consume_value(`+tt.argument+`)
+  -> 200 result
+}
+`)
+			if tt.wantError == "" {
+				expectNoErrors(t, errs)
+				return
+			}
+			expectErrors(t, errs, 1)
+			expectErrorContaining(t, errs, tt.wantError)
+			if !strings.Contains(errs[0].Hint, `Parameter "value" is declared at test.bp:`) {
+				t.Fatalf("expected parameter declaration hint, got %q", errs[0].Hint)
+			}
+		})
+	}
+}
+
+func TestDeclaredPipeCallArgumentTypeMismatch(t *testing.T) {
+	errs := check(t, header+`
+pipe require_enabled {
+  <- enabled bool
+  -> enabled
+}
+
+POST /api/test {
+  |> result = pipe require_enabled("yes")
+  -> 200 result
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `argument 1 to pipe "require_enabled" expects bool, got string "yes"`)
+}
+
+func TestTypedInputReassignmentAndCollectionLiterals(t *testing.T) {
+	tests := []struct {
+		name      string
+		typeExpr  string
+		value     string
+		wantError string
+	}{
+		{name: "primitive mismatch", typeExpr: "int", value: `"many"`, wantError: `cannot assign string "many" to input "value" of type int`},
+		{name: "optional accepts null", typeExpr: "string optional", value: `null`},
+		{name: "list accepts elements", typeExpr: "list(bool)", value: `[true, false]`},
+		{name: "list rejects element", typeExpr: "list(bool)", value: `[1]`, wantError: `cannot assign list(int) to input "value" of type list(bool)`},
+		{name: "map rejects value", typeExpr: "map(string, int)", value: `{ one: "wrong" }`, wantError: `cannot assign map(string, string) to input "value" of type map(string, int)`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := check(t, header+`
+POST /api/test {
+  <- value `+tt.typeExpr+`
+  |> value = `+tt.value+`
+  -> 200 value
+}
+`)
+			if tt.wantError == "" {
+				expectNoErrors(t, errs)
+				return
+			}
+			expectErrors(t, errs, 1)
+			expectErrorContaining(t, errs, tt.wantError)
+		})
+	}
+}
+
+func TestNamedEnumAndModelArgumentTypes(t *testing.T) {
+	errs := check(t, headerWithDB+`
+enum Status {
+  active
+  disabled
+}
+
+model user {
+  id uuid primary
+}
+
+model team {
+  id uuid primary
+}
+
+fn set_status {
+  <- status Status
+  -> string
+  impl node { module: "./internal/set-status" }
+}
+
+fn handle_user {
+  <- account user
+  -> string
+  impl node { module: "./internal/handle-user" }
+}
+
+POST /api/test {
+  |> valid = set_status("active")
+  |> invalid = set_status("missing")
+  |> group = fetch team("team-id")
+  |> handled = handle_user(group)
+  -> 200 handled
+}
+`)
+	expectErrors(t, errs, 2)
+	expectErrorContaining(t, errs, `argument 1 to function "set_status" expects enum Status, got string "missing"`)
+	expectErrorContaining(t, errs, `argument 1 to function "handle_user" expects model user, got optional model team`)
+}
+
+func TestModelWriteValueTypes(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model item {
+  id       uuid primary
+  quantity int
+  status   enum(active, disabled)
+  note     string optional
+  metadata json
+}
+
+POST /api/items {
+  <- metadata json required
+  |> saved = save item {
+    quantity: "many"
+    status: "missing"
+    note: null
+    metadata: metadata
+  }
+  -> 201 saved
+}
+`)
+	expectErrors(t, errs, 2)
+	expectErrorContaining(t, errs, `save field "quantity" on model "item" expects int, got string "many"`)
+	expectErrorContaining(t, errs, `save field "status" on model "item" expects enum(active, disabled), got string "missing"`)
+}
+
+func TestOptionalFetchAndQueryFirstRequirePositiveGuard(t *testing.T) {
+	errs := check(t, headerWithDB+`
+model user {
+  id   uuid primary
+  name string required
+}
+
+fn require_user {
+  <- account user
+  -> string
+  impl node { module: "./internal/require-user" }
+}
+
+fn require_name {
+  <- name string
+  -> string
+  impl node { module: "./internal/require-name" }
+}
+
+GET /unguarded {
+  |> existing = fetch user("user-id")
+  |> first = query user first
+  |> model_result = require_user(existing)
+  |> field_result = require_name(existing.name)
+  |> first_result = require_user(first)
+  -> 200 model_result
+}
+
+GET /guarded {
+  |> existing = fetch user("user-id")
+  |> guard existing -> 404 "Not found"
+  |> model_result = require_user(existing)
+  |> field_result = require_name(existing.name)
+  -> 200 field_result
+}
+
+GET /negated {
+  |> existing = fetch user("user-id")
+  |> guard not existing -> 404 "Expected absence"
+  |> model_result = require_user(existing)
+  -> 200 model_result
+}
+`)
+	expectErrors(t, errs, 4)
+	expectErrorContaining(t, errs, `argument 1 to function "require_user" expects model user, got optional model user`)
+	expectErrorContaining(t, errs, `argument 1 to function "require_name" expects string, got optional string`)
+
+	modelErrors := 0
+	for _, err := range errs {
+		if strings.Contains(err.Message, `function "require_user" expects model user, got optional model user`) {
+			modelErrors++
+		}
+	}
+	if modelErrors != 3 {
+		t.Fatalf("expected optional-model errors for fetch, query first, and negated guard; got %d: %v", modelErrors, errs)
+	}
+}
+
+func TestTryRecoverDoesNotLeakNarrowingOrReassignmentFacts(t *testing.T) {
+	errs := check(t, header+`
+fn require_value {
+  <- value string
+  -> string
+  impl node { module: "./internal/require-value" }
+}
+
+POST /api/test {
+  <- value      string optional
+  <- reassigned string optional
+  |> try {
+    |> guard value -> 400 "value required"
+    |> reassigned = "ready"
+    |> inside = require_value(value)
+  } recover {
+    |> recovered = require_value(value)
+  }
+  |> after_guard = require_value(value)
+  |> after_assign = require_value(reassigned)
+  -> 200 inside
+}
+`)
+	expectErrors(t, errs, 3)
+	expectErrorContaining(t, errs, `function "require_value" expects string, got optional string`)
+	for _, err := range errs {
+		if strings.Contains(err.Message, `unbound identifier "inside"`) {
+			t.Fatalf("new try binding must remain visible after recover: %v", errs)
+		}
+	}
+}
+
+func TestHeterogeneousCompositeLiteralsUseExpectedMemberTypes(t *testing.T) {
+	errs := check(t, header+`
+fn require_numbers {
+  <- values list(int)
+  -> string
+  impl node { module: "./internal/require-numbers" }
+}
+
+fn require_scores {
+  <- values map(string, int)
+  -> string
+  impl node { module: "./internal/require-scores" }
+}
+
+POST /api/test {
+  <- numbers list(int)
+  <- scores map(string, int)
+  |> numbers = [1, "wrong"]
+  |> scores = { first: 1, second: "wrong" }
+  |> list_result = require_numbers([1, "wrong"])
+  |> map_result = require_scores({ first: 1, second: "wrong" })
+  -> 200 list_result
+}
+`)
+	expectErrors(t, errs, 4)
+	expectErrorContaining(t, errs, `input "numbers" of type list(int)`)
+	expectErrorContaining(t, errs, `input "scores" of type map(string, int)`)
+	expectErrorContaining(t, errs, `argument 1 to function "require_numbers" expects list(int)`)
+	expectErrorContaining(t, errs, `argument 1 to function "require_scores" expects map(string, int)`)
+}
+
+func TestInlineWhenValidatesTypedInputAssignmentOnly(t *testing.T) {
+	errs := check(t, header+`
+POST /api/test {
+  <- apply       bool required
+  <- enabled     bool required
+  <- candidate   string optional
+  <- destination string required
+  <- filters     json required
+  |> when apply: enabled = "yes"
+  |> when candidate: destination = candidate
+  |> when candidate: filters.status = candidate
+  -> 200 destination
+}
+`)
+	expectErrors(t, errs, 1)
+	expectErrorContaining(t, errs, `cannot assign string "yes" to input "enabled" of type bool`)
 }
 
 func TestPipeCallArity(t *testing.T) {

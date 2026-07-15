@@ -461,17 +461,26 @@ export async function validateImage(file: File): Promise<File> {
 
 ### `src/workers/<name>.ts`
 
-BullMQ worker definitions.
+Worker handler and delivery-policy exports. `src/index.ts` constructs the
+BullMQ `Worker`; REST route producers import the matching job options and pass
+them to `Queue.add`.
 
 ```typescript
-import { Worker } from 'bullmq';
-import { db } from '../lib/db.js';
+export const watermarkQueueName = "watermark_jobs";
+export const watermarkJobOptions = {
+  attempts: 4,
+  backoff: { type: "exponential", delay: 1000 },
+};
 
-new Worker('watermark_jobs', async (job) => {
-  const { jobId } = job.data;
+export async function watermark(data: unknown): Promise<void> {
   // ... worker logic
-}, { connection: redis });
+}
 ```
+
+Blueprint defines `retry N` as N retries after the initial attempt. Capped
+fixed/exponential policies also export a custom strategy that `src/index.ts`
+wires into BullMQ worker settings. Endpoint enqueue calls must resolve to one
+worker; unsupported producer contexts fail before output is written.
 
 ### `src/schedules/<name>.ts`
 

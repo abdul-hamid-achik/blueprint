@@ -7,6 +7,7 @@ import (
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
 	"github.com/abdul-hamid-achik/blueprint/internal/codegen"
+	"github.com/abdul-hamid-achik/blueprint/internal/resolve"
 )
 
 // fnSignatureTS returns the typed TypeScript parameter list and return type
@@ -342,18 +343,28 @@ func (g *Generator) genWorker(w *ast.Worker) codegen.OutputFile {
 	queueName := workerQueueName(w)
 	timeoutMS := workerTimeoutMS(w)
 	retryCount := workerRetryCount(w)
-	backoffExpr := workerBackoffExpr(w)
+	backoffExpr := "null"
+	if retryCount > 0 {
+		backoffExpr = workerBackoffExpr(w)
+	}
+	jobOptionsExpr := workerJobOptionsExpr(w)
+	backoffStrategyExpr := workerCustomBackoffStrategyExpr(w)
+	if backoffStrategyExpr == "" {
+		backoffStrategyExpr = "null"
+	}
 	fmt.Fprintf(&b, "export const %sQueueName = %q;\n", name, queueName)
 	fmt.Fprintf(&b, "export const %sTimeoutMs = %d;\n", name, timeoutMS)
 	fmt.Fprintf(&b, "export const %sRetryCount = %d;\n", name, retryCount)
-	fmt.Fprintf(&b, "export const %sBackoff = %s;\n\n", name, backoffExpr)
+	fmt.Fprintf(&b, "export const %sBackoff = %s;\n", name, backoffExpr)
+	fmt.Fprintf(&b, "export const %sJobOptions = %s;\n", name, jobOptionsExpr)
+	fmt.Fprintf(&b, "export const %sBackoffStrategy = %s;\n\n", name, backoffStrategyExpr)
 
 	// Worker inputs (`<- name type`) are unpacked from the BullMQ job payload —
 	// both the handler and on_fail receive the same `data` param, so both get
 	// the same destructuring assignments up front.
 	inputs := workerInputStmts(w.Stmts)
-	// on_fail runs without any of the handler's fetched records (BullMQ's
-	// failed-job callback only ever sees the raw job payload), so bare
+	// on_fail compensation runs from the generated processor catch without any
+	// of the handler's fetched records; it only receives the raw job payload, so bare
 	// `update <model> { ... }` / `delete <model>` calls referencing a model
 	// whose id arrived as a `<model>_id` input need a synthetic bound
 	// reference to resolve their WHERE id.
@@ -432,19 +443,12 @@ func (g *Generator) workerIDBindings(inputs []*ast.InputStmt) map[string]string 
 }
 
 func workerQueueName(w *ast.Worker) string {
-	for _, meta := range w.Meta {
-		if meta.Kind != "trigger" || meta.Value == nil {
-			continue
-		}
-		if fn, ok := meta.Value.(*ast.FnCall); ok && fn.Name == "queue" && len(fn.Args) > 0 {
-			if name := exprToString(fn.Args[0]); name != "" {
-				return name
-			}
-		}
-		if name := exprToString(meta.Value); name != "" {
-			return name
-		}
+	policy, err := resolve.ResolveWorkerQueuePolicy(w)
+	if err == nil {
+		return policy.Queue
 	}
+	// Files validates every trigger before emission; this fallback keeps direct
+	// helper tests deterministic without inventing a second resolution rule.
 	return w.Name
 }
 
@@ -494,6 +498,158 @@ func workerBackoffExpr(w *ast.Worker) string {
 	return "null"
 }
 
+func workerJobOptionsExpr(w *ast.Worker) string {
+	retryCount := workerRetryCount(w)
+	parts := []string{fmt.Sprintf("attempts: %d", retryCount+1)}
+	if retryCount > 0 {
+		if backoff := workerBullMQBackoffExpr(w); backoff != "" {
+			parts = append(parts, "backoff: "+backoff)
+		}
+	}
+	return fmt.Sprintf("{ %s }", strings.Join(parts, ", "))
+}
+
+type workerBackoffSpec struct {
+	strategy string
+	delay    string
+	max      string
+	hasMax   bool
+}
+
+// workerBullMQBackoffExpr translates Blueprint's descriptive backoff keys to
+// BullMQ's producer option names. A max cap cannot be expressed by BullMQ's
+// built-in BackoffOptions, so capped policies select a generated custom type;
+// genIndex installs the matching Worker settings callback.
+func workerBullMQBackoffExpr(w *ast.Worker) string {
+	spec, ok := workerBackoffPolicy(w)
+	if !ok {
+		return ""
+	}
+	strategy := spec.strategy
+	if spec.hasMax {
+		strategy = "blueprint_capped_" + strategy
+	}
+	return fmt.Sprintf("{ type: %q, delay: %s }", strategy, spec.delay)
+}
+
+func workerCustomBackoffStrategyExpr(w *ast.Worker) string {
+	spec, ok := workerBackoffPolicy(w)
+	if !ok || !spec.hasMax || workerRetryCount(w) == 0 {
+		return ""
+	}
+
+	typeName := "blueprint_capped_" + spec.strategy
+	delay := spec.delay
+	if spec.strategy == "exponential" {
+		delay = fmt.Sprintf("%s * Math.pow(2, Math.max(attemptsMade - 1, 0))", delay)
+	}
+	return fmt.Sprintf(
+		"(attemptsMade: number, type?: string): number => { if (type !== %q) throw new Error('Unknown Blueprint backoff strategy: ' + type); return Math.min(%s, %s); }",
+		typeName, delay, spec.max,
+	)
+}
+
+func workerBackoffPolicy(w *ast.Worker) (workerBackoffSpec, bool) {
+	for _, meta := range w.Meta {
+		if meta.Kind != "retry" || len(meta.Extra) == 0 {
+			continue
+		}
+		spec := workerBackoffSpec{strategy: "fixed"}
+		for _, kv := range meta.Extra {
+			switch kv.Key {
+			case "strategy":
+				if value := exprToString(kv.Value); value != "" {
+					spec.strategy = value
+				}
+			case "base", "delay":
+				spec.delay = exprToJS(kv.Value)
+			case "max":
+				spec.max = exprToJS(kv.Value)
+				spec.hasMax = true
+			}
+		}
+		return spec, true
+	}
+	return workerBackoffSpec{}, false
+}
+
+func validateWorkerDeliveryPolicy(w *ast.Worker) error {
+	seenRetry := false
+	for _, meta := range w.Meta {
+		if meta.Kind != "retry" {
+			continue
+		}
+		if seenRetry {
+			return fmt.Errorf("worker %q has duplicate retry metadata", w.Name)
+		}
+		seenRetry = true
+		count, ok := nonNegativeWorkerInt(meta.Value)
+		if !ok {
+			return fmt.Errorf("worker %q retry must be a non-negative integer counting additional attempts", w.Name)
+		}
+
+		seenKeys := make(map[string]bool)
+		seenDelay := false
+		strategy := "fixed"
+		for _, kv := range meta.Extra {
+			if seenKeys[kv.Key] || ((kv.Key == "base" || kv.Key == "delay") && seenDelay) {
+				return fmt.Errorf("worker %q backoff has duplicate %q configuration", w.Name, kv.Key)
+			}
+			seenKeys[kv.Key] = true
+			switch kv.Key {
+			case "strategy":
+				strategy = exprToString(kv.Value)
+				if strategy != "fixed" && strategy != "exponential" {
+					return fmt.Errorf("worker %q backoff strategy %q is unsupported; use fixed or exponential", w.Name, strategy)
+				}
+			case "base", "delay":
+				seenDelay = true
+				if !isNonNegativeWorkerDelay(kv.Value) {
+					return fmt.Errorf("worker %q backoff %s must be a non-negative integer millisecond value or duration", w.Name, kv.Key)
+				}
+			case "max":
+				if !isNonNegativeWorkerDelay(kv.Value) {
+					return fmt.Errorf("worker %q backoff max must be a non-negative integer millisecond value or duration", w.Name)
+				}
+			default:
+				return fmt.Errorf("worker %q backoff option %q is unsupported; use strategy, base, delay, or max", w.Name, kv.Key)
+			}
+		}
+		if len(meta.Extra) > 0 && !seenDelay {
+			return fmt.Errorf("worker %q backoff requires base or delay", w.Name)
+		}
+
+		if count == 0 && len(meta.Extra) > 0 {
+			// The declaration is valid but intentionally inert: no retry means
+			// there is no delay for BullMQ to schedule.
+			return nil
+		}
+	}
+	return nil
+}
+
+func nonNegativeWorkerInt(expr ast.Expr) (int, bool) {
+	lit, ok := expr.(*ast.IntLit)
+	if !ok {
+		return 0, false
+	}
+	value, err := strconv.Atoi(lit.Value)
+	return value, err == nil && value >= 0
+}
+
+func isNonNegativeWorkerDelay(expr ast.Expr) bool {
+	switch value := expr.(type) {
+	case *ast.IntLit:
+		n, err := strconv.Atoi(value.Value)
+		return err == nil && n >= 0
+	case *ast.DurationLit:
+		_, _, ok := splitDurationLiteral(value.Value)
+		return ok
+	default:
+		return false
+	}
+}
+
 func workerMetaInt(e ast.Expr) int {
 	if e == nil {
 		return 0
@@ -505,31 +661,15 @@ func workerMetaInt(e ast.Expr) int {
 }
 
 func durationLiteralToMS(value string) int {
-	value = strings.TrimSpace(value)
-	var multiplier int
-	var suffix string
-	switch {
-	case strings.HasSuffix(value, "ms"):
-		suffix = "ms"
-		multiplier = 1
-	case strings.HasSuffix(value, "min"):
-		suffix = "min"
-		multiplier = 60 * 1000
-	case strings.HasSuffix(value, "h"):
-		suffix = "h"
-		multiplier = 60 * 60 * 1000
-	case strings.HasSuffix(value, "s"):
-		suffix = "s"
-		multiplier = 1000
-	default:
+	number, multiplier, ok := splitDurationLiteral(value)
+	if !ok {
 		return 0
 	}
-	num := strings.TrimSuffix(value, suffix)
-	n, err := strconv.Atoi(num)
-	if err != nil {
+	n, err := strconv.ParseFloat(number, 64)
+	if err != nil || n < 0 {
 		return 0
 	}
-	return n * multiplier
+	return int(n * float64(multiplier))
 }
 
 // --- Schedules ---

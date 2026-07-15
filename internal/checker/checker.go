@@ -1032,6 +1032,8 @@ func (c *Checker) declareArrowInput(scope *Scope, input *ast.InputStmt) {
 		if existing.Kind == SymInput && existing.Loc.Line == 0 {
 			existing.Loc = input.Loc
 			existing.Node = c.modelNodeForType(input.Type)
+			existing.value = c.declaredValueType(input.Type, input.Constraints)
+			existing.declared = existing.value
 			return
 		}
 		hint := "Remove or rename one of the <- input declarations"
@@ -1041,11 +1043,14 @@ func (c *Checker) declareArrowInput(scope *Scope, input *ast.InputStmt) {
 		c.addError(input.Loc, fmt.Sprintf("duplicate input %q", input.Name), hint)
 		return
 	}
+	declared := c.declaredValueType(input.Type, input.Constraints)
 	scope.Define(&Symbol{
-		Name: input.Name,
-		Kind: SymInput,
-		Loc:  input.Loc,
-		Node: c.modelNodeForType(input.Type),
+		Name:     input.Name,
+		Kind:     SymInput,
+		Loc:      input.Loc,
+		Node:     c.modelNodeForType(input.Type),
+		value:    declared,
+		declared: declared,
 	})
 }
 
@@ -1103,12 +1108,23 @@ func (c *Checker) bindArrowModelValue(scope *Scope, name, modelName string, loc 
 	symbol := &Symbol{Name: name, Kind: SymVariable, Loc: loc}
 	if model := c.global.Lookup(modelName); model != nil && model.Kind == SymModel {
 		symbol.Node = model.Node
+		symbol.value = valueType{kind: valueModel, name: modelName}
 	}
 	if existing, ok := scope.symbols[name]; ok {
 		existing.Node = symbol.Node
+		existing.value = symbol.value
 		return
 	}
 	scope.Define(symbol)
+}
+
+func setArrowValueType(scope *Scope, name string, typ valueType) {
+	if scope == nil || name == "" {
+		return
+	}
+	if symbol := scope.symbols[name]; symbol != nil {
+		symbol.value = typ
+	}
 }
 
 func cloneArrowScope(scope *Scope) *Scope {
@@ -1128,6 +1144,13 @@ func mergeArrowScope(dst, src *Scope) {
 		return
 	}
 	for name, symbol := range src.symbols {
+		if _, existedBeforeTry := dst.symbols[name]; existedBeforeTry {
+			// The recover path starts from the pre-try facts, so a narrowing or
+			// reassignment that happened only on the successful try path is not
+			// valid after the construct. New try bindings remain visible to match
+			// the language's existing try-result convention.
+			continue
+		}
 		copy := *symbol
 		dst.symbols[name] = &copy
 	}
@@ -1166,6 +1189,7 @@ func (c *Checker) checkArrowStmtExprsInScope(stmts []ast.ArrowStmt, scope *Scope
 		case *ast.StepStmt:
 			c.checkExpr(s.Expr)
 			c.checkLocalExpr(s.Expr, scope)
+			actualType := c.inferValueType(s.Expr, scope)
 			modelName := c.arrowExprModelName(s.Expr, scope)
 			if call, ok := s.Expr.(*ast.FnCall); ok && call.Name == "inject" && len(call.Args) >= 2 {
 				if alias, ok := call.Args[1].(*ast.Ident); ok {
@@ -1179,11 +1203,16 @@ func (c *Checker) checkArrowStmtExprsInScope(stmts []ast.ArrowStmt, scope *Scope
 					} else {
 						localBindings[name] = loc
 						c.bindArrowModelValue(scope, name, modelName, loc)
+						setArrowValueType(scope, name, actualType)
 					}
 				}
 				continue
 			}
 			if input := scope.symbols[s.Binding]; input != nil && input.Kind == SymInput {
+				expectedType := input.declared
+				if !c.exprAssignableTo(expectedType, s.Expr, scope) {
+					c.addAssignmentTypeError(s.Loc, s.Binding, input, expectedType, actualType, s.Expr)
+				}
 				// Rebinding an input is assignment, not a second declaration. Keep
 				// its SymInput kind so subsequent reassignments remain valid.
 				if modelName != "" {
@@ -1193,6 +1222,10 @@ func (c *Checker) checkArrowStmtExprsInScope(stmts []ast.ArrowStmt, scope *Scope
 					// unrelated value; do not retain stale field metadata.
 					input.Node = nil
 				}
+				// Keep the flow-sensitive current value separate from the declared
+				// assignment contract. This avoids stale model field facts after an
+				// invalid write without weakening checks on later reassignments.
+				input.value = actualType
 				continue
 			}
 			if previous, duplicate := localBindings[s.Binding]; duplicate {
@@ -1205,17 +1238,22 @@ func (c *Checker) checkArrowStmtExprsInScope(stmts []ast.ArrowStmt, scope *Scope
 			} else {
 				bindArrowName(scope, s.Binding, SymVariable, s.Loc)
 			}
+			setArrowValueType(scope, s.Binding, actualType)
 		case *ast.GuardStmt:
 			c.checkExpr(s.Condition)
 			c.checkLocalExpr(s.Condition, scope)
+			c.narrowTruthyValue(scope, s.Condition)
 		case *ast.WhenStmt:
 			c.checkExpr(s.Condition)
 			c.checkLocalExpr(s.Condition, scope)
+			whenScope := cloneArrowScope(scope)
+			c.narrowTruthyValue(whenScope, s.Condition)
 			c.checkExpr(s.Inline)
-			c.checkLocalExpr(s.Inline, scope)
+			c.checkLocalExpr(s.Inline, whenScope)
+			c.checkInlineWhenInputAssignment(s.Inline, whenScope)
 			// Code generators emit block-form `when` bodies in a lexical block;
 			// declarations made there are unavailable afterward or to siblings.
-			c.checkArrowStmtExprsInScope(s.Body, cloneArrowScope(scope))
+			c.checkArrowStmtExprsInScope(s.Body, whenScope)
 		case *ast.OutputStmt:
 			c.checkExpr(s.Value)
 			c.checkLocalExpr(s.Value, scope)
@@ -1300,8 +1338,14 @@ func (c *Checker) arrowExprModelName(expr ast.Expr, scope *Scope) string {
 }
 
 func arrowSymbolModelName(symbol *Symbol) string {
-	if symbol == nil || symbol.Node == nil {
+	if symbol == nil {
 		return ""
+	}
+	if symbol.value.kind == valueModel {
+		return symbol.value.name
+	}
+	if symbol.value.kind == valueList && symbol.value.element != nil && symbol.value.element.kind == valueModel {
+		return symbol.value.element.name
 	}
 	switch node := symbol.Node.(type) {
 	case *ast.Model:
@@ -1460,6 +1504,7 @@ func (c *Checker) checkLocalCallArgs(call *ast.FnCall, scope *Scope) {
 	if call == nil {
 		return
 	}
+	c.checkCallableArgumentTypes(call, scope)
 	switch call.Name {
 	case "query", "fetch", "save", "update", "delete", "count", "seed", "import_bundle", "export_bundle":
 		c.checkDataOperationRefs(call, scope)
@@ -1520,6 +1565,10 @@ func (c *Checker) checkLocalCallArgs(call *ast.FnCall, scope *Scope) {
 				c.bindArrowModelValue(itemScope, modelName, modelName, call.Loc)
 			} else {
 				bindArrowName(itemScope, "item", SymVariable, call.Loc)
+				collectionType := c.inferValueType(call.Args[0], scope)
+				if collectionType.kind == valueList && collectionType.element != nil {
+					setArrowValueType(itemScope, "item", *collectionType.element)
+				}
 			}
 			c.checkLocalExpr(call.Args[1], itemScope)
 		}
@@ -1604,7 +1653,9 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 						fmt.Sprintf("%s cannot write computed field %q on model %q", call.Name, entry.Key, fieldModelName),
 						"Remove the computed field from the write body; it is derived from persisted fields",
 					)
+					continue
 				}
+				c.checkModelWriteValueType(call.Name, fieldModelName, entry, scope)
 			}
 		}
 	}
