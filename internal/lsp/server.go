@@ -134,6 +134,12 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) error {
 		return s.handleHover(msg)
 	case "textDocument/definition":
 		return s.handleDefinition(msg)
+	case "textDocument/references":
+		return s.handleReferences(msg)
+	case "textDocument/prepareRename":
+		return s.handlePrepareRename(msg)
+	case "textDocument/rename":
+		return s.handleRename(msg)
 	case "textDocument/completion":
 		return s.handleCompletion(msg)
 	case "textDocument/codeAction":
@@ -209,6 +215,8 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) error {
 			"textDocumentSync":           1, // Full document sync
 			"hoverProvider":              true,
 			"definitionProvider":         true,
+			"referencesProvider":         true,
+			"renameProvider":             map[string]interface{}{"prepareProvider": true},
 			"workspaceSymbolProvider":    true,
 			"documentSymbolProvider":     true,
 			"documentFormattingProvider": true,

@@ -12,6 +12,10 @@ Editor and language-server support for the [Blueprint](https://github.com/abdul-
 - Context-aware completion for declarations, types, constraints, models,
   middleware, steps, local values, environment names, and model fields
 - Hover and go-to-definition for Blueprint symbols
+- Find all references and rename for models, enums, types, `fn`, `pipe`,
+  middleware, external services, and endpoint-local bindings (`<-` inputs and
+  `|>` bindings), scoped to the open document; rename refuses names that are
+  keywords, reserved, invalid, or colliding
 - Workspace symbol search across `.bp` files
 - Document outline (Outline view and `Cmd+Shift+O` / `Ctrl+Shift+O`) listing
   every declaration, with model fields and enum variants nested underneath
