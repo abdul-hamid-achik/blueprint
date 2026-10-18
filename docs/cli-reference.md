@@ -967,6 +967,16 @@ Provides IDE support for Blueprint files:
 - Syntax + semantic error diagnostics (`publishDiagnostics`, with structured codes)
 - Context-aware hover (models, `fn`/`pipe`/`middleware`, fields, `@` intents, data-op steps)
 - Go-to-definition (`textDocument/definition` — model, `fn`/`pipe`/`middleware`, and `<model>.<field>` references)
+- Find references (`textDocument/references`) and rename
+  (`textDocument/prepareRename`, `textDocument/rename`) for models, enums,
+  types, `fn`, `pipe`, middleware, external services, and endpoint-local
+  bindings. Strings, intents, comments, and field names are never touched.
+  Renaming a `<-` input that names a `:param` path segment renames the segment
+  too. Rename is refused for a document with parse errors, for keywords and
+  reserved names, for names that collide with or would be captured by another
+  symbol, and for any edit after which the checker reports a new error
+- Quick-fix code actions (`textDocument/codeAction`) that apply the
+  did-you-mean suggestion attached to a diagnostic
 - Context-aware completion for declarations, types, constraints, settings,
   middleware, data operations, local bindings, fields, env/secret names,
   computed expressions, and ref-backed `with(...)` relationships
@@ -989,8 +999,8 @@ command directly at `bp lsp`.
 
 Current limits are deliberate: synchronization is full-document, completion
 uses the open document's parser/source context and has no resolve request,
-workspace symbols scan local `file:` roots only, and rename/references/code
-actions are not implemented. Workspace scanning ignores common dependency,
+workspace symbols scan local `file:` roots only, and references and rename
+cover the open document only (no cross-file rename). Workspace scanning ignores common dependency,
 generated, build, virtual-environment, and VCS directories; an unsaved open
 document takes precedence over its on-disk copy.
 

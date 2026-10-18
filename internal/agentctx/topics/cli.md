@@ -24,7 +24,7 @@
 | `bp context [topic] [--format md\|json]` | This command. Agent-facing language + CLI surface, by topic. |
 | `bp llms [--out <file>]` | The complete agent/LLM guide — every topic in one document (the `llms.txt` for bp). |
 | `bp doctor` | Check toolchain deps. |
-| `bp lsp` | Start the stdio language server: diagnostics, hover, definition, completion, local-workspace symbols, document formatting, document outline, and folding ranges. |
+| `bp lsp` | Start the stdio language server: diagnostics with quick fixes, hover, definition, references, open-document rename, completion, local-workspace symbols, document formatting, document outline, and folding ranges. |
 | `bp stats <file.bp>` | Code stats. |
 | `bp version` | Print version. |
 

@@ -523,11 +523,11 @@ See [CONTRIBUTING.md](https://github.com/abdul-hamid-achik/blueprint/blob/main/C
 
 ## Roadmap
 
-LSP support (including completion, workspace symbols, and a VS Code client) and
-multi-target codegen (Python and Effect) have already shipped — run `bp lsp`,
+LSP support (including completion, references, rename, quick fixes, formatting,
+workspace symbols, and a VS Code client) and multi-target codegen (Python and Effect) have already shipped — run `bp lsp`,
 or build with `--target python` / `--target effect`. See
 [Roadmap](./roadmap.md) for what's still planned, including:
 - Package registry
 - Managed hosting
-- Rename/references and deeper cross-file editor semantics
+- Cross-file rename and deeper cross-file editor semantics
 - Join aliases/nested loading and Python relationship/computed-field parity

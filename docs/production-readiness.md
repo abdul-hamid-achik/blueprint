@@ -56,7 +56,7 @@ Errors point at the source location, suggest a fix, and link to the docs.
 | Errors carry structured codes (L###/P###/C###/...) | top 80% of common errors covered | `internal/diag` + `docs/error-codes.md`; L001, P001, C001–C015 covered today |
 | `bp fmt` is idempotent (`fmt(fmt(x)) == fmt(x)`) | 100% of `testdata/valid/*` | CI step `bp fmt --check` (extend to all examples) |
 | `bp lint` produces 0 warnings on every shipped example | 100% | CI step "Lint examples" |
-| LSP provides diagnostics, definition, hover, completion, workspace symbols, and a launchable editor client | shipped over stdio; VS Code client starts/restarts configurable `bp lsp` | `internal/lsp` completion/workspace/handler tests + `editors/vscode-blueprint` client tests + manual probe |
+| LSP provides diagnostics, quick fixes, definition, references, rename, hover, completion, formatting, outline, folding, workspace symbols, and a launchable editor client | shipped over stdio; references/rename are scoped to the open document; VS Code client starts/restarts configurable `bp lsp` | `internal/lsp` completion/workspace/handler/rename tests + `editors/vscode-blueprint` client tests + manual probe |
 | `bp import` never implies behavior preservation | every recovered handler is reported and becomes TODO/501 | `internal/importer` + `cmd/bp` import tests |
 | `bp doctor` checks every external dependency the toolchain assumes | bun, node, postgres, drizzle-kit | Manual probe per release |
 
@@ -110,7 +110,7 @@ table and the CHANGELOG together.
 | 3 | Errors have `Hint:` on every kind | ✅ green; every checker diagnostic path supplies a hint | 2026-07-14 |
 | 3 | Structured error codes | ✅ green (L001, P001, C001–C051 documented + emitted; every checker error is coded; `bp explain` shipped) | 2026-05-29 |
 | 3 | `bp fmt --check` on all examples | ✅ green — column alignment shipped (v0.14.0); all 5 examples pass `bp fmt --check`; CI gate extended to all `examples/*.bp` | 2026-07-10 |
-| 3 | LSP feature depth | ✅ diagnostics, definition, hover, context-aware completion, local-workspace symbols, workspace-folder updates, and packaged configurable VS Code stdio client | 2026-07-14 |
+| 3 | LSP feature depth | ✅ diagnostics, quick fixes, definition, references, open-document rename, hover, context-aware completion, formatting, outline, folding, local-workspace symbols, workspace-folder updates, and packaged configurable VS Code stdio client | 2026-10-18 |
 | 3 | Honest TypeScript import scaffold | ✅ static Drizzle/Hono plus transport-compatible `zValidator` facts only; nullable/type-changing Zod fields skip, Drizzle SQL/options loss warns, and all handlers are reported TODO/501 stubs | 2026-07-14 |
 | 3 | `bp doctor` checks every external dep | ✅ probes drizzle-kit, tsc, python3, uv, alembic, pytest in addition to bun/node/postgres/redis/git; version-parser fixed (Redis no longer reports as `redis-cli`, Docker no longer keeps trailing comma) | 2026-05-29 |
 | 3 | `bp lint` produces 0 warnings on every shipped example | ✅ green; two new rules ship in v0.10 (`where-predicate-self-equal`, `unused-input`) | 2026-05-29 |

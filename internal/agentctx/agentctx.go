@@ -303,7 +303,7 @@ func commandRegistry() []CommandInfo {
 		{"context", "bp context [topic] [--format md|json]", "Agent-facing language + CLI surface, by topic."},
 		{"llms", "bp llms [--out <file>]", "Print the complete one-shot agent/LLM guide (every topic in one document); --out writes an llms.txt."},
 		{"doctor", "bp doctor", "Check toolchain dependencies."},
-		{"lsp", "bp lsp", "Start stdio LSP diagnostics, hover, definition, completion, and local-workspace symbols."},
+		{"lsp", "bp lsp", "Start stdio LSP diagnostics, quick fixes, hover, definition, references, rename, completion, formatting, outline, folding, and local-workspace symbols."},
 		{"stats", "bp stats <file.bp> [--json]", "Code statistics."},
 		{"completion", "bp completion <bash|zsh|fish>", "Generate a shell completion script."},
 		{"version", "bp version", "Print version."},

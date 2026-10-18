@@ -22,9 +22,10 @@ Blueprint is a Go-based compiler. Source files use the `.bp` DSL — a declarati
 - `internal/codegen/{js,python,common}` — backends. `common` holds target-agnostic string/path helpers.
 - `internal/importer` — static TypeScript structure recovery for `bp import`;
   all imperative handlers become reported TODO/501 stubs.
-- `internal/lsp` + `editors/vscode-blueprint` — stdio diagnostics, hover,
-  definition, completion, workspace symbols, formatting, document outline,
-  folding, and the packaged VS Code client.
+- `internal/lsp` + `editors/vscode-blueprint` — stdio diagnostics with quick
+  fixes, hover, definition, references, open-document rename, completion,
+  workspace symbols, formatting, document outline, folding, and the packaged
+  VS Code client.
 - `internal/diag` — diagnostic formatter; `internal/diag/error-codes.md` is the canonical doc for `Cxxx`/`Pxxx`/`Lxxx`.
 - `docs/` — VitePress site source (`language-reference.md`, `cli-reference.md`, `error-codes.md`, `architecture.md`, etc).
 
