@@ -1331,6 +1331,11 @@ file.type in ["image/png", "image/jpeg"]
 
 Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`
 
+The operands must be compatible: numbers (`int`, `float`, `money`) compare with
+each other, strings with strings, and bools with bools. The checker reports
+`C050` when both sides have a known type and the pair is incompatible, for
+example `name > 3` with a string `name`. Values of unknown type are not checked.
+
 ### Logical
 
 ```bp

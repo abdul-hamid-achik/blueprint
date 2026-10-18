@@ -26,7 +26,7 @@ Codes are namespaced by the pass that emits them:
 |--------|------|-------|
 | `L###` | Lexer | Token-level errors. `L001` documented below. |
 | `P###` | Parser | Syntax errors. `P001`-`P002` documented below; broader coverage in progress. |
-| `C###` | Checker | Semantic errors. `C001`–`C049` documented below. |
+| `C###` | Checker | Semantic errors. `C001`–`C050` documented below. |
 | `R###` | Resolver | Reserved. Resolver does not currently emit user-facing errors. |
 | `G###` | Codegen | Reserved. |
 
@@ -1208,6 +1208,43 @@ GET /api/posts {
 ```
 
 Rename the relationship or the colliding field.
+
+### C050 — operator applied to incompatible operand types
+
+An operator's two operands both have a known type, and the operator does not
+accept that pair. The checker reports the cases it can prove:
+
+- a comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`, `in`) between a string and a
+  number, a bool and a non-bool, a number and a timestamp, or two different
+  named enums;
+- arithmetic on a bool, or `+`, `-`, `*`, `/` between a string and a number
+  (`+` is the one operator that joins two strings);
+- unary `-` on a bool or a string;
+- the same rules for `where(...)` predicates, where a column name takes that
+  column's declared type.
+
+Numbers (`int`, `float`, `money`) mix freely. An optional value is checked by
+its underlying type, and comparisons with `null` are never reported. Enum values
+compared with strings are not reported either. Anything whose type is unknown
+(`json`, model values, call results without a declared output) is never
+reported.
+
+```bp
+blueprint "todo-api" {
+  version "1.0.0"
+  runtime node
+}
+
+GET /api/check {
+  <- name  string required
+  <- limit int required
+  |> guard name > limit -> 400 "name too long"   # C050: cannot compare string with int
+  -> 200 "ok"
+}
+```
+
+Compare values of the same kind. To build text from other values, use string
+interpolation (`"{name} has {count} items"`) rather than `+`.
 
 ---
 

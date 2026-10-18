@@ -196,6 +196,9 @@ const (
 	// CodeRelationshipFieldCollision = a with(...) relationship name collides
 	// with a persisted field on the source model.
 	CodeRelationshipFieldCollision = "C049"
+	// CodeOperatorTypeMismatch = an operator is applied to operands whose
+	// types are both known and incompatible (for example "abc" > 3).
+	CodeOperatorTypeMismatch = "C050"
 )
 
 // --- Pass 1: Collect top-level declarations ---
@@ -541,7 +544,7 @@ func (c *Checker) inferComputedExprType(expr ast.Expr, fields map[string]compute
 				return operand, true
 			}
 		}
-		c.addErrorCode(e.Loc, CodeComputedOperand, fmt.Sprintf("operator %q is not valid for computed %s values", e.Op, operand), "Use a type-compatible pure expression")
+		c.addErrorCode(e.Loc, CodeOperatorTypeMismatch, fmt.Sprintf("operator %q is not valid for computed %s values", e.Op, operand), "Use a type-compatible pure expression")
 		return "", false
 	case *ast.BinaryExpr:
 		left, leftOK := c.inferComputedExprType(e.Left, fields, computedName)
@@ -580,7 +583,7 @@ func (c *Checker) inferComputedExprType(expr ast.Expr, fields map[string]compute
 				return computedBool, true
 			}
 		}
-		c.addErrorCode(e.Loc, CodeComputedOperand,
+		c.addErrorCode(e.Loc, CodeOperatorTypeMismatch,
 			fmt.Sprintf("operator %q is not valid for computed %s and %s values", e.Op, left, right),
 			"Use a type-compatible pure expression",
 		)
@@ -1463,8 +1466,12 @@ func (c *Checker) checkLocalExpr(expr ast.Expr, scope *Scope) {
 		}
 		c.checkLocalExpr(item.Left, scope)
 		c.checkLocalExpr(item.Right, scope)
+		c.checkBinaryOperatorTypes(item, func(operand ast.Expr) valueType {
+			return c.inferValueType(operand, scope)
+		})
 	case *ast.UnaryExpr:
 		c.checkLocalExpr(item.Operand, scope)
+		c.checkUnaryOperatorTypes(item, c.inferValueType(item.Operand, scope))
 	case *ast.FnCall:
 		c.checkLocalCallArgs(item, scope)
 	case *ast.FieldAccess:
@@ -1755,6 +1762,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 	seenModifiers := map[string]lexer.Loc{}
 	seenRelations := map[string]lexer.Loc{}
 	seenTargets := map[string]string{}
+	predicateTypes := c.predicateOperandTypes(fieldModelName, scope, fields)
 	for _, arg := range call.Args[1:] {
 		if marker, ok := arg.(*ast.FnCall); ok {
 			if previous, duplicate := seenModifiers[marker.Name]; duplicate {
@@ -1769,7 +1777,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 			case "where":
 				for _, condition := range marker.Args {
 					if knownModel {
-						c.checkQueryExpr(condition, scope, fields)
+						c.checkQueryExpr(condition, scope, fields, predicateTypes)
 					} else {
 						c.checkUnknownModelQueryExpr(condition, scope)
 					}
@@ -2108,16 +2116,21 @@ func fieldHasRef(field *ast.Field) bool {
 	return false
 }
 
-func (c *Checker) checkQueryExpr(expr ast.Expr, scope *Scope, fields map[string]bool) {
+func (c *Checker) checkQueryExpr(expr ast.Expr, scope *Scope, fields map[string]bool, typeOf func(ast.Expr) valueType) {
 	if ident, ok := expr.(*ast.Ident); ok && fields[ident.Name] {
 		return
 	}
 	switch item := expr.(type) {
+	case *ast.ParenExpr:
+		// Unwrap so a parenthesized field is still a field, not a scope lookup.
+		c.checkQueryExpr(item.Expr, scope, fields, typeOf)
 	case *ast.BinaryExpr:
-		c.checkQueryExpr(item.Left, scope, fields)
-		c.checkQueryExpr(item.Right, scope, fields)
+		c.checkQueryExpr(item.Left, scope, fields, typeOf)
+		c.checkQueryExpr(item.Right, scope, fields, typeOf)
+		c.checkBinaryOperatorTypes(item, typeOf)
 	case *ast.UnaryExpr:
-		c.checkQueryExpr(item.Operand, scope, fields)
+		c.checkQueryExpr(item.Operand, scope, fields, typeOf)
+		c.checkUnaryOperatorTypes(item, typeOf(item.Operand))
 	default:
 		c.checkLocalExpr(expr, scope)
 	}
