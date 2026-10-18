@@ -136,6 +136,8 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) error {
 		return s.handleDefinition(msg)
 	case "textDocument/completion":
 		return s.handleCompletion(msg)
+	case "textDocument/codeAction":
+		return s.handleCodeAction(msg)
 	case "workspace/symbol":
 		return s.handleWorkspaceSymbol(msg)
 	case "workspace/didChangeWorkspaceFolders":
@@ -202,6 +204,9 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) error {
 			"hoverProvider":           true,
 			"definitionProvider":      true,
 			"workspaceSymbolProvider": true,
+			"codeActionProvider": map[string]interface{}{
+				"codeActionKinds": []string{"quickfix"},
+			},
 			"completionProvider": map[string]interface{}{
 				"resolveProvider":   false,
 				"triggerCharacters": []string{"."},

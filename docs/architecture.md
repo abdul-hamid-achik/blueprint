@@ -527,7 +527,7 @@ line is incomplete. It does not implement completion resolve.
 `workspace/symbol` merges unsaved open documents with `.bp` files scanned from
 local workspace folders. Open text wins over disk; common VCS, dependency,
 generated, build, and virtual-environment directories are ignored. Remote
-workspace roots, rename, references, code actions, and incremental document
+workspace roots, rename, references, and incremental document
 sync/indexing are not implemented.
 
 `editors/vscode-blueprint` packages the TextMate grammar with

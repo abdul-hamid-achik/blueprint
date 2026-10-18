@@ -94,7 +94,7 @@ review workflow that makes source changes easier to inspect before applying.
 The language server provides diagnostics, hover, go-to-definition,
 context-aware completion, and local-workspace symbol search. The packaged VS
 Code client starts `bp lsp` automatically and supports configurable server
-paths/restarts. Next steps are rename, references, code actions, incremental
+paths/restarts. Next steps are rename, references, incremental
 sync/indexing, and broader cross-file semantic completion.
 
 ### Deployment

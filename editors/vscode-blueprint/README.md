@@ -6,6 +6,9 @@ Editor and language-server support for the [Blueprint](https://github.com/abdul-
 
 - Full syntax highlighting for all Blueprint constructs
 - Parser and semantic diagnostics while you type
+- Quick fixes for "did you mean" suggestions on unknown names (models, model
+  fields, functions, types, middleware, and tests), offered as
+  `Change to "X"` in the lightbulb menu
 - Context-aware completion for declarations, types, constraints, models,
   middleware, steps, local values, environment names, and model fields
 - Hover and go-to-definition for Blueprint symbols

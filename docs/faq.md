@@ -528,5 +528,5 @@ or build with `--target python` / `--target effect`. See
 [Roadmap](./roadmap.md) for what's still planned, including:
 - Package registry
 - Managed hosting
-- Rename/references/code actions and deeper cross-file editor semantics
+- Rename/references and deeper cross-file editor semantics
 - Join aliases/nested loading and Python relationship/computed-field parity

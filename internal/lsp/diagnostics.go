@@ -1,6 +1,8 @@
 package lsp
 
 import (
+	"encoding/json"
+
 	"github.com/abdul-hamid-achik/blueprint/internal/checker"
 	"github.com/abdul-hamid-achik/blueprint/internal/lexer"
 )
@@ -12,6 +14,9 @@ type lspDiagnostic struct {
 	Code     string   `json:"code,omitempty"`
 	Source   string   `json:"source"`
 	Message  string   `json:"message"`
+	// Data carries the quick-fix payload (see quickFixData) for diagnostics
+	// whose hint has a "did you mean" suggestion.
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 type lspRange struct {
@@ -37,15 +42,10 @@ const (
 func computeDiagnostics(uri, text string) []lspDiagnostic {
 	diags := make([]lspDiagnostic, 0)
 	idx := buildIndex(uri, text)
+	fc := newFixContext(uri, text)
 
 	for _, e := range idx.errors {
-		diags = append(diags, lspDiagnostic{
-			Range:    locToRange(e.Loc),
-			Severity: severityError,
-			Code:     e.Code,
-			Source:   "blueprint",
-			Message:  composeMessage(e.Message, e.Hint),
-		})
+		diags = append(diags, newDiagnostic(fc, e.Loc, e.Code, e.Message, e.Hint))
 	}
 
 	// Run the checker on whatever AST we got. The checker tolerates partial
@@ -54,16 +54,27 @@ func computeDiagnostics(uri, text string) []lspDiagnostic {
 	// the parse errors.
 	if idx.file != nil {
 		for _, e := range checker.Check(idx.file) {
-			diags = append(diags, lspDiagnostic{
-				Range:    locToRange(e.Loc),
-				Severity: severityError,
-				Code:     e.Code,
-				Source:   "blueprint",
-				Message:  composeMessage(e.Message, e.Hint),
-			})
+			diags = append(diags, newDiagnostic(fc, e.Loc, e.Code, e.Message, e.Hint))
 		}
 	}
 	return diags
+}
+
+// newDiagnostic builds the published diagnostic for one parse or check error.
+// Errors whose hint carries a "did you mean" suggestion also get the quick-fix
+// payload in Data.
+func newDiagnostic(fc *fixContext, loc lexer.Loc, code, message, hint string) lspDiagnostic {
+	d := lspDiagnostic{
+		Range:    locToRange(loc),
+		Severity: severityError,
+		Code:     code,
+		Source:   "blueprint",
+		Message:  composeMessage(message, hint),
+	}
+	if fix, ok := fc.quickFix(d.Range, message, hint); ok {
+		d.Data = mustMarshal(fix)
+	}
+	return d
 }
 
 // locToRange converts a 1-indexed lexer.Loc to a 0-indexed LSP range. When
