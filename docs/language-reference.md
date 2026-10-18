@@ -1469,7 +1469,7 @@ explicit external HTTP `call` when that is the intended transport.
 ### Utility
 
 ```bp
-log "message" level(info)         # structured logging (info|warn|error)
+log "message" level(info)         # logging (debug|info|warn|error)
 sleep 1s                          # delay execution
 clock()                           # current timestamp in ms
 hash(value)                       # SHA-256 hash

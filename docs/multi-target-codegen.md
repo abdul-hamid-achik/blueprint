@@ -246,6 +246,12 @@ dictionary-backed values rejects instead of emitting hidden undefined names.
 Python additionally rejects model computed fields and `query ... with(...)`;
 Effect's exhaustive scaffold gate rejects those model/endpoint surfaces too.
 
+`log` is translated to the stdlib `logging` module, not `print`: Python emits
+`src/lib/log.py` (one `logger`, configured once on import) and calls
+`logger.debug|info|warning|error`. Node's `console.*` levels map the same way.
+Unlike Node, an unknown `level(...)` is a codegen error on Python rather than a
+runtime crash.
+
 ## Type mapping
 
 | Blueprint | JavaScript | Python | Go (planned) |

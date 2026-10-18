@@ -100,6 +100,7 @@ type middlewareUsage struct {
 	hasGuards    bool
 	callsUserFn  bool
 	usesEnv      bool
+	usesLog      bool
 	needsNow     bool
 	needsDelta   bool
 	userFnCalls  []string // ordered, unique
@@ -136,6 +137,9 @@ func scanMiddlewareUsage(mw *ast.Middleware, userFns map[string]bool, models []*
 		case *ast.NowLit:
 			u.needsNow = true
 		case *ast.FnCall:
+			if v.Name == "log" {
+				u.usesLog = true
+			}
 			if userFns[v.Name] && !seenFns[v.Name] {
 				seenFns[v.Name] = true
 				u.userFnCalls = append(u.userFnCalls, v.Name)
@@ -212,6 +216,9 @@ func writeMiddlewareImports(b *strings.Builder, u middlewareUsage, pipes map[str
 	}
 	if u.usesEnv {
 		b.WriteString("from src.lib.env import env\n")
+	}
+	if u.usesLog {
+		b.WriteString("from src.lib.log import logger\n")
 	}
 	sort.Strings(u.userFnCalls)
 	for _, name := range u.userFnCalls {

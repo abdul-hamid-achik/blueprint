@@ -141,7 +141,7 @@ phase-by-phase here so the work does not drift:
 | 3c | `order(...)`, FK access, `when` inline, `try`/`recover`, `map`, `log` | ✅ shipped | 2026-05-29 |
 | 3d/5 | Native `fn` decls + scaffold, `middleware` → FastAPI Depends, `sum()`, `now` | ✅ shipped; inline `fn logic` now fails closed | 2026-07-14 |
 | 5 | STREAM (SSE), WS, `cache redis` | 🟡 `cache redis` ships; STREAM/WS declarations now fail closed because lifecycle/event bodies are not translated yet | 2026-07-14 |
-| 3d | Non-`==` `where` (`or`/`and`/`in`/text-search/duration), bare-expression steps, partial-commit rollback | ✅ shipped — `or`/`and`/`in`/text-search/duration RHS shipped v0.13.0; bare BlockExpr steps shipped v0.14.0; structured `log` still `print(f"...")` | 2026-07-10 |
+| 3d | Non-`==` `where` (`or`/`and`/`in`/text-search/duration), bare-expression steps, partial-commit rollback | ✅ shipped — `or`/`and`/`in`/text-search/duration RHS shipped v0.13.0; bare BlockExpr steps shipped v0.14.0; `log` levels now emit `logger.<level>(...)` via `src/lib/log.py` | 2026-07-10 |
 | 4 | Middleware, fn/pipe (`impl python`), `bp test` with testcontainers | 🟡 `bp test --target python` now builds the pytest/testcontainers harness and runs `uv run pytest`; middleware supports `fetch`/`log`/declared-fn/`inject`/`guard` and rejects richer steps; authored Blueprint tests, inline fn logic, `pipe`, and full `impl python` parity remain open | 2026-07-14 |
 
 **The effect target is separate and much earlier.** `--target effect`

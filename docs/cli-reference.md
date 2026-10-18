@@ -111,8 +111,12 @@ authored test blocks in `examples/auth-service.bp`.
   comparison/`in`/`or`/`and`/text-search/duration predicates), `guard`,
   `when` block + inline form, `try`/`recover`,
   `map items: save M { ... }` (bound + unbound), `map items: update M { ... }`,
-  FK access (`item.product.x` via cached `db.get` lookups), `log "msg"` →
-  `print(f"...")`, `sum(...)`.
+  FK access (`item.product.x` via cached `db.get` lookups), `log "msg"`, `sum(...)`.
+- `log "msg" level(debug|info|warn|error)` → `logger.<method>(f"...")` from the
+  generated `src/lib/log.py` (stdlib `logging`, message-only text lines:
+  debug/info to stdout, warn/error to stderr; no level means `info`). Any other
+  level fails the build. Like Node's `console.*` output, the lines are plain text,
+  not JSON, and there is no `LOG_LEVEL` switch.
 - REST inputs preserve transport and validation: GET/DELETE values use FastAPI
   `Query(...)`; POST/PUT/PATCH values use embedded JSON `Body(...)`; scalar
   defaults and supported `min`/`max` constraints are emitted. Direct

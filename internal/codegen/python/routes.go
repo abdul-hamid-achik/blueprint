@@ -48,6 +48,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsQuery := false
 	needsHeader := false
 	needsEnv := false
+	needsLog := false
 	userFnCalls := map[string]bool{}
 	middlewares := map[string]bool{}
 	for _, ep := range eps {
@@ -101,6 +102,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			}
 			if fc, ok := e.(*ast.FnCall); ok && g.userFnNames()[fc.Name] {
 				userFnCalls[fc.Name] = true
+			}
+			if fc, ok := e.(*ast.FnCall); ok && fc.Name == "log" {
+				needsLog = true
 			}
 		})
 		for _, m := range ep.Meta {
@@ -178,6 +182,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	}
 	if needsEnv {
 		b.WriteString("from src.lib.env import env\n")
+	}
+	if needsLog {
+		b.WriteString("from src.lib.log import logger\n")
 	}
 	// `use <middleware>` requires Depends + the middleware module import.
 	if len(middlewares) > 0 {

@@ -86,7 +86,7 @@ Every endpoint body, middleware `before`/`after`, and fn `logic` is a pipeline o
 | `try { ... } recover { ... }` | Exception handling; `recover` sees `error`. In the node target, a `try` body with multiple writes runs in a DB transaction (partial writes roll back); external side effects are not rolled back — compensate in `recover`. |
 | `map <coll>: <op>` | For-each over a collection. |
 | `<var> = <op>` | Bind step result. |
-| `log "msg" [level(error\|info\|warning)]` | Structured log. |
+| `log "msg" [level(debug\|info\|warn\|error)]` | Log line; default level is info. Any other level is an error on Python. |
 | `inject <binding> as <name>` | (Middleware) Expose to handler context. |
 | `return <value>` | Explicit return. |
 | `emit "<event>" { data }` | Publish in-process event. |

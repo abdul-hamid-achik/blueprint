@@ -178,6 +178,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	out = append(out, emptyInit("src/lib/__init__.py", g.sourceFile))
 	out = append(out, emptyInit("src/routes/__init__.py", g.sourceFile))
 	out = append(out, g.genEnvPy(secrets, hasDB, hasCache))
+	out = append(out, g.genLogPy())
 	out = append(out, g.genAppPy(bp, endpoints))
 
 	// Phase 2: data layer (models + db session + alembic) when the spec
@@ -836,6 +837,11 @@ func (g *Generator) middlewareFeatures(mw *ast.Middleware) []string {
 				case "fetch", "log":
 					// These are the middleware operations whose imports and
 					// binding semantics are implemented today.
+					if fn.Name == "log" {
+						if reason := pyLogLevelFeature(fn); reason != "" {
+							out = append(out, reason)
+						}
+					}
 				default:
 					out = append(out, fmt.Sprintf("middleware step call %q", fn.Name))
 				}
@@ -1212,6 +1218,9 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 			return []string{fmt.Sprintf("`map` body op %q", bodyFn.Name)}
 		}
 	case "log":
+		if reason := pyLogLevelFeature(fn); reason != "" {
+			return []string{reason}
+		}
 		return nil
 	case "sum":
 		if len(fn.Args) != 1 {

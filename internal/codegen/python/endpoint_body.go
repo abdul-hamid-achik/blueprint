@@ -883,15 +883,30 @@ func isKnownModel(name string, models []*ast.Model) (string, bool) {
 	return "", false
 }
 
-// emitLog: `log "Hello {x}"` → `print(f"Hello {x}")`. Extra args (e.g.
-// `level(error)`) are dropped — Phase 3c keeps deps minimal; structured
-// logging is a Phase 3d follow-up.
+// emitLog: `log "Hello {x}"` → `logger.info(f"Hello {x}")`, and
+// `level(warn)` selects the matching logger method (`warning` for warn).
+// Levels are validated by pyLogLevelFeature before emission, so the default
+// arm is only a guard. The logger lives in src/lib/log.py (see genLogPy).
 func emitLog(b *strings.Builder, fn *ast.FnCall, ctx *bodyCtx, indent string) {
-	if len(fn.Args) == 0 {
-		fmt.Fprintf(b, "%sprint()\n", indent)
-		return
+	method := "info"
+	if len(fn.Args) >= 2 {
+		lvl, ok := fn.Args[1].(*ast.Ident)
+		if !ok {
+			fmt.Fprintf(b, "%s# TODO(python): unsupported log level\n", indent)
+			return
+		}
+		m, known := pyLogMethods[lvl.Name]
+		if !known {
+			fmt.Fprintf(b, "%s# TODO(python): unsupported log level %q\n", indent, lvl.Name)
+			return
+		}
+		method = m
 	}
-	fmt.Fprintf(b, "%sprint(%s)\n", indent, exprToPyWithCtx(fn.Args[0], ctx))
+	msg := `""`
+	if len(fn.Args) > 0 {
+		msg = exprToPyWithCtx(fn.Args[0], ctx)
+	}
+	fmt.Fprintf(b, "%slogger.%s(%s)\n", indent, method, msg)
 }
 
 // emitWhen handles both forms:

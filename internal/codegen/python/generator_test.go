@@ -60,6 +60,7 @@ func TestPython_HelloWorldEmitsExpectedFiles(t *testing.T) {
 		"src/__init__.py",
 		"src/lib/__init__.py",
 		"src/lib/env.py",
+		"src/lib/log.py",
 		"src/app.py",
 		"src/routes/__init__.py",
 		"src/routes/health.py",
@@ -1169,7 +1170,7 @@ POST /api/orders {
 		"        db.commit()",
 		"    except Exception as error:",
 		"        db.rollback()",
-		`        print(f"failed: {error}")`,
+		`        logger.info(f"failed: {error}")`,
 		`        return JSONResponse(jsonable_encoder({"error": "boom"}), status_code=500)`,
 	} {
 		if !strings.Contains(body, want) {
@@ -1360,7 +1361,7 @@ POST /api/orders {
 }
 `
 	body := readPy(t, buildPython(t, src), "src/routes/orders.py")
-	if !strings.Contains(body, `print(f"failed: {str(error)}")`) {
+	if !strings.Contains(body, `logger.info(f"failed: {str(error)}")`) {
 		t.Errorf("f-string interpolation should rewrite error.message to str(error), got:\n%s", body)
 	}
 	if !strings.Contains(body, `"error": str(error)`) {
@@ -1470,8 +1471,8 @@ GET /api/products/:id {
 	}
 }
 
-// TestPython_Phase3cLogStep covers `|> log "msg"` -> `print(f"msg")`. The
-// translator drops `level(error)` and other extras in 3c.
+// TestPython_Phase3cLogStep covers `|> log "msg"` -> `logger.info(f"msg")`
+// (no level(...) defaults to info, matching Node's console.log).
 func TestPython_Phase3cLogStep(t *testing.T) {
 	src := `blueprint "x" { version "1.0" port 3000 runtime node }
 GET /api/x {
@@ -1481,7 +1482,7 @@ GET /api/x {
 }
 `
 	body := readPy(t, buildPython(t, src), "src/routes/x.py")
-	if !strings.Contains(body, `print(f"hello {name}")`) {
+	if !strings.Contains(body, `logger.info(f"hello {name}")`) {
 		t.Errorf("log step missing or wrong, got:\n%s", body)
 	}
 }
