@@ -121,6 +121,40 @@ func restoreComments(formatted string, sourceTokens []lexer.Token, comments []le
 		}
 	}
 
+	// A multi-line string spans several output lines. A comment or blank line
+	// placed on one of its inner lines would become part of the value, so
+	// trivia is moved to the line where the string opens or closes.
+	stringOpens := make(map[int]int)  // continuation line -> line the string opens on
+	stringCloses := make(map[int]int) // line a string is still open at -> line it closes on
+	for _, token := range formattedTokens {
+		if token.Kind != lexer.TokenString {
+			continue
+		}
+		end := lineAtOffset(formatted, token.Loc.Offset+token.Loc.Len)
+		for line := token.Loc.Line; line < end; line++ {
+			stringCloses[line] = end
+			stringOpens[line+1] = token.Loc.Line
+		}
+	}
+	openingLine := func(line int) int {
+		for {
+			start, ok := stringOpens[line]
+			if !ok {
+				return line
+			}
+			line = start
+		}
+	}
+	closingLine := func(line int) int {
+		for {
+			end, ok := stringCloses[line]
+			if !ok {
+				return line
+			}
+			line = end
+		}
+	}
+
 	// A blank line before a token is kept only when that token starts its
 	// output line. A token that does not start a line has no line to precede.
 	blankBeforeLine := make(map[int]bool)
@@ -137,7 +171,9 @@ func restoreComments(formatted string, sourceTokens []lexer.Token, comments []le
 				break // end of file has no line of its own
 			}
 			line := formattedTokens[mapped].Loc.Line
-			if mapped == 0 || formattedTokens[mapped-1].Loc.Line < line {
+			if mapped == 0 {
+				blankBeforeLine[line] = true
+			} else if prev := formattedTokens[mapped-1]; lineAtOffset(formatted, prev.Loc.Offset+prev.Loc.Len) < line {
 				blankBeforeLine[line] = true
 			}
 			break
@@ -153,12 +189,18 @@ func restoreComments(formatted string, sourceTokens []lexer.Token, comments []le
 		}
 
 		if comment.Inline {
-			line := lineAtOffset(formatted, outputAnchor.Loc.Offset+outputAnchor.Loc.Len)
+			line := closingLine(lineAtOffset(formatted, outputAnchor.Loc.Offset+outputAnchor.Loc.Len))
 			inline[line] = append(inline[line], placedComment{comment: comment})
 			continue
 		}
 
 		line := outputAnchor.Loc.Line
+		if opening := openingLine(line); opening != line {
+			// The anchor follows a multi-line string on its closing line, so the
+			// comment goes above the statement that opens the string.
+			leading[opening] = append(leading[opening], placedComment{comment: comment, indent: lineIndent(formatted, opening)})
+			continue
+		}
 		indent := outputAnchor.Loc.Col - 1
 		// A comment immediately before a closing delimiter is indented inside
 		// that delimiter in the source. Preserve that relative indentation
@@ -172,13 +214,15 @@ func restoreComments(formatted string, sourceTokens []lexer.Token, comments []le
 	// Canonicalization can collapse a multi-line expression onto one line. If
 	// that puts multiple former inline comments on the same line, only the last
 	// can remain inline; move the others above the line so no comment is hidden
-	// behind an earlier #.
+	// behind an earlier #. A line that closes a multi-line string gets them
+	// above the line where that string opens.
 	for line, lineComments := range inline {
 		if len(lineComments) <= 1 {
 			continue
 		}
+		above := openingLine(line)
 		for _, item := range lineComments[:len(lineComments)-1] {
-			leading[line] = append(leading[line], item)
+			leading[above] = append(leading[above], item)
 		}
 		inline[line] = lineComments[len(lineComments)-1:]
 	}
@@ -313,6 +357,16 @@ func mappedCommentAnchor(comment lexer.Comment, sourceTokens []lexer.Token, toke
 		}
 	}
 	return lexer.Token{}, lexer.Token{}, false
+}
+
+// lineIndent returns the number of leading spaces on the given 1-based line.
+func lineIndent(src string, line int) int {
+	lines := strings.SplitN(src, "\n", line+1)
+	if line < 1 || line > len(lines) {
+		return 0
+	}
+	text := lines[line-1]
+	return len(text) - len(strings.TrimLeft(text, " "))
 }
 
 func lineAtOffset(src string, offset int) int {
