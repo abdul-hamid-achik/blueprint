@@ -79,3 +79,23 @@ POST /api/items {
 		t.Errorf("POST without cache should not be flagged, got %v", issues)
 	}
 }
+
+func TestLint_CacheOnStreamAndWs_Flagged(t *testing.T) {
+	issues := cacheOnNonGetIssues(t, `
+STREAM /api/live {
+  cache 5s
+}
+
+WS /ws/live {
+  cache 5s
+}
+`)
+	if len(issues) != 2 {
+		t.Fatalf("expected 2 cache-on-non-get issues, got %d: %v", len(issues), issues)
+	}
+	for i, want := range []string{"STREAM /api/live", "WS /ws/live"} {
+		if !strings.Contains(issues[i].Message, want) {
+			t.Errorf("issue %d should name %s: %s", i, want, issues[i].Message)
+		}
+	}
+}

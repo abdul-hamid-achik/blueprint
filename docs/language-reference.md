@@ -849,8 +849,9 @@ handlers that already set `Cache-Control` are left alone. The scope is:
   store these responses.
 - `public` otherwise.
 
-A non-GET endpoint with `cache` emits no header. The build still succeeds, and
-the `cache-on-non-get` lint warning reports it. Python rejects endpoint `cache`
+A non-GET endpoint with `cache` emits no header, and neither does a STREAM or WS
+endpoint. The build still succeeds, and the `cache-on-non-get` lint warning
+reports it. Python rejects endpoint `cache`
 metadata today.
 
 ### Auth Strategies

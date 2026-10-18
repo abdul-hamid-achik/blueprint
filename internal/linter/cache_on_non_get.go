@@ -7,17 +7,29 @@ import (
 )
 
 // checkCacheOnNonGet flags `cache` metadata on non-GET endpoints. The Node
-// target only sets Cache-Control on GET responses, so the directive has no
-// effect there. The build still succeeds, so this is a warning, not an error.
+// target only sets Cache-Control on REST GET responses, so the directive has
+// no effect on other methods or on STREAM and WS endpoints, whose responses
+// are long-lived. The build still succeeds, so this is a warning, not an error.
 func checkCacheOnNonGet(f *ast.File) []Issue {
 	var issues []Issue
 
 	for _, block := range f.Blocks {
-		ep, ok := block.(*ast.Endpoint)
-		if !ok || ep.Method == "GET" {
+		var method, path string
+		var metas []*ast.EndpointMeta
+		switch ep := block.(type) {
+		case *ast.Endpoint:
+			if ep.Method == "GET" {
+				continue
+			}
+			method, path, metas = ep.Method, ep.Path, ep.Meta
+		case *ast.StreamEndpoint:
+			method, path, metas = "STREAM", ep.Path, ep.Meta
+		case *ast.WsEndpoint:
+			method, path, metas = "WS", ep.Path, ep.Meta
+		default:
 			continue
 		}
-		for _, meta := range ep.Meta {
+		for _, meta := range metas {
 			if meta.Kind != "cache" {
 				continue
 			}
@@ -27,7 +39,7 @@ func checkCacheOnNonGet(f *ast.File) []Issue {
 				Col:     meta.Loc.Col,
 				Level:   "warning",
 				Rule:    "cache-on-non-get",
-				Message: fmt.Sprintf("cache is ignored on %s %s: Cache-Control is only set on GET responses", ep.Method, ep.Path),
+				Message: fmt.Sprintf("cache is ignored on %s %s: Cache-Control is only set on REST GET responses", method, path),
 				Hint:    "Move `cache` to a GET endpoint, or remove it",
 			})
 		}

@@ -29,7 +29,8 @@ All notable changes to this project will be documented in this file.
   and `bp diff --apply --force` writes into a non-empty directory without a
   manifest.
 - **Six lint rules:** `unused-secret`, `unused-env`, `unused-function`,
-  `fetch-without-guard`, `cache-on-non-get` (warnings), and `unpaginated-list`
+  `fetch-without-guard`, `cache-on-non-get` (warnings; it also covers STREAM
+  and WS endpoints, which never send `Cache-Control`), and `unpaginated-list`
   (info).
 - **Every checker error carries a structured code (C001–C051).** C016–C049
   name the previously uncoded checker errors, C050 reports binary operators

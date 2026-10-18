@@ -178,8 +178,8 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
   2xx GET responses only; it is not a server-side response cache. The scope is
   `private` when the endpoint or blueprint has `use`/`auth`/`limit` metadata or
   the body reads header/cookie/session/auth state, `public` otherwise.
-  Malformed durations fail codegen; non-GET `cache` emits nothing and is
-  reported by the `cache-on-non-get` lint rule. Python rejects endpoint
+  Malformed durations fail codegen; `cache` on non-GET, STREAM, or WS
+  endpoints emits nothing and is reported by the `cache-on-non-get` lint rule. Python rejects endpoint
   `cache`. Endpoint `limit` is an in-process, per-instance rate limiter rather
   than a distributed guarantee.
 - The Node target rejects file/MIME endpoint inputs, including file-containing
