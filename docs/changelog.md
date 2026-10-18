@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-18
+
+### Changed (2026-10-18; may affect scripts and CI)
+
+These reject input or change exit codes that earlier releases accepted:
+
+- Argument errors (unknown flags, value flags with no value, unexpected extra
+  arguments) exit `2` instead of `1`, and `bp fmt` has a new exit code `3`
+  for a refused format.
+- The parser rejects syntax it used to accept silently: a field with no type,
+  a string/number/punctuation token used as a type, a stream `on` without
+  `event(...)` or `timeout(...)`, and an `@` with no string or no declaration
+  after it.
+- New checker errors: C050 (operator operands with incompatible known types),
+  C051 (unknown `log` level), C022 for a STREAM/WS `<-` input that is not a
+  path parameter, C005 for endpoints that register the same route (GET,
+  STREAM, and WS on one path, or paths that differ only in `:param` names),
+  and C035 for `|> close` outside a WS handler.
+- `bp fmt` refuses (exit `3`) a file with an `@` intent before a declaration
+  that cannot carry one, such as `secret` or `env`, instead of deleting it.
+
 ### Added (2026-10-18 tooling and completion pass)
 
 - **The language server gained find-references, rename, quick fixes,
@@ -103,6 +124,8 @@ All notable changes to this project will be documented in this file.
   exit `2`**, the documented usage-error code, instead of `1`, so CI can tell
   a mistyped command from a failed validation.
 
+## [0.15.0] - 2026-07-14
+
 ### Added (2026-07-14 audit and polish pass)
 
 - **A deliberately conservative `bp import` scaffolder** can recover static
@@ -196,7 +219,13 @@ All notable changes to this project will be documented in this file.
 - **Deployment guidance is Docker-first and evidence-based.** Unverified serverless adapter recipes were removed, migration paths are separated by target, and production caveats are explicit.
 - **The repository contract now lives in its published references and executable tests.** The maintainer's formal-spec working document moved out of the repository; contributor links now point to the public language and CLI references instead of a private/internal artifact.
 
+## [0.12.0] – [0.14.0] - 2026-07-09 – 2026-07-10
+
+These three releases were tagged without separate changelog sections; their
+entries are grouped below by batch.
+
 A correctness-and-hardening batch driven by a 7-dimension audit (2026-07-09): two silent data-corruption bugs in the Python target, workers/schedules made functional end-to-end on the node target, WS/STREAM transport hardening, strict CLI flag parsing with output-directory safety, and a docs accuracy pass.
+
 
 ### Fixed
 
