@@ -2148,3 +2148,83 @@ GET /api/health {
 		t.Errorf("level(warning): error should point at the level identifier line, got %v", errs[0].Loc)
 	}
 }
+
+func TestCheckDuplicateRoutes(t *testing.T) {
+	header := `blueprint "routes" {
+  version "1.0.0"
+  runtime node
+}
+`
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"same method and path", `
+GET /api/rooms/:id {
+  -> 200 "one"
+}
+
+GET /api/rooms/:id {
+  -> 200 "two"
+}
+`, "duplicate endpoint GET /api/rooms/:id"},
+		{"param names do not distinguish", `
+GET /api/rooms/:id {
+  -> 200 "one"
+}
+
+GET /api/rooms/:room_id {
+  -> 200 "two"
+}
+`, "endpoint GET /api/rooms/:room_id registers the same route as GET /api/rooms/:id"},
+		{"stream is a GET route", `
+GET /api/rooms {
+  -> 200 "list"
+}
+
+STREAM /api/rooms {
+}
+`, "endpoint STREAM /api/rooms registers the same route as GET /api/rooms"},
+		{"ws is a GET route", `
+STREAM /api/live/:id {
+}
+
+WS /api/live/:id {
+}
+`, "endpoint WS /api/live/:id registers the same route as STREAM /api/live/:id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := check(t, header+tc.src)
+			found := false
+			for _, e := range errs {
+				if e.Code == CodeDuplicateEndpoint && strings.Contains(e.Message, tc.want) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected C005 %q, got %v", tc.want, errs)
+			}
+		})
+	}
+
+	// Different methods, or different static segments, are distinct routes.
+	errs := check(t, header+`
+GET /api/rooms/:id {
+  -> 200 "one"
+}
+
+DELETE /api/rooms/:id {
+  -> 204
+}
+
+GET /api/rooms/:id/members {
+  -> 200 "members"
+}
+`)
+	for _, e := range errs {
+		if e.Code == CodeDuplicateEndpoint {
+			t.Fatalf("unexpected C005: %v", e)
+		}
+	}
+}

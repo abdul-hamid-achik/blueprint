@@ -62,6 +62,10 @@ All notable changes to this project will be documented in this file.
 - **The language server no longer reports errors on files that open with a
   file-level `@` intent**, which included every example. Hover and definition
   also work from the full AST on those files.
+- **The checker reports endpoints that register the same route (C005)** when
+  only the endpoint kind or a path parameter name differs: STREAM and WS
+  endpoints are GET routes, so `GET /rooms/:id`, `STREAM /rooms/:room_id`, and
+  `WS /rooms/:x` collide and only the first one was reachable.
 - **Unknown flags, value flags with no value, and unexpected extra arguments
   exit `2`**, the documented usage-error code, instead of `1`, so CI can tell
   a mistyped command from a failed validation.

@@ -74,7 +74,8 @@ const (
 	CodeBlueprintMissingField = "C003"
 	// CodeDuplicateName = two top-level declarations share a name.
 	CodeDuplicateName = "C004"
-	// CodeDuplicateEndpoint = two endpoints share METHOD + PATH.
+	// CodeDuplicateEndpoint = two endpoints register the same route (STREAM and
+	// WS are GET routes; :param names do not distinguish routes).
 	CodeDuplicateEndpoint = "C005"
 	// CodeUnknownFunction = call to an undeclared fn/pipe/builtin.
 	CodeUnknownFunction = "C006"
@@ -317,7 +318,7 @@ func (c *Checker) validateBlueprint() {
 
 func (c *Checker) validateBlocks() {
 	// Track endpoints for duplicate detection (METHOD + PATH)
-	endpoints := make(map[string]lexer.Loc)
+	endpoints := make(map[string]endpointSite)
 
 	for _, block := range c.file.Blocks {
 		switch n := block.(type) {
@@ -790,16 +791,45 @@ func (c *Checker) checkRealtimeInputs(path string, stmts []ast.ArrowStmt) {
 
 // --- Duplicate Endpoint ---
 
-func (c *Checker) checkDuplicateEndpoint(method, path string, loc lexer.Loc, seen map[string]lexer.Loc) {
-	key := method + " " + path
-	if prev, ok := seen[key]; ok {
+// endpointSite is the first endpoint that registered a route.
+type endpointSite struct {
+	label string
+	loc   lexer.Loc
+}
+
+// checkDuplicateEndpoint rejects two endpoints that register the same route.
+// STREAM (SSE) and WS (the upgrade request) are GET routes, and :param names
+// do not affect matching, so GET /a/:id, STREAM /a/:x, and WS /a/:y collide:
+// the router only ever reaches the first one.
+func (c *Checker) checkDuplicateEndpoint(method, path string, loc lexer.Loc, seen map[string]endpointSite) {
+	label := method + " " + path
+	routeMethod := method
+	if method == "STREAM" || method == "WS" {
+		routeMethod = "GET"
+	}
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		if strings.HasPrefix(segment, ":") {
+			segments[i] = ":"
+		}
+	}
+	key := routeMethod + " " + strings.Join(segments, "/")
+	prev, ok := seen[key]
+	if !ok {
+		seen[key] = endpointSite{label: label, loc: loc}
+		return
+	}
+	if prev.label == label {
 		c.addErrorCode(loc, CodeDuplicateEndpoint,
-			fmt.Sprintf("duplicate endpoint %s (previously defined at %s)", key, prev),
+			fmt.Sprintf("duplicate endpoint %s (previously defined at %s)", label, prev.loc),
 			"Each METHOD + PATH combination must be unique",
 		)
-	} else {
-		seen[key] = loc
+		return
 	}
+	c.addErrorCode(loc, CodeDuplicateEndpoint,
+		fmt.Sprintf("endpoint %s registers the same route as %s (defined at %s)", label, prev.label, prev.loc),
+		"STREAM and WS endpoints are GET routes, and path parameter names do not distinguish routes; change the path",
+	)
 }
 
 // --- Worker ---

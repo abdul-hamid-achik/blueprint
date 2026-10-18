@@ -213,7 +213,10 @@ file:line so you can pick which to keep.
 ### C005 — duplicate endpoint
 
 Two endpoints share the same `METHOD + PATH`. Even when they differ in body or
-guards, the router can't dispatch between them.
+guards, the router can't dispatch between them. STREAM and WS endpoints are GET
+routes (the SSE response and the WebSocket upgrade), and path parameter names
+don't distinguish routes, so `GET /rooms/:id`, `STREAM /rooms/:room_id`, and
+`WS /rooms/:x` all collide.
 
 ```bp
 blueprint "todo-api" {
