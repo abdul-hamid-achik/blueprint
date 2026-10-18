@@ -861,6 +861,13 @@ Provides IDE support for Blueprint files:
   computed expressions, and ref-backed `with(...)` relationships
 - Workspace symbol search across local `.bp` files in initialized workspace
   folders
+- Document formatting (`textDocument/formatting`) with the same printer as
+  `bp fmt`; a document with parse errors, or whose formatted output would not
+  re-parse, keep the same comments, or be stable on a second pass, is left
+  unchanged
+- Document outline (`textDocument/documentSymbol`) with nested fields, computed
+  fields, and enum variants
+- Folding ranges (`textDocument/foldingRange`) for multi-line brace blocks
 
 Configure an LSP-capable editor client to launch `bp lsp` for `.bp` files over
 standard input/output. The packaged client in `editors/vscode-blueprint`

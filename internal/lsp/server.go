@@ -140,6 +140,12 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) error {
 		return s.handleCodeAction(msg)
 	case "workspace/symbol":
 		return s.handleWorkspaceSymbol(msg)
+	case "textDocument/formatting":
+		return s.handleFormatting(msg)
+	case "textDocument/documentSymbol":
+		return s.handleDocumentSymbol(msg)
+	case "textDocument/foldingRange":
+		return s.handleFoldingRange(msg)
 	case "workspace/didChangeWorkspaceFolders":
 		return s.handleDidChangeWorkspaceFolders(msg)
 	default:
@@ -200,10 +206,13 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) error {
 
 	result := map[string]interface{}{
 		"capabilities": map[string]interface{}{
-			"textDocumentSync":        1, // Full document sync
-			"hoverProvider":           true,
-			"definitionProvider":      true,
-			"workspaceSymbolProvider": true,
+			"textDocumentSync":           1, // Full document sync
+			"hoverProvider":              true,
+			"definitionProvider":         true,
+			"workspaceSymbolProvider":    true,
+			"documentSymbolProvider":     true,
+			"documentFormattingProvider": true,
+			"foldingRangeProvider":       true,
 			"codeActionProvider": map[string]interface{}{
 				"codeActionKinds": []string{"quickfix"},
 			},

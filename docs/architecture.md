@@ -42,7 +42,7 @@ internal/
   docs/             OpenAPI 3.1 JSON generator
   generate/         LLM code generation (@> slots via Anthropic API)
   importer/         Conservative static TypeScript-to-.bp scaffolding
-  lsp/              LSP diagnostics, hover, definition, completion, workspace symbols
+  lsp/              LSP diagnostics, hover, definition, completion, workspace symbols, formatting, document outline, folding
   agentctx/         Agent-facing context surface (bp context / bp llms)
   registry/         Package registry groundwork (no add/search/publish CLI yet)
 packages/

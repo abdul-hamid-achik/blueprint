@@ -13,6 +13,12 @@ Editor and language-server support for the [Blueprint](https://github.com/abdul-
   middleware, steps, local values, environment names, and model fields
 - Hover and go-to-definition for Blueprint symbols
 - Workspace symbol search across `.bp` files
+- Document outline (Outline view and `Cmd+Shift+O` / `Ctrl+Shift+O`) listing
+  every declaration, with model fields and enum variants nested underneath
+- Code folding for multi-line blocks, including test requests and `try`/`recover`
+- Format Document (`Shift+Alt+F` / `Shift+Option+F`) using the same formatter as
+  `bp fmt`, and format on save with `"editor.formatOnSave": true`. Documents with
+  syntax errors are left unchanged.
 - Bracket matching and auto-closing pairs (`{}`, `[]`, `()`, `""`)
 - Comment toggling with `Ctrl+/` / `Cmd+/`
 - Smart indentation — auto-indents after `{`
