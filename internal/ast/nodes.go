@@ -62,6 +62,7 @@ func (n *Blueprint) topLevel()           {}
 
 type Secret struct {
 	Loc      lexer.Loc
+	Intent   *Intent
 	Name     string
 	Required bool
 	Default  Expr
@@ -72,9 +73,10 @@ func (n *Secret) Location() lexer.Loc { return n.Loc }
 func (n *Secret) topLevel()           {}
 
 type Env struct {
-	Loc   lexer.Loc
-	Name  string
-	Value Expr
+	Loc    lexer.Loc
+	Intent *Intent
+	Name   string
+	Value  Expr
 }
 
 func (n *Env) nodeType() string    { return "Env" }
@@ -83,6 +85,7 @@ func (n *Env) topLevel()           {}
 
 type Locale struct {
 	Loc      lexer.Loc
+	Intent   *Intent
 	Code     string
 	Default  bool
 	Fallback string
@@ -94,6 +97,7 @@ func (n *Locale) topLevel()           {}
 
 type Translation struct {
 	Loc     lexer.Loc
+	Intent  *Intent
 	Name    string
 	Keys    []string
 	Bundles []*TranslationBundle
@@ -167,8 +171,9 @@ type SaveMigration struct {
 }
 
 type Include struct {
-	Loc  lexer.Loc
-	Path string
+	Loc    lexer.Loc
+	Intent *Intent
+	Path   string
 }
 
 func (n *Include) nodeType() string    { return "Include" }
@@ -177,6 +182,7 @@ func (n *Include) topLevel()           {}
 
 type TypeDecl struct {
 	Loc    lexer.Loc
+	Intent *Intent
 	Name   string
 	Fields []*Field
 }
@@ -187,6 +193,7 @@ func (n *TypeDecl) topLevel()           {}
 
 type Alias struct {
 	Loc         lexer.Loc
+	Intent      *Intent
 	Name        string
 	Type        TypeExpr
 	Constraints []*Constraint_
@@ -368,6 +375,7 @@ func (n *Schedule) topLevel()           {}
 
 type External struct {
 	Loc     lexer.Loc
+	Intent  *Intent
 	Name    string
 	Entries []KVPair
 }
@@ -417,6 +425,7 @@ func (n *TestGroup) topLevel()           {}
 
 type Fixture struct {
 	Loc       lexer.Loc
+	Intent    *Intent
 	Name      string
 	FromPath  string     // "from" variant
 	Generated *BlockBody // "generated" variant

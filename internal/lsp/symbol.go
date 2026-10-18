@@ -325,6 +325,24 @@ func findIntentAt(file *ast.File, text string, line, char int) *ast.Intent {
 			check(b.Intent)
 		case *ast.TestGroup:
 			check(b.Intent)
+		case *ast.Secret:
+			check(b.Intent)
+		case *ast.Env:
+			check(b.Intent)
+		case *ast.Locale:
+			check(b.Intent)
+		case *ast.Translation:
+			check(b.Intent)
+		case *ast.Include:
+			check(b.Intent)
+		case *ast.TypeDecl:
+			check(b.Intent)
+		case *ast.Alias:
+			check(b.Intent)
+		case *ast.External:
+			check(b.Intent)
+		case *ast.Fixture:
+			check(b.Intent)
 		}
 	}
 	return found

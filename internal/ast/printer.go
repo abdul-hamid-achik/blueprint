@@ -364,13 +364,13 @@ func (p *printer) printTopLevel(node TopLevel) string {
 	case *Blueprint:
 		return p.printBlueprint(n)
 	case *Secret:
-		return p.printSecret(n)
+		return p.printIntent(n.Intent) + p.printSecret(n)
 	case *Env:
-		return p.printEnv(n)
+		return p.printIntent(n.Intent) + p.printEnv(n)
 	case *Locale:
-		return p.printLocale(n)
+		return p.printIntent(n.Intent) + p.printLocale(n)
 	case *Translation:
-		return p.printTranslation(n)
+		return p.printIntent(n.Intent) + p.printTranslation(n)
 	case *StateMachine:
 		return p.printStateMachine(n)
 	case *Analytics:
@@ -378,11 +378,11 @@ func (p *printer) printTopLevel(node TopLevel) string {
 	case *SaveSchema:
 		return p.printSaveSchema(n)
 	case *Include:
-		return p.printInclude(n)
+		return p.printIntent(n.Intent) + p.printInclude(n)
 	case *TypeDecl:
-		return p.printTypeDecl(n)
+		return p.printIntent(n.Intent) + p.printTypeDecl(n)
 	case *Alias:
-		return p.printAlias(n)
+		return p.printIntent(n.Intent) + p.printAlias(n)
 	case *Enum:
 		return p.printEnum(n)
 	case *Model:
@@ -406,11 +406,11 @@ func (p *printer) printTopLevel(node TopLevel) string {
 	case *Schedule:
 		return p.printSchedule(n)
 	case *External:
-		return p.printExternal(n)
+		return p.printIntent(n.Intent) + p.printExternal(n)
 	case *Subscribe:
 		return p.printSubscribe(n)
 	case *Fixture:
-		return p.printFixture(n)
+		return p.printIntent(n.Intent) + p.printFixture(n)
 	case *Test:
 		return p.printTest(n)
 	case *TestGroup:
