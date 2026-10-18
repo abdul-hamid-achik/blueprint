@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed (may reject input that earlier releases accepted)
+
+- New checker error C052: a `default`, `min`, `max`, or `format` value that
+  cannot apply to the declared type now fails `bp check`. Examples:
+  `<- age int default("abc")`, `max(3)` on a `bool`, an unknown
+  `format(phone)`, an enum default that is not a variant, and `min(5) max(1)`.
+  Before, these produced generated code that failed to compile or rejected
+  every request.
+- REST path inputs on the Node target are validated against their declared
+  type and constraints: string `min`/`max`, inline and named enums, and
+  `int`/`float`/`bool`/`timestamp` coercion. A segment that fails answers `400`
+  before the handler runs. Previously only `uuid` and `int` were parsed, and
+  other path inputs reached the handler unchecked. `bp docs` documents the
+  `400` for every REST operation with a declared path input.
+- `format(uuid)`, `format(ip)`, and `format(date)` are enforced on the Node
+  target with Zod `.uuid()`, `.ip()`, and `.date()`; before, only `email` and
+  `url` were. Contract-test samples, property-test arbitraries, and OpenAPI
+  formats follow.
+
+### Fixed
+
+- `bp fmt` and LSP formatting keep an `@` intent above `secret`, `env`,
+  `locale`, `translation`, `include`, `type`, `alias`, `external`, and
+  `fixture` declarations. In 0.16.0 such files were refused with exit `3`.
+  Hovering the `@` of those declarations now shows the intent.
+- `bp fmt` no longer moves a `#` comment into a multi-line string. A trailing
+  comment on the line that opens the string, or a comment or blank line before
+  a token on its closing line, used to land between the string's lines, and
+  the safety net refused the file with exit `3`. Found by `FuzzFormatRoundTrip`.
+
 ## [0.16.0] - 2026-10-18
 
 ### Changed (2026-10-18; may affect scripts and CI)

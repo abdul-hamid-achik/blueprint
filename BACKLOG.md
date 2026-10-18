@@ -39,9 +39,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   `fetch`/`query ... first` results, and truthy-guard narrowing. Remaining:
   deeper nested JSON/FK leaf typing, composite function-output recovery, and
   broader expression assignability. Binary operators whose operands have
-  incompatible known types now fail with C050 (2026-10-18). Constraint values
-  are not type-checked yet, and two endpoints with the same method and path
-  are caught by `bp docs` but not by the checker. _(partially shipped 2026-07-14)_
+  incompatible known types now fail with C050 (2026-10-18), constraint values
+  that do not fit the declared type with C052, and endpoints that register the
+  same route with C005. _(partially shipped 2026-07-14)_
 - [x] **Fail closed when a target cannot preserve semantics.** Effect rejects
   every unimplemented top-level AST kind. Python now uses an exhaustive
   declaration allowlist, rejects authored tests/fixtures, inline `fn logic`,
@@ -139,7 +139,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
 
 - [x] `bp explain <code>` command — embeds `internal/diag/error-codes.md`, prints the
   matching section, drift-tested against `docs/error-codes.md`. Every checker error
-  now carries a named code (C001–C051), and a catalog test requires each code's
+  now carries a named code (C001–C052), and a catalog test requires each code's
   first example to reproduce it. _(shipped — see CHANGELOG)_
 - [x] `internal/codegen/common` — extract pure-string helpers (`toCamelCase`, `toSnakeCase`,
   `toPascalCase`, `pluralize`, `extractResource`, `extractPathParams`, `isPathParam`) for
