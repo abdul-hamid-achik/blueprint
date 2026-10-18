@@ -458,6 +458,10 @@ issues := l.Lint(file)
 | `block-ordering` | warning | Top-level blocks should follow canonical order: blueprint, secret/env, model, type/alias/enum, fn/pipe/middleware, endpoints, worker/schedule, external/subscribe, test/fixture |
 | `intent-on-endpoints` | warning | Every endpoint (REST, STREAM, WS) should have an `@` intent annotation |
 | `empty-endpoint` | warning | Endpoints with no inputs or statements |
+| `unused-secret` / `unused-env` | warning | Declared `secret` / `env` never referenced; `DATABASE_URL` and `REDIS_URL` exempt; silent for files with hand-written or `@>` code |
+| `unused-function` | warning | `fn`, `pipe`, or `middleware` never called or applied elsewhere |
+| `fetch-without-guard` | warning | REST endpoint reads a `fetch` result before `guard <name>` |
+| `unpaginated-list` | info | `GET` endpoint returns every row of a `query` without `paginate` or `first` |
 
 ### Adding a lint rule
 

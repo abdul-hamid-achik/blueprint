@@ -639,3 +639,473 @@ GET /api/widgets {
 		}
 	}
 }
+
+// issuesFor lints src and returns only the findings for rule.
+func issuesFor(t *testing.T, src, rule string) []linter.Issue {
+	t.Helper()
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	var out []linter.Issue
+	for _, iss := range linter.Lint(file) {
+		if iss.Rule == rule {
+			out = append(out, iss)
+		}
+	}
+	return out
+}
+
+// wantIssueAt asserts exactly one finding for rule at line, with the given level.
+func wantIssueAt(t *testing.T, issues []linter.Issue, rule, level string, line int) {
+	t.Helper()
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 %s issue, got %d", rule, len(issues))
+	}
+	iss := issues[0]
+	if iss.Level != level || iss.Line != line {
+		t.Errorf("%s: want %s at line %d, got %s at line %d (%s)", rule, level, line, iss.Level, iss.Line, iss.Message)
+	}
+	if iss.Hint == "" {
+		t.Errorf("%s: expected an actionable hint", rule)
+	}
+}
+
+func TestLint_UnusedSecret_Flagged(t *testing.T) {
+	src := minimalHeader + `
+secret API_KEY required
+
+@ "Health"
+GET /api/health {
+  -> 200 "ok"
+}
+`
+	wantIssueAt(t, issuesFor(t, src, "unused-secret"), "unused-secret", "warning", 7)
+}
+
+func TestLint_UnusedEnv_Flagged(t *testing.T) {
+	src := minimalHeader + `
+env LOG_LEVEL "info"
+
+@ "Health"
+GET /api/health {
+  -> 200 "ok"
+}
+`
+	wantIssueAt(t, issuesFor(t, src, "unused-env"), "unused-env", "warning", 7)
+}
+
+func TestLint_SecretAndEnvReferences_NotFlagged(t *testing.T) {
+	// Each declaration is read from a different reference site. None may be
+	// reported, so every site the rule must see is covered here.
+	src := `blueprint "test" {
+  version "1.0.0"
+  port    8080
+  runtime node
+  use cors { origins: [env.ALLOWED_ORIGIN] }
+}
+
+secret WEBHOOK_KEY required
+secret SVC_TOKEN required
+secret DB_PASS required
+secret EXPR_KEY required
+env ALLOWED_ORIGIN "https://example.com"
+env GREETING "hi"
+env SECRET_VIA_ENV "x"
+
+external "svc" {
+  url:     "https://svc.example.com"
+  timeout: 5s
+  auth:    bearer(secret.SVC_TOKEN)
+}
+
+@ "Webhook"
+POST /api/hook {
+  auth webhook_sig using(secret.WEBHOOK_KEY)
+  <- body string required
+  -> 200 { key: env.SECRET_VIA_ENV }
+}
+
+@ "Greet"
+GET /api/greet {
+  -> 200 { msg: "{env.GREETING} there", key: env.EXPR_KEY }
+}
+
+@ "Pass"
+GET /api/pass {
+  |> pw = env.DB_PASS
+  -> 200 { ok: pw }
+}
+`
+	for _, rule := range []string{"unused-secret", "unused-env"} {
+		if got := issuesFor(t, src, rule); len(got) != 0 {
+			t.Errorf("%s should not fire, got %d: %v", rule, len(got), got)
+		}
+	}
+}
+
+func TestLint_ImplicitInfraEnv_NotFlagged(t *testing.T) {
+	// DATABASE_URL and REDIS_URL are read by the generators by name.
+	src := minimalHeader + `
+secret DATABASE_URL required
+secret REDIS_URL required
+
+@ "Health"
+GET /api/health {
+  -> 200 "ok"
+}
+`
+	if got := issuesFor(t, src, "unused-secret"); len(got) != 0 {
+		t.Errorf("implicit infra names must not be flagged, got %v", got)
+	}
+}
+
+func TestLint_UnusedSecret_SuppressedByOpaqueCode(t *testing.T) {
+	// A user-owned impl module (or an unresolved @> slot) can read env by
+	// name, so the rule stays silent for the whole file.
+	src := minimalHeader + `
+secret API_KEY required
+
+fn process_data {
+  <- input string
+  -> string
+  impl node {
+    module: "./internal/process"
+  }
+}
+`
+	if got := issuesFor(t, src, "unused-secret"); len(got) != 0 {
+		t.Errorf("impl node may read the secret, rule should be silent, got %v", got)
+	}
+
+	gen := minimalHeader + `
+secret API_KEY required
+
+@ "Generated"
+POST /api/items {
+  <- name string required
+  @> "validate the name"
+  -> 201 "ok"
+}
+`
+	if got := issuesFor(t, gen, "unused-secret"); len(got) != 0 {
+		t.Errorf("@> slot may read the secret, rule should be silent, got %v", got)
+	}
+}
+
+func TestLint_UnusedFn_Flagged(t *testing.T) {
+	src := minimalHeader + `
+fn calculate_price {
+  <- plan string
+  -> float
+  logic {
+    |> when plan == "free" -> 0
+  }
+}
+`
+	wantIssueAt(t, issuesFor(t, src, "unused-function"), "unused-function", "warning", 7)
+}
+
+func TestLint_UnusedFn_CalledFromEndpointNotFlagged(t *testing.T) {
+	src := minimalHeader + `
+fn calculate_price {
+  <- plan string
+  -> float
+  logic {
+    |> when plan == "free" -> 0
+  }
+}
+
+@ "Price"
+GET /api/price {
+  <- plan string required
+  |> price = calculate_price(plan)
+  -> 200 { price: price }
+}
+`
+	if got := issuesFor(t, src, "unused-function"); len(got) != 0 {
+		t.Errorf("fn called from an endpoint should not be flagged, got %v", got)
+	}
+}
+
+func TestLint_UnusedFn_SelfCallDoesNotCount(t *testing.T) {
+	src := minimalHeader + `
+fn count_down {
+  <- n int
+  -> int
+  logic {
+    |> next = count_down(n)
+    -> next
+  }
+}
+`
+	wantIssueAt(t, issuesFor(t, src, "unused-function"), "unused-function", "warning", 7)
+}
+
+func TestLint_UnusedPipe_CallForms(t *testing.T) {
+	unused := minimalHeader + `
+pipe validate_input {
+  <- data string
+  |> guard data != "" -> 400 "Data cannot be empty"
+  -> data
+}
+`
+	wantIssueAt(t, issuesFor(t, unused, "unused-function"), "unused-function", "warning", 7)
+
+	// Bare `pipe name` parses as Ident "pipe_name", the call form as FnCall.
+	bare := minimalHeader + `
+pipe validate_input {
+  <- data string
+  |> guard data != "" -> 400 "Data cannot be empty"
+  -> data
+}
+
+@ "Bare pipe"
+POST /api/items {
+  <- data string required
+  |> pipe validate_input
+  -> 201 "ok"
+}
+`
+	if got := issuesFor(t, bare, "unused-function"); len(got) != 0 {
+		t.Errorf("bare pipe reference should count as a use, got %v", got)
+	}
+
+	call := minimalHeader + `
+pipe validate_input {
+  <- data string
+  |> guard data != "" -> 400 "Data cannot be empty"
+  -> data
+}
+
+@ "Call pipe"
+POST /api/items {
+  <- data string required
+  |> validated = pipe validate_input(data)
+  -> 201 { data: validated }
+}
+`
+	if got := issuesFor(t, call, "unused-function"); len(got) != 0 {
+		t.Errorf("pipe call should count as a use, got %v", got)
+	}
+}
+
+func TestLint_UnusedMiddleware_UseForms(t *testing.T) {
+	mw := `
+middleware require_auth {
+  before {
+    |> guard header.Authorization -> 401 "Missing auth"
+  }
+}
+`
+	wantIssueAt(t, issuesFor(t, minimalHeader+mw, "unused-function"), "unused-function", "warning", 7)
+
+	perEndpoint := minimalHeader + mw + `
+@ "Private"
+GET /api/private {
+  use require_auth
+  -> 200 "ok"
+}
+`
+	if got := issuesFor(t, perEndpoint, "unused-function"); len(got) != 0 {
+		t.Errorf("endpoint use should count as applying the middleware, got %v", got)
+	}
+
+	global := `blueprint "test" {
+  version "1.0.0"
+  port    8080
+  runtime node
+  use require_auth
+}
+` + mw
+	if got := issuesFor(t, global, "unused-function"); len(got) != 0 {
+		t.Errorf("global use should count as applying the middleware, got %v", got)
+	}
+}
+
+func TestLint_UnpaginatedList_Flagged(t *testing.T) {
+	src := minimalHeader + `
+model item {
+  id   uuid primary
+  name string required
+}
+
+@ "List items"
+GET /api/items {
+  |> items = query item
+  -> 200 items
+}
+`
+	wantIssueAt(t, issuesFor(t, src, "unpaginated-list"), "unpaginated-list", "info", 14)
+}
+
+func TestLint_UnpaginatedList_BlockOutputFlagged(t *testing.T) {
+	src := minimalHeader + `
+model item {
+  id   uuid primary
+  name string required
+}
+
+@ "List items"
+GET /api/items {
+  |> items = query item where(name != "")
+  -> 200 { items: items }
+}
+`
+	wantIssueAt(t, issuesFor(t, src, "unpaginated-list"), "unpaginated-list", "info", 14)
+}
+
+func TestLint_UnpaginatedList_BoundedNotFlagged(t *testing.T) {
+	cases := map[string]string{
+		"paginate": `
+@ "List"
+GET /api/items {
+  <- page int default(1)
+  <- per_page int default(20)
+  |> items = query item paginate(page, per_page)
+  -> 200 { items: items }
+}
+`,
+		"first": `
+@ "One"
+GET /api/items {
+  |> item = query item first
+  -> 200 { item: item }
+}
+`,
+		"post": `
+@ "Create"
+POST /api/items {
+  |> items = query item
+  -> 200 { items: items }
+}
+`,
+		"rebound before output": `
+@ "List"
+GET /api/items {
+  |> items = query item
+  |> items = query item first
+  -> 200 { items: items }
+}
+`,
+		"not returned": `
+@ "Count"
+GET /api/items {
+  |> items = query item
+  -> 200 "ok"
+}
+`,
+	}
+	for name, endpoint := range cases {
+		src := minimalHeader + `
+model item {
+  id   uuid primary
+  name string required
+}
+` + endpoint
+		if got := issuesFor(t, src, "unpaginated-list"); len(got) != 0 {
+			t.Errorf("%s: expected no unpaginated-list, got %v", name, got)
+		}
+	}
+}
+
+func TestLint_FetchWithoutGuard_Flagged(t *testing.T) {
+	src := minimalHeader + `
+model user {
+  id   uuid primary
+  name string required
+}
+
+@ "Get user"
+GET /api/users/:id {
+  <- id uuid required
+  |> user = fetch user(id)
+  -> 200 { name: user.name }
+}
+`
+	wantIssueAt(t, issuesFor(t, src, "fetch-without-guard"), "fetch-without-guard", "warning", 15)
+}
+
+func TestLint_FetchWithoutGuard_OutputOnlyFlagged(t *testing.T) {
+	src := minimalHeader + `
+model user {
+  id   uuid primary
+  name string required
+}
+
+@ "Get user"
+GET /api/users/:id {
+  <- id uuid required
+  |> user = fetch user(id)
+  -> 200 { user: user }
+}
+`
+	wantIssueAt(t, issuesFor(t, src, "fetch-without-guard"), "fetch-without-guard", "warning", 15)
+}
+
+func TestLint_FetchWithoutGuard_HandledNotFlagged(t *testing.T) {
+	cases := map[string]string{
+		"guard first": `
+  |> user = fetch user(id)
+  |> guard user -> 404 "User not found"
+  -> 200 { name: user.name }
+`,
+		"when on binding": `
+  |> user = fetch user(id)
+  |> when user {
+    |> log "found"
+  }
+  -> 200 { name: user.name }
+`,
+		"try wrapper": `
+  |> user = fetch user(id)
+  |> try {
+    -> 200 { name: user.name }
+  } recover {
+    -> 500 { error: "failed" }
+  }
+`,
+	}
+	for name, body := range cases {
+		src := minimalHeader + `
+model user {
+  id   uuid primary
+  name string required
+}
+
+model todo {
+  id   uuid primary
+  done bool required
+}
+
+@ "Get"
+GET /api/users/:id {
+  <- id uuid required` + body + `}
+`
+		if got := issuesFor(t, src, "fetch-without-guard"); len(got) != 0 {
+			t.Errorf("%s: expected no fetch-without-guard, got %v", name, got)
+		}
+	}
+}
+
+func TestLint_FetchWithoutGuard_ModelNameCollision(t *testing.T) {
+	// `query todo` names the model, not the fetched variable, so the binding
+	// is never read and nothing is reported.
+	src := minimalHeader + `
+model todo {
+  id   uuid primary
+  done bool required
+}
+
+@ "Get"
+GET /api/todos/:id {
+  <- id uuid required
+  |> todo = fetch todo(id)
+  |> rows = query todo where(done == false)
+  -> 200 { rows: rows }
+}
+`
+	if got := issuesFor(t, src, "fetch-without-guard"); len(got) != 0 {
+		t.Errorf("model name in query must not count as a read of the binding, got %v", got)
+	}
+}

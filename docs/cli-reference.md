@@ -530,6 +530,11 @@ bp lint <file.bp>
 | `block-ordering` | warning | Top-level blocks should follow canonical order (blueprint, secret, model, endpoint, ...) |
 | `intent-on-endpoints` | warning | Every endpoint (REST, STREAM, WS) should have an `@` intent annotation |
 | `empty-endpoint` | warning | Endpoints with no inputs or statements are flagged |
+| `unused-secret` | warning | A `secret` that no `env.NAME`, `using(secret.NAME)`, or external auth reads. `DATABASE_URL` and `REDIS_URL` are never reported. Silent for files with a non-`exec`/`http` `impl` or a `@>` slot, which can read env outside the source |
+| `unused-env` | warning | An `env` that no `env.NAME` reads (same suppression as `unused-secret`) |
+| `unused-function` | warning | A `fn`, `pipe`, or `middleware` that nothing calls or applies. A self-call does not count (same suppression) |
+| `fetch-without-guard` | warning | A REST endpoint reads a `fetch` result before `guard <name>`. A missing row fails the request (500) instead of returning 404 |
+| `unpaginated-list` | info | A `GET` endpoint returns every row of a `query` with no `paginate(...)` or `first` |
 
 **Example:**
 

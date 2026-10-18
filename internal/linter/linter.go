@@ -2,9 +2,11 @@ package linter
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
+	"github.com/abdul-hamid-achik/blueprint/internal/lexer"
 )
 
 // Issue represents a lint finding.
@@ -32,6 +34,10 @@ func Lint(f *ast.File) []Issue {
 	issues = append(issues, checkUnusedInput(f)...)
 	issues = append(issues, checkUnenforceableWsAuth(f)...)
 	issues = append(issues, checkCacheOnNonGet(f)...)
+	issues = append(issues, checkUnusedSecretsAndEnvs(f)...)
+	issues = append(issues, checkUnusedFunctions(f)...)
+	issues = append(issues, checkUnpaginatedList(f)...)
+	issues = append(issues, checkFetchWithoutGuard(f)...)
 	return issues
 }
 
@@ -859,4 +865,574 @@ func isAutoAppliedSearchInput(name string) bool {
 		return true
 	}
 	return false
+}
+
+// implicitEnvNames are environment variables the generators read by name
+// whenever the matching infrastructure is present: DATABASE_URL for the
+// database and models, REDIS_URL for cache, queues, workers, schedules and
+// realtime. They are never reported as unused, whatever the target.
+var implicitEnvNames = map[string]bool{"DATABASE_URL": true, "REDIS_URL": true}
+
+// modelOperations are data operations whose first argument names a model
+// rather than reading a bound variable. update and delete are excluded:
+// `update <model>` writes the bound variable of that name.
+var modelOperations = map[string]bool{
+	"fetch": true, "query": true, "save": true, "count": true, "seed": true,
+	"import_bundle": true, "export_bundle": true,
+}
+
+// refSet is what one top-level block refers to by name.
+type refSet struct {
+	names  map[string]bool // Ident and FnCall names: values, fn/pipe calls
+	uses   map[string]bool // `use NAME` middleware references
+	dotted map[string]bool // NAME in `env.NAME` and `secret.NAME`
+	// opaque is set when the block holds code the AST does not show: a
+	// user-owned `impl` module (any strategy but exec/http) or an unresolved
+	// `@>` slot. Such code can read env and call fns, pipes or middleware by
+	// name, so the reference rules stay silent for the whole file.
+	opaque bool
+}
+
+// blockRefs pairs a top-level block (the blueprint block included) with the
+// names it refers to.
+type blockRefs struct {
+	block ast.TopLevel
+	refs  *refSet
+}
+
+func collectFileRefs(f *ast.File) []blockRefs {
+	var out []blockRefs
+	if f.Blueprint != nil {
+		out = append(out, blockRefs{block: f.Blueprint, refs: walkRefs(f.Blueprint)})
+	}
+	for _, b := range f.Blocks {
+		out = append(out, blockRefs{block: b, refs: walkRefs(b)})
+	}
+	return out
+}
+
+func walkRefs(node ast.Node) *refSet {
+	r := &refSet{names: map[string]bool{}, uses: map[string]bool{}, dotted: map[string]bool{}}
+	r.walk(reflect.ValueOf(node))
+	return r
+}
+
+// walk visits every pointer, slice, and struct field below v. It is generic on
+// purpose: ast.Walk skips endpoint and worker meta, blueprint, external and
+// middleware entries, impl entries, and test requests and assertions, and all
+// of those can name env values, fns, pipes, or middleware.
+func (r *refSet) walk(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.Interface:
+		if !v.IsNil() {
+			r.walk(v.Elem())
+		}
+	case reflect.Pointer:
+		if v.IsNil() || !v.CanInterface() {
+			return
+		}
+		r.visit(v.Interface())
+		r.walk(v.Elem())
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			r.walk(v.Field(i))
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			r.walk(v.Index(i))
+		}
+	}
+}
+
+func (r *refSet) visit(node any) {
+	switch n := node.(type) {
+	case *ast.Ident:
+		r.names[n.Name] = true
+	case *ast.FnCall:
+		r.names[n.Name] = true
+	case *ast.UseStmt:
+		r.uses[n.Name] = true
+	case *ast.FieldAccess:
+		if base, ok := n.Base.(*ast.Ident); ok && (base.Name == "env" || base.Name == "secret") {
+			r.dotted[n.Field] = true
+		}
+	case *ast.StringLit:
+		r.addText(interpolationBodies(n.Value))
+	case *ast.Assertion:
+		r.addText(n.Raw)
+	case *ast.GenerateStep:
+		r.opaque = true
+	case *ast.ImplBlock:
+		if n.Strategy != "exec" && n.Strategy != "http" {
+			r.opaque = true
+		}
+	}
+}
+
+func (r *refSet) addText(text string) {
+	idents, dotted := scanIdentifiers(text)
+	for _, name := range idents {
+		r.names[name] = true
+	}
+	for _, name := range dotted {
+		r.dotted[name] = true
+	}
+}
+
+// interpolationBodies returns the `{...}` segments of a string literal joined
+// by spaces. Only those segments are evaluated, so only they can reference
+// names.
+func interpolationBodies(s string) string {
+	var b strings.Builder
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '{':
+			depth++
+			b.WriteByte(' ')
+		case s[i] == '}':
+			if depth > 0 {
+				depth--
+			}
+			b.WriteByte(' ')
+		case depth > 0:
+			b.WriteByte(s[i])
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
+// scanIdentifiers returns the root identifiers in text (identifiers not
+// preceded by '.') and the NAME of every `env.NAME` / `secret.NAME` pair.
+func scanIdentifiers(text string) (idents, dotted []string) {
+	for i := 0; i < len(text); {
+		if !isIdentStart(text[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(text) && isIdentPart(text[i]) {
+			i++
+		}
+		if start > 0 && text[start-1] == '.' {
+			continue
+		}
+		word := text[start:i]
+		idents = append(idents, word)
+		if (word == "env" || word == "secret") && i+1 < len(text) && text[i] == '.' && isIdentStart(text[i+1]) {
+			j := i + 1
+			for j < len(text) && isIdentPart(text[j]) {
+				j++
+			}
+			dotted = append(dotted, text[i+1:j])
+		}
+	}
+	return idents, dotted
+}
+
+func isIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isIdentPart(c byte) bool {
+	return isIdentStart(c) || (c >= '0' && c <= '9')
+}
+
+// anyBlockRefs reports whether pred holds for the refs of any block.
+func anyBlockRefs(all []blockRefs, pred func(*refSet) bool) bool {
+	for _, br := range all {
+		if pred(br.refs) {
+			return true
+		}
+	}
+	return false
+}
+
+// usedOutsideBlock reports whether pred holds for a block other than self.
+// A block that only calls itself is still unused.
+func usedOutsideBlock(all []blockRefs, self ast.TopLevel, pred func(*refSet) bool) bool {
+	for _, br := range all {
+		if br.block != self && pred(br.refs) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkUnusedSecretsAndEnvs flags `secret NAME` and `env NAME` declarations
+// that nothing refers to. `env.NAME` reads both kinds, and `secret.NAME` is
+// read by webhook_sig and external auth. The rule is silent when the file has
+// opaque code (see refSet.opaque) and never reports implicitEnvNames.
+func checkUnusedSecretsAndEnvs(f *ast.File) []Issue {
+	all := collectFileRefs(f)
+	if anyBlockRefs(all, func(r *refSet) bool { return r.opaque }) {
+		return nil
+	}
+
+	var issues []Issue
+	for _, block := range f.Blocks {
+		var kind, name string
+		var loc lexer.Loc
+		var hint string
+		switch n := block.(type) {
+		case *ast.Secret:
+			kind, name, loc = "secret", n.Name, n.Loc
+			hint = fmt.Sprintf("Remove the declaration, or read it as `env.%s` in an expression or as `using(secret.%s)` in auth or external config", name, name)
+		case *ast.Env:
+			kind, name, loc = "env", n.Name, n.Loc
+			hint = fmt.Sprintf("Remove the declaration, or read it as `env.%s` in an expression", name)
+		default:
+			continue
+		}
+		if implicitEnvNames[name] {
+			continue
+		}
+		if anyBlockRefs(all, func(r *refSet) bool { return r.dotted[name] }) {
+			continue
+		}
+		rule := "unused-" + kind
+		issues = append(issues, Issue{
+			File:    loc.File,
+			Line:    loc.Line,
+			Col:     loc.Col,
+			Level:   "warning",
+			Rule:    rule,
+			Message: fmt.Sprintf("%s %s is declared but never referenced", kind, name),
+			Hint:    hint,
+		})
+	}
+	return issues
+}
+
+// checkUnusedFunctions flags fn, pipe, and middleware declarations that no
+// other block calls or applies. Calls from the declaration itself do not count.
+// Like checkUnusedSecretsAndEnvs, it is silent for files with opaque code.
+func checkUnusedFunctions(f *ast.File) []Issue {
+	all := collectFileRefs(f)
+	if anyBlockRefs(all, func(r *refSet) bool { return r.opaque }) {
+		return nil
+	}
+
+	var issues []Issue
+	for _, block := range f.Blocks {
+		var name string
+		var loc lexer.Loc
+		var used func(*refSet) bool
+		var message, hint string
+		switch n := block.(type) {
+		case *ast.Fn:
+			name, loc = n.Name, n.Loc
+			used = func(r *refSet) bool { return r.names[name] }
+			message = fmt.Sprintf("fn %s is declared but never called", name)
+			hint = fmt.Sprintf("Call it with `|> result = %s(...)` from an endpoint, worker, schedule, subscription, pipe, or fn, or remove it", name)
+		case *ast.Pipe:
+			name, loc = n.Name, n.Loc
+			// A bare `|> pipe name` parses as Ident "pipe_name"; the call
+			// form `pipe name(...)` parses as FnCall "name".
+			used = func(r *refSet) bool { return r.names["pipe_"+name] || r.names[name] }
+			message = fmt.Sprintf("pipe %s is declared but never used", name)
+			hint = fmt.Sprintf("Use it with `|> value = pipe %s(...)` from an endpoint, worker, schedule, subscription, or fn, or remove it", name)
+		case *ast.Middleware:
+			name, loc = n.Name, n.Loc
+			used = func(r *refSet) bool { return r.uses[name] || r.names[name] }
+			message = fmt.Sprintf("middleware %s is declared but never applied", name)
+			hint = fmt.Sprintf("Apply it with `use %s` in an endpoint, stream, WS block, or the blueprint block, or remove it", name)
+		default:
+			continue
+		}
+		if usedOutsideBlock(all, block, used) {
+			continue
+		}
+		issues = append(issues, Issue{
+			File:    loc.File,
+			Line:    loc.Line,
+			Col:     loc.Col,
+			Level:   "warning",
+			Rule:    "unused-function",
+			Message: message,
+			Hint:    hint,
+		})
+	}
+	return issues
+}
+
+// checkFetchWithoutGuard flags a REST endpoint that reads a `fetch` result
+// before any guard on it. A fetch returns null when no row matches, and the
+// generated Node code does not turn that into a 404: a field read throws, the
+// catch block rethrows it, and the request fails with a 500. Bare `guard x`
+// and `when x` are the accepted null checks. A try/recover block counts as
+// handled, so the scan stops there. Only top-level statements of the endpoint
+// are scanned, and `query ... first` is not checked.
+func checkFetchWithoutGuard(f *ast.File) []Issue {
+	var issues []Issue
+	for _, block := range f.Blocks {
+		ep, ok := block.(*ast.Endpoint)
+		if !ok {
+			continue
+		}
+		for i, s := range ep.Stmts {
+			step, ok := s.(*ast.StepStmt)
+			if !ok || step.Binding == "" {
+				continue
+			}
+			call, ok := step.Expr.(*ast.FnCall)
+			if !ok || call.Name != "fetch" || len(call.Args) == 0 {
+				continue
+			}
+			if !readBeforeGuard(ep.Stmts[i+1:], step.Binding) {
+				continue
+			}
+			model := step.Binding
+			if id, ok := call.Args[0].(*ast.Ident); ok {
+				model = id.Name
+			}
+			loc := step.Loc
+			issues = append(issues, Issue{
+				File:    loc.File,
+				Line:    loc.Line,
+				Col:     loc.Col,
+				Level:   "warning",
+				Rule:    "fetch-without-guard",
+				Message: fmt.Sprintf("fetch result %q can be null and is read before any `guard %s`; when no %s row matches, the request does not return 404", step.Binding, step.Binding, model),
+				Hint:    fmt.Sprintf("Add `|> guard %s -> 404 \"%s not found\"` right after the fetch", step.Binding, model),
+			})
+		}
+	}
+	return issues
+}
+
+// readBeforeGuard reports whether the first statement that reads name comes
+// before any null check on it. A rebinding of name ends the scan.
+func readBeforeGuard(stmts []ast.ArrowStmt, name string) bool {
+	for _, s := range stmts {
+		if _, ok := s.(*ast.TryRecover); ok {
+			return false
+		}
+		if isNullCheckOn(s, name) {
+			return false
+		}
+		if stmtReads(s, name) {
+			return true
+		}
+		if step, ok := s.(*ast.StepStmt); ok && step.Binding == name {
+			return false
+		}
+	}
+	return false
+}
+
+// isNullCheckOn reports whether s guards name: `guard name`, `when name`, or a
+// when block whose body starts with such a guard.
+func isNullCheckOn(s ast.ArrowStmt, name string) bool {
+	switch n := s.(type) {
+	case *ast.GuardStmt:
+		return isBareIdent(n.Condition, name)
+	case *ast.WhenStmt:
+		if isBareIdent(n.Condition, name) {
+			return true
+		}
+		for _, inner := range n.Body {
+			if isNullCheckOn(inner, name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isBareIdent(e ast.Expr, name string) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == name
+}
+
+// stmtReads reports whether a statement reads the variable name. Nested when
+// bodies are included; try/recover is handled by the caller.
+func stmtReads(s ast.ArrowStmt, name string) bool {
+	switch n := s.(type) {
+	case *ast.StepStmt:
+		return exprReads(n.Expr, name)
+	case *ast.GuardStmt:
+		return exprReads(n.Condition, name)
+	case *ast.WhenStmt:
+		if exprReads(n.Condition, name) || exprReads(n.Inline, name) {
+			return true
+		}
+		for _, inner := range n.Body {
+			if stmtReads(inner, name) {
+				return true
+			}
+		}
+	case *ast.OutputStmt:
+		return exprReads(n.Value, name)
+	}
+	return false
+}
+
+// exprReads reports whether e reads the variable name. The model argument of
+// a data operation is a model name, not a variable, so it is skipped.
+func exprReads(e ast.Expr, name string) bool {
+	if e == nil {
+		return false
+	}
+	switch n := e.(type) {
+	case *ast.Ident:
+		return n.Name == name
+	case *ast.StringLit:
+		idents, _ := scanIdentifiers(interpolationBodies(n.Value))
+		for _, id := range idents {
+			if id == name {
+				return true
+			}
+		}
+	case *ast.BinaryExpr:
+		return exprReads(n.Left, name) || exprReads(n.Right, name)
+	case *ast.UnaryExpr:
+		return exprReads(n.Operand, name)
+	case *ast.FnCall:
+		for i, arg := range n.Args {
+			if i == 0 && modelOperations[n.Name] {
+				continue
+			}
+			if exprReads(arg, name) {
+				return true
+			}
+		}
+	case *ast.FieldAccess:
+		return exprReads(n.Base, name)
+	case *ast.IndexAccess:
+		return exprReads(n.Base, name) || exprReads(n.Index, name)
+	case *ast.ParenExpr:
+		return exprReads(n.Expr, name)
+	case *ast.ListExpr:
+		for _, el := range n.Elements {
+			if exprReads(el, name) {
+				return true
+			}
+		}
+	case *ast.BlockExpr:
+		for _, kv := range n.Entries {
+			if exprReads(kv.Value, name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkUnpaginatedList flags a GET endpoint that returns every row of a
+// `query` with neither `paginate(...)` nor `first`. Blueprint has no other
+// row-limit modifier. The endpoint `limit` meta is a rate limit and does not
+// bound the result. The finding is info-level: an unbounded list can be
+// intentional for small tables.
+func checkUnpaginatedList(f *ast.File) []Issue {
+	var issues []Issue
+	for _, block := range f.Blocks {
+		ep, ok := block.(*ast.Endpoint)
+		if !ok || ep.Method != "GET" {
+			continue
+		}
+		// steps maps each binding to its current unpaginated query, in
+		// document order: a later rebinding replaces or clears the entry.
+		steps := map[string]*ast.StepStmt{}
+		reported := map[ast.Node]bool{}
+		report := func(node ast.Node, loc lexer.Loc, model string) {
+			if reported[node] {
+				return
+			}
+			reported[node] = true
+			issues = append(issues, Issue{
+				File:    loc.File,
+				Line:    loc.Line,
+				Col:     loc.Col,
+				Level:   "info",
+				Rule:    "unpaginated-list",
+				Message: fmt.Sprintf("GET %s returns every %s row: the query has no paginate(...) or first modifier", ep.Path, model),
+				Hint:    fmt.Sprintf("Bound the list with `paginate(page, n)` on `query %s` (the response becomes { items, total, ... }), or add `first` if one record is intended", model),
+			})
+		}
+		walkFlatStmts(ep.Stmts, func(s ast.ArrowStmt) {
+			switch n := s.(type) {
+			case *ast.StepStmt:
+				if n.Binding == "" {
+					return
+				}
+				if _, ok := unpaginatedQueryModel(n.Expr); ok {
+					steps[n.Binding] = n
+				} else {
+					delete(steps, n.Binding)
+				}
+			case *ast.OutputStmt:
+				for _, value := range returnedExprs(n.Value) {
+					switch v := value.(type) {
+					case *ast.Ident:
+						if step, ok := steps[v.Name]; ok {
+							model, _ := unpaginatedQueryModel(step.Expr)
+							report(step, step.Loc, model)
+						}
+					case *ast.FnCall:
+						if model, ok := unpaginatedQueryModel(v); ok {
+							report(v, v.Loc, model)
+						}
+					}
+				}
+			}
+		})
+	}
+	return issues
+}
+
+// walkFlatStmts visits every statement in stmts, descending into when and
+// try/recover bodies, the same flat scope the codegen uses.
+func walkFlatStmts(stmts []ast.ArrowStmt, visit func(ast.ArrowStmt)) {
+	for _, s := range stmts {
+		visit(s)
+		switch n := s.(type) {
+		case *ast.WhenStmt:
+			walkFlatStmts(n.Body, visit)
+		case *ast.TryRecover:
+			walkFlatStmts(n.Try, visit)
+			walkFlatStmts(n.Recover, visit)
+		}
+	}
+}
+
+// returnedExprs returns the expressions an output sends directly: the value
+// itself, or the entries of a block literal.
+func returnedExprs(e ast.Expr) []ast.Expr {
+	if block, ok := e.(*ast.BlockExpr); ok {
+		out := make([]ast.Expr, 0, len(block.Entries))
+		for _, kv := range block.Entries {
+			out = append(out, kv.Value)
+		}
+		return out
+	}
+	return []ast.Expr{e}
+}
+
+// unpaginatedQueryModel reports the model of a `query` that has neither a
+// paginate(...) nor a first modifier.
+func unpaginatedQueryModel(e ast.Expr) (string, bool) {
+	call, ok := e.(*ast.FnCall)
+	if !ok || call.Name != "query" || len(call.Args) == 0 {
+		return "", false
+	}
+	model, ok := call.Args[0].(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	for _, arg := range call.Args[1:] {
+		switch m := arg.(type) {
+		case *ast.Ident:
+			if m.Name == "first" {
+				return "", false
+			}
+		case *ast.FnCall:
+			if m.Name == "paginate" {
+				return "", false
+			}
+		}
+	}
+	return model.Name, true
 }
