@@ -42,7 +42,9 @@ todosRoutes.post('/api/todos', zValidator('json', postTodosSchema), async (c) =>
 // Get a specific todo
 todosRoutes.get('/api/todos/:id', async (c) => {
   try {
-    const id = z.string().uuid().parse(c.req.param('id'));
+    const _idParam = z.string().uuid().safeParse(c.req.param('id'));
+    if (!_idParam.success) return c.json(_idParam, 400 as const);
+    const id = _idParam.data;
     const todo = (await db.select().from(schema.todo).where(eq(schema.todo.id, id)))[0];
     if (!(todo)) return c.json({ error: "Todo not found" }, 404 as const);
     return c.json({ id: todo.id, title: todo.title, done: todo.done, created: todo.created }, 200 as const);
@@ -56,7 +58,9 @@ todosRoutes.get('/api/todos/:id', async (c) => {
 // Toggle todo completion
 todosRoutes.patch('/api/todos/:id', zValidator('json', patchTodosSchema), async (c) => {
   try {
-    const id = z.string().uuid().parse(c.req.param('id'));
+    const _idParam = z.string().uuid().safeParse(c.req.param('id'));
+    if (!_idParam.success) return c.json(_idParam, 400 as const);
+    const id = _idParam.data;
     const done = c.req.valid('json').done;
     let todo = (await db.select().from(schema.todo).where(eq(schema.todo.id, id)))[0];
     if (!(todo)) return c.json({ error: "Todo not found" }, 404 as const);
@@ -72,7 +76,9 @@ todosRoutes.patch('/api/todos/:id', zValidator('json', patchTodosSchema), async 
 // Delete a todo
 todosRoutes.delete('/api/todos/:id', async (c) => {
   try {
-    const id = z.string().uuid().parse(c.req.param('id'));
+    const _idParam = z.string().uuid().safeParse(c.req.param('id'));
+    if (!_idParam.success) return c.json(_idParam, 400 as const);
+    const id = _idParam.data;
     const todo = (await db.select().from(schema.todo).where(eq(schema.todo.id, id)))[0];
     if (!(todo)) return c.json({ error: "Todo not found" }, 404 as const);
     await db.delete(schema.todo).where(eq(schema.todo.id, todo.id));

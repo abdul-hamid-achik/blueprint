@@ -205,7 +205,8 @@ func buildStreamOperation(ep *ast.StreamEndpoint) map[string]any {
 	// Stream setup statements run before the SSE response starts, so their
 	// guards answer with the error body and the guard status.
 	addGuardResponses(responses, ep.Stmts)
-	addGeneratedErrorResponses(responses, ep.Meta, false)
+	// Declared path inputs are validated before the stream starts.
+	addGeneratedErrorResponses(responses, ep.Meta, len(arrowInputs(ep.Stmts)) > 0)
 	op["responses"] = responses
 	return op
 }
@@ -224,7 +225,8 @@ func buildWsOperation(ep *ast.WsEndpoint) map[string]any {
 			"description": "Switching Protocols — WebSocket upgrade",
 		},
 	}
-	addGeneratedErrorResponses(responses, ep.Meta, false)
+	// Declared path inputs are validated before the upgrade.
+	addGeneratedErrorResponses(responses, ep.Meta, len(arrowInputs(ep.Stmts)) > 0)
 	op["responses"] = responses
 	// x-websocket extension for tooling that supports it
 	op["x-websocket"] = true
@@ -290,7 +292,7 @@ func buildOperation(ep *ast.Endpoint) map[string]any {
 	}
 
 	// responses from OutputStmt nodes and runtime-generated errors
-	op["responses"] = buildResponses(ep, hasBodyInputs(inputs, pathParams))
+	op["responses"] = buildResponses(ep, hasBodyInputs(inputs, pathParams) || validatesPathInputs(inputs, pathParams))
 
 	return op
 }
@@ -300,6 +302,28 @@ func buildOperation(ep *ast.Endpoint) map[string]any {
 func hasBodyInputs(inputs []*ast.InputStmt, pathParams map[string]bool) bool {
 	for _, input := range inputs {
 		if !pathParams[input.Name] {
+			return true
+		}
+	}
+	return false
+}
+
+// validatesPathInputs reports whether a REST path input is parsed at runtime.
+// The Node target answers a malformed uuid or int path segment with the
+// zValidator-shaped 400; other path inputs are passed through as strings.
+func validatesPathInputs(inputs []*ast.InputStmt, pathParams map[string]bool) bool {
+	for _, input := range inputs {
+		if !pathParams[input.Name] {
+			continue
+		}
+		var name string
+		switch t := input.Type.(type) {
+		case *ast.PrimitiveType:
+			name = t.Name
+		case *ast.NamedType:
+			name = t.Name
+		}
+		if name == "uuid" || name == "int" {
 			return true
 		}
 	}
@@ -319,8 +343,6 @@ func pathParamNames(path string) []string {
 	return names
 }
 
-// buildPathParameters returns the required path parameters in URL order.
-// A declared input of the same name supplies the schema, otherwise it is a string.
 // arrowInputs returns the `<-` inputs declared in an arrow body. STREAM and WS
 // inputs are path parameters (the checker enforces that), so their declared
 // types document the path parameter schemas.
@@ -334,6 +356,8 @@ func arrowInputs(stmts []ast.ArrowStmt) []*ast.InputStmt {
 	return inputs
 }
 
+// buildPathParameters returns the required path parameters in URL order.
+// A declared input of the same name supplies the schema, otherwise it is a string.
 func buildPathParameters(path string, inputs []*ast.InputStmt) []any {
 	var params []any
 	for _, paramName := range pathParamNames(path) {
@@ -424,7 +448,8 @@ func buildRequestBody(inputs []*ast.InputStmt, pathParams map[string]bool) map[s
 }
 
 // buildResponses returns the responses object for an endpoint. validatesInput
-// is true when the Node target validates request inputs with zValidator.
+// is true when the Node target validates request inputs (zValidator, or a
+// parsed uuid/int path parameter), which answers 400 with the same body.
 func buildResponses(ep *ast.Endpoint, validatesInput bool) map[string]any {
 	responses := map[string]any{}
 

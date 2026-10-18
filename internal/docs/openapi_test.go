@@ -275,16 +275,43 @@ STREAM /api/items/:id/live {
 	}
 }
 
-func TestGenerateOpenAPI_PathOnlyEndpointHasNoValidationResponse(t *testing.T) {
+// A uuid or int path input is parsed at runtime and a malformed segment gets a
+// 400; a string path input is passed through, so no 400 is documented for it.
+func TestGenerateOpenAPI_PathInputValidationResponse(t *testing.T) {
 	spec := parseAndGenOpenAPI(t, openAPIHeader+`
 GET /api/items/:id {
   <- id uuid required
   -> 200 "ok"
 }
+
+GET /api/tags/:slug {
+  <- slug string required
+  -> 200 "ok"
+}
+
+STREAM /api/items/:id/live {
+  <- id uuid required
+}
+
+WS /ws/items/:id {
+  <- id uuid required
+}
+
+WS /ws/lobby {
+}
 `)
-	op := openAPIOperation(t, spec, "/api/items/{id}", "get")
-	if _, ok := op["responses"].(map[string]any)["400"]; ok {
-		t.Error("path-only inputs are not validated, so no 400 should be documented")
+	for path, want := range map[string]bool{
+		"/api/items/{id}":      true,
+		"/api/tags/{slug}":     false,
+		"/api/items/{id}/live": true,
+		"/ws/items/{id}":       true,
+		"/ws/lobby":            false,
+	} {
+		op := openAPIOperation(t, spec, path, "get")
+		_, got := op["responses"].(map[string]any)["400"]
+		if got != want {
+			t.Errorf("%s: documents 400 = %v, want %v", path, got, want)
+		}
 	}
 }
 

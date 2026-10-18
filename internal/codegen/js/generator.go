@@ -1202,14 +1202,23 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 					decl = "let"
 				}
 				if isPathParam(s.Name, ctx.path) {
+					// A malformed uuid/int path segment is a client error: answer
+					// 400 with the zValidator body shape instead of letting the
+					// ZodError reach app.onError as a 500.
 					typeName := pathParamTypeName(s.Type)
+					schema := ""
 					switch typeName {
 					case "uuid":
-						fmt.Fprintf(b, "%s%s %s = z.string().uuid().parse(c.req.param('%s'));\n",
-							indent, decl, name, s.Name)
+						schema = "z.string().uuid()"
 					case "int":
-						fmt.Fprintf(b, "%s%s %s = z.coerce.number().int().parse(c.req.param('%s'));\n",
-							indent, decl, name, s.Name)
+						schema = "z.coerce.number().int()"
+					}
+					switch {
+					case schema != "":
+						parsed := "_" + name + "Param"
+						fmt.Fprintf(b, "%sconst %s = %s.safeParse(c.req.param('%s'));\n", indent, parsed, schema, s.Name)
+						fmt.Fprintf(b, "%sif (!%s.success) return c.json(%s, 400 as const);\n", indent, parsed, parsed)
+						fmt.Fprintf(b, "%s%s %s = %s.data;\n", indent, decl, name, parsed)
 					default:
 						fmt.Fprintf(b, "%s%s %s = c.req.param('%s') || '';\n",
 							indent, decl, name, s.Name)

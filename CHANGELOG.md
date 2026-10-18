@@ -83,6 +83,12 @@ All notable changes to this project will be documented in this file.
   only the endpoint kind or a path parameter name differs: STREAM and WS
   endpoints are GET routes, so `GET /rooms/:id`, `STREAM /rooms/:room_id`, and
   `WS /rooms/:x` collide and only the first one was reachable.
+- **A malformed `uuid` or `int` REST path parameter answers `400`, not
+  `500`.** The route parsed it with a throwing Zod call inside the handler's
+  try, so the `ZodError` reached `app.onError`. It now returns the same
+  `{ success: false, error }` body as body/query validation, and `bp docs`
+  documents that 400 for REST, STREAM, and WS operations whose path inputs are
+  validated.
 - **`|> close` in a WS handler closes the connection.** It generated a bare
   `close;` statement that did nothing; it now emits `ws.close()` and ends the
   handler. Outside `on_connect`/`on_message`/`on_disconnect` the checker rejects
