@@ -106,3 +106,16 @@ func dumpValue(sb *strings.Builder, v reflect.Value, depth int) {
 		fmt.Fprintf(sb, "%v", v.Interface())
 	}
 }
+
+// IntentCount returns the number of `@` intents in f's source tokens. The
+// parser keeps intents only on declarations that carry one, so a formatter
+// check that compares trees alone would not notice a dropped intent.
+func IntentCount(f *File) int {
+	n := 0
+	for _, tok := range f.SourceTokens {
+		if tok.Kind == lexer.TokenIntent {
+			n++
+		}
+	}
+	return n
+}

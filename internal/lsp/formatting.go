@@ -65,9 +65,9 @@ func formatDocumentText(filename, text string) (string, bool) {
 // formattedOutputIsSafe reports whether formatted may replace the document
 // that original was parsed from. It must re-parse without errors into the
 // same syntax tree (the check `bp fmt` makes before writing), keep the same
-// number of `#` comments, and be a fixed point of the printer. The last rule
-// stops format-on-save from rewriting a file again on every save when the
-// printer keeps changing its output.
+// number of `#` comments and `@` intents, and be a fixed point of the
+// printer. The last rule stops format-on-save from rewriting a file again on
+// every save when the printer keeps changing its output.
 func formattedOutputIsSafe(filename string, original *ast.File, formatted string) bool {
 	reparsed, errs := parseForFormat(filename, []byte(formatted))
 	if len(errs) > 0 {
@@ -80,6 +80,10 @@ func formattedOutputIsSafe(filename string, original *ast.File, formatted string
 	}
 	if len(reparsed.Comments) != len(original.Comments) {
 		fmt.Fprintf(os.Stderr, "blueprint-lsp: formatting %s skipped: comment count changed from %d to %d\n", filename, len(original.Comments), len(reparsed.Comments))
+		return false
+	}
+	if got, want := ast.IntentCount(reparsed), ast.IntentCount(original); got != want {
+		fmt.Fprintf(os.Stderr, "blueprint-lsp: formatting %s skipped: intent count changed from %d to %d\n", filename, want, got)
 		return false
 	}
 	if ast.Print(reparsed) != formatted {

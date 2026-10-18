@@ -4125,6 +4125,7 @@ WS /ws/chat {
     |> when message.type == "bye" {
       |> close
     }
+    |> when message.type == "quit": close
     |> when message.type == "join" {
       |> join room(message.channel)
       |> broadcast room(message.channel) { type: "joined" }
@@ -4147,10 +4148,10 @@ WS /ws/chat {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(route), "ws.close();\n") {
-		t.Errorf("|> close must close the socket; got:\n%s", route)
+	if got := strings.Count(string(route), "ws.close(); return;"); got != 2 {
+		t.Errorf("block and inline |> close must both close the socket (got %d); route:\n%s", got, route)
 	}
-	if strings.Contains(string(route), "  close;") {
+	if strings.Contains(string(route), " close;") {
 		t.Errorf("|> close must not emit a bare identifier; got:\n%s", route)
 	}
 	requireTypeScriptCompile(t, outDir)

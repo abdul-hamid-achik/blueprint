@@ -62,9 +62,12 @@ All notable changes to this project will be documented in this file.
   output is stable on a second pass. Blank lines are kept where the source had
   them (at most one in a row; none added).
 - **`bp fmt` verifies its output before using it.** It re-parses the result
-  and compares the syntax tree with the source. On a mismatch it leaves the
-  file untouched and exits `3` with a request to report the formatter bug.
-  LSP formatting applies the same check. A round-trip test over every example
+  and compares the syntax tree, `#` comment count, and `@` intent count with
+  the source. On a mismatch it leaves the file untouched and exits `3` with a
+  request to report the formatter bug. LSP formatting applies the same checks.
+  An `@` intent placed before a declaration that cannot carry one (such as
+  `secret` or `env`) is not kept by the parser, so such files are refused
+  rather than silently losing the intent. A round-trip test over every example
   and fixture, plus a fuzz target, guards the printer.
 - **The parser rejects incomplete syntax it used to accept silently**: a
   field with no type, a string/number/punctuation token used as a type, a
@@ -92,7 +95,7 @@ All notable changes to this project will be documented in this file.
   validated.
 - **`|> close` in a WS handler closes the connection.** It generated a bare
   `close;` statement that did nothing; it now emits `ws.close()` and ends the
-  handler. Outside `on_connect`/`on_message`/`on_disconnect` the checker rejects
+  handler, in both the block and inline `when` forms. Outside `on_connect`/`on_message`/`on_disconnect` the checker rejects
   it (C035) instead of accepting a no-op. `join`/`leave`/`broadcast room(x)` no
   longer require a `model room` declaration, and the language reference no
   longer advertises the unimplemented `whisper` and `connection.id`.

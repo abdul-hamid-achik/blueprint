@@ -1101,6 +1101,16 @@ func camelKeys(raw map[string]bool) map[string]bool {
 }
 
 // emitArrowStmts generates JavaScript for a sequence of arrow statements.
+// wsCloseJS is what `|> close` emits in a WS handler: close this connection
+// and end the handler, since nothing after it can reach the client.
+const wsCloseJS = "ws.close(); return;"
+
+// isWsClose reports whether e is the `close` built-in inside a WS handler.
+func isWsClose(e ast.Expr, ctx emitCtx) bool {
+	ident, ok := e.(*ast.Ident)
+	return ok && ident.Name == "close" && ctx.kind == "ws"
+}
+
 func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, indent string, ctx emitCtx) {
 	// Initialize context maps if nil
 	if ctx.boundVars == nil {
@@ -1375,10 +1385,8 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 				}
 			}
 
-			// `|> close` in a WS handler closes this connection and ends the
-			// handler: nothing after it can reach the client.
-			if ident, ok := s.Expr.(*ast.Ident); ok && ident.Name == "close" && s.Binding == "" && ctx.kind == "ws" {
-				fmt.Fprintf(b, "%sws.close();\n%sreturn;\n", indent, indent)
+			if s.Binding == "" && isWsClose(s.Expr, ctx) {
+				fmt.Fprintf(b, "%s%s\n", indent, wsCloseJS)
 				continue
 			}
 
@@ -1448,7 +1456,9 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 
 		case *ast.WhenStmt:
 			cond := exprToJSWithCtx(s.Condition, &ctx)
-			if s.Inline != nil {
+			if s.Inline != nil && isWsClose(s.Inline, ctx) {
+				fmt.Fprintf(b, "%sif (%s) { %s }\n", indent, cond, wsCloseJS)
+			} else if s.Inline != nil {
 				fmt.Fprintf(b, "%sif (%s) %s;\n", indent, cond, exprToJSWithCtx(s.Inline, &ctx))
 			} else if len(s.Body) > 0 {
 				fmt.Fprintf(b, "%sif (%s) {\n", indent, cond)

@@ -42,8 +42,8 @@ in codegen.
 - `internal/ast/` — syntax tree nodes, visitor/walker, and the `.bp` formatter.
   `structure.go` compares syntax trees ignoring locations and trivia;
   `bp fmt` (and LSP formatting) re-parse their output and refuse it when the
-  tree changes, so `bp fmt` exits 3 and leaves the file untouched on a
-  formatter bug. `roundtrip_test.go` and `FuzzFormatRoundTrip` guard this.
+  tree, the `#` comment count, or the `@` intent count changes, so `bp fmt`
+  exits 3 and leaves the file untouched on a formatter bug. `roundtrip_test.go` and `FuzzFormatRoundTrip` guard this.
 - `internal/checker/` — scopes, name resolution, structural rules, and semantic
   validation. The public entry point is `checker.Check(file)`.
 - `internal/resolve/` — target-neutral facts shared by generators, including

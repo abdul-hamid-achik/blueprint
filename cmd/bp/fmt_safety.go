@@ -29,7 +29,8 @@ func parseFormatSource(filename string, src []byte) (*ast.File, []parser.ParseEr
 }
 
 // verifyFormatted checks formatted output before bp fmt uses it. The output
-// must parse and must have the same syntax tree as the source it came from.
+// must parse, must have the same syntax tree as the source it came from, and
+// must keep every `#` comment and `@` intent (neither is fully in the tree).
 func verifyFormatted(file *ast.File, filename, formatted string) error {
 	reparsed, errs := parseFormatSource(filename, []byte(formatted))
 	if len(errs) > 0 {
@@ -37,6 +38,12 @@ func verifyFormatted(file *ast.File, filename, formatted string) error {
 	}
 	if same, where := ast.SameStructure(file, reparsed); !same {
 		return fmt.Errorf("formatted output changes the syntax tree (%s)", where)
+	}
+	if got, want := len(reparsed.Comments), len(file.Comments); got != want {
+		return fmt.Errorf("formatted output has %d comments, the source has %d", got, want)
+	}
+	if got, want := ast.IntentCount(reparsed), ast.IntentCount(file); got != want {
+		return fmt.Errorf("formatted output has %d @ intents, the source has %d", got, want)
 	}
 	return nil
 }

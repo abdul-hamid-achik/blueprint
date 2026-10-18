@@ -122,3 +122,37 @@ func TestFmtAcceptsVerifiedOutput(t *testing.T) {
 		t.Errorf("verified output was refused:\n%s", stderr)
 	}
 }
+
+// Comments and intents are not fully in the syntax tree, so the tree check
+// alone would accept output that drops them. The real printer drops an intent
+// placed before a secret (the parser does not attach it), which must be
+// refused rather than written.
+func TestFmtRefusesOutputThatDropsCommentsOrIntents(t *testing.T) {
+	t.Run("comment", func(t *testing.T) {
+		withBrokenPrinter(t, func(f *ast.File) string {
+			return strings.Replace(ast.Print(f), "# keep me\n", "", 1)
+		})
+		filename := writeFmtSource(t, formatterBugSource)
+		var code int
+		stderr := captureStderr(t, func() {
+			code = cmdFmt(filename, true, false)
+		})
+		if code != exitFormatterBug || !strings.Contains(stderr, "comments") {
+			t.Fatalf("exit code = %d, stderr:\n%s", code, stderr)
+		}
+	})
+	t.Run("intent", func(t *testing.T) {
+		src := "blueprint \"svc\" {\n  version \"0.1.0\"\n}\n\n@ \"Signing key\"\nsecret JWT_SECRET required\n"
+		filename := writeFmtSource(t, src)
+		var code int
+		stderr := captureStderr(t, func() {
+			code = cmdFmt(filename, true, false)
+		})
+		if code != exitFormatterBug || !strings.Contains(stderr, "intents") {
+			t.Fatalf("exit code = %d, stderr:\n%s", code, stderr)
+		}
+		if got, _ := os.ReadFile(filename); string(got) != src {
+			t.Errorf("source file was modified:\n%s", got)
+		}
+	})
+}
