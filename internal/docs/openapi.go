@@ -189,7 +189,7 @@ func buildStreamOperation(ep *ast.StreamEndpoint) map[string]any {
 	op["summary"] = operationSummary(ep.Intent, "STREAM", ep.Path)
 	op["operationId"] = buildOperationId("stream", ep.Path)
 	applyEndpointMeta(op, ep.Meta)
-	if params := buildPathParameters(ep.Path, nil); len(params) > 0 {
+	if params := buildPathParameters(ep.Path, arrowInputs(ep.Stmts)); len(params) > 0 {
 		op["parameters"] = params
 	}
 	responses := map[string]any{
@@ -216,7 +216,7 @@ func buildWsOperation(ep *ast.WsEndpoint) map[string]any {
 	op["summary"] = operationSummary(ep.Intent, "WS", ep.Path)
 	op["operationId"] = buildOperationId("ws", ep.Path)
 	applyEndpointMeta(op, ep.Meta)
-	if params := buildPathParameters(ep.Path, nil); len(params) > 0 {
+	if params := buildPathParameters(ep.Path, arrowInputs(ep.Stmts)); len(params) > 0 {
 		op["parameters"] = params
 	}
 	responses := map[string]any{
@@ -272,13 +272,7 @@ func buildOperation(ep *ast.Endpoint) map[string]any {
 
 	applyEndpointMeta(op, ep.Meta)
 
-	// Collect inputs from Stmts
-	var inputs []*ast.InputStmt
-	for _, stmt := range ep.Stmts {
-		if input, ok := stmt.(*ast.InputStmt); ok {
-			inputs = append(inputs, input)
-		}
-	}
+	inputs := arrowInputs(ep.Stmts)
 
 	// path parameters from URL pattern
 	pathParams := extractPathParams(ep.Path)
@@ -327,6 +321,19 @@ func pathParamNames(path string) []string {
 
 // buildPathParameters returns the required path parameters in URL order.
 // A declared input of the same name supplies the schema, otherwise it is a string.
+// arrowInputs returns the `<-` inputs declared in an arrow body. STREAM and WS
+// inputs are path parameters (the checker enforces that), so their declared
+// types document the path parameter schemas.
+func arrowInputs(stmts []ast.ArrowStmt) []*ast.InputStmt {
+	var inputs []*ast.InputStmt
+	for _, stmt := range stmts {
+		if input, ok := stmt.(*ast.InputStmt); ok {
+			inputs = append(inputs, input)
+		}
+	}
+	return inputs
+}
+
 func buildPathParameters(path string, inputs []*ast.InputStmt) []any {
 	var params []any
 	for _, paramName := range pathParamNames(path) {

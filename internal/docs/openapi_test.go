@@ -80,17 +80,33 @@ STREAM /api/rooms/:id/live {
 }
 
 WS /ws/rooms/:id {
+  <- id int required
+}
+
+WS /ws/lobby/:name {
 }
 `)
-	for _, path := range []string{"/api/rooms/{id}/live", "/ws/rooms/{id}"} {
+	// Declared `<-` inputs type the path parameter; undeclared ones stay strings.
+	wantSchema := map[string]map[string]any{
+		"/api/rooms/{id}/live": {"type": "string", "format": "uuid"},
+		"/ws/rooms/{id}":       {"type": "integer"},
+		"/ws/lobby/{name}":     {"type": "string"},
+	}
+	for path, want := range wantSchema {
 		op := openAPIOperation(t, spec, path, "get")
 		params, _ := op["parameters"].([]any)
 		if len(params) != 1 {
 			t.Fatalf("%s: expected one path parameter, got %v", path, params)
 		}
 		p := params[0].(map[string]any)
-		if p["in"] != "path" || p["name"] != "id" || p["required"] != true {
+		if p["in"] != "path" || p["required"] != true {
 			t.Errorf("%s: path parameter = %v", path, p)
+		}
+		schema, _ := p["schema"].(map[string]any)
+		for key, value := range want {
+			if schema[key] != value {
+				t.Errorf("%s: schema[%q] = %v, want %v (schema %v)", path, key, schema[key], value, schema)
+			}
 		}
 	}
 }
