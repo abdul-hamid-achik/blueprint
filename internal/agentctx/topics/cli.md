@@ -17,7 +17,7 @@
 | `bp test <file.bp> [--target node\|python]` | Build with contract tests, then run Vitest + PGlite (node, default) or pytest + a Postgres testcontainer (python). |
 | `bp migrate <file.bp> generate\|push\|check [--target node\|python]` | Drizzle (node) or Alembic (python) migrations. |
 | `bp deploy <file.bp> [--target docker\|fly] [--tag <image>] [--no-run]` | Build + run Docker image; fly currently exits with "not implemented". |
-| `bp init [name]` | Scaffold a new project. |
+| `bp init [name] [--template <name>]` | Scaffold a new project from a starter template (`default`, `minimal`, `crud`, `auth`, `worker`); `bp init --list-templates` lists them. |
 | `bp import [path] --from ts [--out <file.bp>]` | Recover static Drizzle/Hono and transport-compatible `zValidator` structure as a review scaffold; every handler becomes TODO/501. |
 | `bp eject <dir>` | Strip Blueprint markers from a generated project (you take over). |
 | `bp explain <code>` | Print docs for an error code (e.g. `bp explain C001`). |

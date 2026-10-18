@@ -51,7 +51,24 @@ This creates:
 
 ```
 my-service/
-└── my-service.bp      # your Blueprint source file
+├── my-service.bp      # your Blueprint source file
+├── .gitignore         # ignores generated/, node_modules/, and .env files
+└── README.md          # the next-step commands for this project
+```
+
+Pick a different starter with `--template`. `bp init --list-templates` shows
+them all:
+
+| Template | Use it for |
+|----------|------------|
+| `default` | The item list/create service shown below (Postgres) |
+| `minimal` | A health endpoint and nothing else, no database |
+| `crud` | A paginated item resource with get, create, update, and delete (Postgres) |
+| `auth` | Register, login, and a Bearer-protected profile (Postgres) |
+| `worker` | An endpoint that enqueues a background job (Postgres and Redis) |
+
+```bash
+bp init my-service --template minimal
 ```
 
 ### 2. Look at the generated `.bp` file

@@ -1,0 +1,43 @@
+@ {{quote (printf "%s — describe your service here" .Name)}}
+blueprint {{quote .Service}} {
+  version  "0.1.0"
+  port     8080
+  runtime  node
+  database postgres
+  queue    redis
+}
+
+secret DATABASE_URL required
+
+secret REDIS_URL required
+
+model job {
+  id      uuid      primary
+  payload string    required
+  status  string    default("pending")
+  created timestamp default(now)
+}
+
+@ "Accept a job and hand it to the worker"
+POST /api/jobs {
+  <- payload  string  required
+  |> job = save job { payload: payload }
+  |> enqueue "jobs" { job_id: job.id }
+  -> 202 { id: job.id, status: job.status }
+}
+
+@ "Process a queued job"
+worker process_job {
+  trigger  queue("jobs")
+  retry  3
+  timeout  5min
+
+  <- job_id  uuid
+  |> job = fetch job(job_id)
+  |> guard job.status == "pending" -> 200 "Already processed"
+  |> update job { status: "done" }
+  on_fail {
+    |> update job { status: "failed" }
+    |> log "Job failed" level(error)
+  }
+}

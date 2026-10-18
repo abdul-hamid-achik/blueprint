@@ -54,6 +54,11 @@ curl http://localhost:3000/hello/Ada
 `bp run` builds into `generated/`, installs dependencies when needed, and starts
 the service. Use `bp dev hello.bp` for rebuild-and-restart watch mode.
 
+To start from a fuller scaffold instead, run `bp init my-service --template crud`
+(or `default`, `minimal`, `auth`, `worker`; `bp init --list-templates` describes
+each one). It writes `my-service/my-service.bp`, a `.gitignore`, and a
+`README.md` with the next steps.
+
 Other installation options:
 
 ```bash
@@ -391,7 +396,7 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
 | `bp migrate <file> [generate\|push\|studio\|check] [--target node\|python]` | Run Drizzle Kit or Alembic; Python does not provide `studio` |
 | `bp deploy <file> [--target docker]` | Build and smoke-test a Node Docker image; `fly` is reserved but not implemented |
 | `bp generate <file> [--write]` | Resolve quoted `@>` slots to Blueprint statements; `--write` edits the `.bp` file |
-| `bp init [name]` | Scaffold a starter project |
+| `bp init [name] [--template <name>]` / `bp init --list-templates` | Scaffold a starter project (`default`, `minimal`, `crud`, `auth`, `worker`) |
 | `bp import [path] --from ts` | Scaffold `.bp` structure from static TypeScript facts; all handler bodies become TODO/501 stubs |
 | `bp fmt <file>` / `bp lint <file>` | Format source or lint best practices |
 | `bp docs <file>` | Generate an OpenAPI 3.1 document |

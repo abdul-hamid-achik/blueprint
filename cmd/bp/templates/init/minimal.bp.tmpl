@@ -1,0 +1,11 @@
+@ {{quote (printf "%s — describe your service here" .Name)}}
+blueprint {{quote .Service}} {
+  version "0.1.0"
+  port    8080
+  runtime node
+}
+
+@ "Health check"
+GET /health {
+  -> 200 { status: "ok" }
+}

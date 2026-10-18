@@ -541,22 +541,50 @@ bp lint my-service.bp
 Scaffold a new Blueprint project.
 
 ```bash
-bp init [name]
+bp init [name] [--template <name>]
+bp init --list-templates
 ```
 
-Creates a new directory with a starter `.bp` file.
+Creates a new directory containing `<name>.bp`, plus `.gitignore` and
+`README.md` when those files do not already exist. An existing `<name>.bp` is
+never overwritten, and existing `.gitignore` and `README.md` files are left
+alone.
+
+If `name` is omitted, uses the current directory name. The name is trimmed and
+lowercased, and spaces become dashes. It must then start with a letter or digit
+and contain only letters, digits, `-`, `_`, or `.`. Names with path separators,
+`..`, or an empty result are rejected with exit code 2 before anything is
+written.
+
+| Template | What it scaffolds |
+|----------|-------------------|
+| `default` | One `item` model with paginated list and create endpoints (Postgres). This is the default. |
+| `minimal` | A single `GET /health` endpoint, no database |
+| `crud` | One `item` model with paginated list, get, create, update, and delete (Postgres) |
+| `auth` | Users with register and login, and a `use require_auth` profile endpoint (Postgres, `JWT_SECRET`). The auth functions are stubs until you implement them in `generated/src/impl/functions/internal/auth.ts`. |
+| `worker` | `POST /api/jobs` enqueues a job for a Redis-backed `worker` (Postgres, `REDIS_URL`). `bp test` needs Redis running at `REDIS_URL`. |
+
+An unknown template exits with code 2 and lists the valid names.
 
 **Example:**
 
 ```bash
 bp init my-service
 # Created my-service/my-service.bp
+# Created my-service/.gitignore
+# Created my-service/README.md
 
 cd my-service
+bp check my-service.bp
 bp build my-service.bp
 ```
 
-If `name` is omitted, uses the current directory name.
+```bash
+bp init jobs --template worker
+```
+
+After scaffolding, `bp dev <file>` rebuilds and restarts on changes, and
+`bp test <file>` builds and runs the generated tests.
 
 ---
 

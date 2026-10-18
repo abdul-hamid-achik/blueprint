@@ -296,7 +296,7 @@ func commandRegistry() []CommandInfo {
 		{"migrate", "bp migrate <file.bp> generate|push|check [--target node|python]", "Drizzle (node) or Alembic (python) migrations."},
 		{"deploy", "bp deploy <file.bp> [--target docker|fly] [--tag <image>] [--no-run]", "Build + smoke-run Docker image; fly currently exits as 'not implemented'."},
 		{"generate", "bp generate <file.bp> [--write]", "Resolve @> slots via LLM (requires ANTHROPIC_API_KEY)."},
-		{"init", "bp init [name]", "Scaffold a new project."},
+		{"init", "bp init [name] [--template <name>]", "Scaffold a new project (--list-templates lists default, minimal, crud, auth, worker)."},
 		{"import", "bp import [path] --from ts [--out <file.bp>]", "Recover static TypeScript structure as a TODO/501 review scaffold; handler behavior is never imported."},
 		{"eject", "bp eject <dir>", "Strip Blueprint markers from a generated project."},
 		{"explain", "bp explain <code>", "Print docs for a structured error code (Cxxx/Lxxx/Pxxx)."},

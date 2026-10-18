@@ -437,16 +437,15 @@ func main() {
 		os.Exit(cmdGenerate(os.Args[2], parsed.set["--write"]))
 	case "init":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("init", "init [name]",
-				"Scaffold a new Blueprint project with a starter .bp file.\nIf name is omitted, uses the current directory name.",
-				nil)
+			printCommandHelp("init", "init [name] [--template <name>] | init --list-templates",
+				"Scaffold a new Blueprint project with a starter .bp file, plus .gitignore and README.md\nwhen they do not already exist. If name is omitted, uses the current directory name.\nTemplates: "+strings.Join(initTemplateNames(), ", ")+" (see --list-templates).",
+				[][2]string{
+					{"--template <name>", "Starter to scaffold (default: default)"},
+					{"--list-templates", "Print the available starter templates and exit"},
+				})
 			os.Exit(0)
 		}
-		name := ""
-		if len(os.Args) >= 3 {
-			name = os.Args[2]
-		}
-		os.Exit(cmdInit(name))
+		os.Exit(runInit(os.Args[2:]))
 	case "import":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("import", "import [path] --from ts [--out <file.bp>] [--name <name>] [--force]",
@@ -1645,54 +1644,6 @@ func cmdGenerate(filename string, write bool) int {
 	return 0
 }
 
-func cmdInit(name string) int {
-	// Default name to current directory name
-	if name == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error getting current directory: %s\n", err)
-			return 2
-		}
-		name = filepath.Base(cwd)
-	}
-
-	// Sanitize name for use as a directory/file name
-	safeName := strings.ToLower(strings.ReplaceAll(name, " ", "-"))
-
-	// Create the service directory if it doesn't exist
-	if err := os.MkdirAll(safeName, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating directory: %s\n", err)
-		return 2
-	}
-
-	bpFile := filepath.Join(safeName, safeName+".bp")
-
-	// Don't overwrite existing file
-	if _, err := os.Stat(bpFile); err == nil {
-		fmt.Fprintf(os.Stderr, "Error: %s already exists\n", bpFile)
-		return 1
-	}
-
-	template := buildInitTemplate(name, safeName)
-
-	if err := os.WriteFile(bpFile, []byte(template), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing file: %s\n", err)
-		return 2
-	}
-
-	fmt.Printf("Created %s/%s.bp\n", safeName, safeName)
-	fmt.Println()
-	fmt.Println("Next steps:")
-	fmt.Printf("  cd %s\n", safeName)
-	fmt.Printf("  bp check %s.bp\n", safeName)
-	fmt.Printf("  bp run %s.bp\n", safeName)
-	fmt.Println()
-	fmt.Println("  bp run builds to generated/ and needs DATABASE_URL set. After your first")
-	fmt.Println("  build/run, copy generated/.env.example to a .env file (project root or")
-	fmt.Println("  generated/.env) and fill it in.")
-	return 0
-}
-
 func cmdEject(dir string) int {
 	count := 0
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -2313,6 +2264,10 @@ func bashCompletionScript() string {
 			COMPREPLY=( $(compgen -W "ts typescript" -- ${cur}) )
 			return 0
 			;;
+		--template)
+			COMPREPLY=( $(compgen -W "%s" -- ${cur}) )
+			return 0
+			;;
         --out)
             _filedir -d
             return 0
@@ -2325,13 +2280,13 @@ func bashCompletionScript() string {
     fi
 
     if [[ ${cur} == -* ]]; then
-		COMPREPLY=( $(compgen -W "--out --target --from --name --react-query --frontend-only --gen-tests --gen-property-tests --force --skip-install --write --check --tag --json --format --apply --exit-code --no-color --no-run --help -h" -- ${cur}) )
+		COMPREPLY=( $(compgen -W "--out --target --from --name --react-query --frontend-only --gen-tests --gen-property-tests --force --skip-install --write --check --tag --json --format --apply --exit-code --no-color --no-run --template --list-templates --help -h" -- ${cur}) )
         return 0
     fi
 }
 
 complete -F _bp_completion bp
-`, commands, bpFileCmds)
+`, commands, bpFileCmds, strings.Join(initTemplateNames(), " "))
 }
 
 func zshCompletionScript() string {
@@ -2364,6 +2319,9 @@ _bp() {
 				import)
 					_files
 					;;
+				init)
+					_arguments '--template[starter template]:template:(%s)' '--list-templates[list starter templates]'
+					;;
                 completion)
                     _values 'shell' 'bash' 'zsh' 'fish'
                     ;;
@@ -2375,7 +2333,7 @@ _bp() {
 }
 
 compdef _bp bp
-`, values, bpFileCmds)
+`, values, bpFileCmds, strings.Join(initTemplateNames(), " "))
 }
 
 func fishCompletionScript() string {
@@ -2387,6 +2345,9 @@ func fishCompletionScript() string {
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "complete -c bp -n \"__fish_seen_subcommand_from %s\" -a \"(__fish_complete_suffix .bp)\"\n",
 		strings.Join(bpFileCommandNames(), " "))
+	fmt.Fprintf(&sb, "complete -c bp -n \"__fish_seen_subcommand_from init\" -l template -x -a \"%s\" -d \"Starter template\"\n",
+		strings.Join(initTemplateNames(), " "))
+	sb.WriteString("complete -c bp -n \"__fish_seen_subcommand_from init\" -l list-templates -d \"List starter templates\"\n")
 	sb.WriteString(`complete -c bp -n "__fish_seen_subcommand_from frontend; and not __fish_seen_subcommand_from publish" -a "publish" -d "Build and dry-run frontend package publish flow"
 complete -c bp -n "__fish_seen_subcommand_from publish" -a "(__fish_complete_suffix .bp)"
 complete -c bp -n "__fish_seen_subcommand_from import" -F
@@ -2409,44 +2370,6 @@ complete -c bp -l json -d "JSON output"
 complete -c bp -l help -s h -d "Show help"
 `)
 	return sb.String()
-}
-
-func buildInitTemplate(displayName, safeName string) string {
-	return fmt.Sprintf(`@ %q
-blueprint %q {
-  version  "0.1.0"
-  port     8080
-  runtime  node
-  database postgres
-}
-
-secret DATABASE_URL required
-
-model item {
-  id      uuid      primary
-  name    string    required
-  created timestamp default(now)
-}
-
-@ "List all items"
-GET /api/items {
-  <- page     int default(1) min(1)
-  <- per_page int default(20) max(100)
-
-  |> items = query item order(created desc) paginate(page, per_page)
-
-  -> 200 { items: items.items, total: items.total }
-}
-
-@ "Create an item"
-POST /api/items {
-  <- name string required
-
-  |> item = save item { name: name }
-
-  -> 201 { id: item.id, name: item.name }
-}
-`, displayName+" — describe your service here", safeName)
 }
 
 func hasHelpFlag(args []string) bool {
@@ -2487,7 +2410,7 @@ func printUsage() {
 	fmt.Println("  docs       <file.bp> [--out file.json]     Generate OpenAPI 3.1 JSON spec")
 	fmt.Println("  fmt        <file.bp> [--write]             Format a .bp file")
 	fmt.Println("  lint       <file.bp>                       Lint a .bp file for best practices")
-	fmt.Println("  init       [name]                          Scaffold a new Blueprint project")
+	fmt.Println("  init       [name] [--template <name>]      Scaffold a new Blueprint project (--list-templates)")
 	fmt.Println("  import     [path] --from ts                Scaffold a rewrite; handler bodies become loud TODO/501 stubs")
 	fmt.Println("  eject      <dir>                           Remove Blueprint markers from generated code")
 	fmt.Println("  deploy     <file.bp> [--tag <image>]       Build and smoke-run Docker image (--target docker default; fly reserved for a future release)")

@@ -1,0 +1,57 @@
+@ {{quote (printf "%s — describe your service here" .Name)}}
+blueprint {{quote .Service}} {
+  version  "0.1.0"
+  port     8080
+  runtime  node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model item {
+  id      uuid      primary
+  name    string    required
+  created timestamp default(now)
+}
+
+@ "List items with pagination"
+GET /api/items {
+  <- page      int  default(1)  min(1)
+  <- per_page  int  default(20)  min(1)  max(100)
+  |> items = query item order(created, desc) paginate(page, per_page)
+  -> 200 { items: items.items, total: items.total, page: page }
+}
+
+@ "Create an item"
+POST /api/items {
+  <- name  string  required
+  |> item = save item { name: name }
+  -> 201 { id: item.id, name: item.name }
+}
+
+@ "Get an item"
+GET /api/items/:id {
+  <- id  uuid  required
+  |> item = fetch item(id)
+  |> guard item -> 404 "Item not found"
+  -> 200 { id: item.id, name: item.name, created: item.created }
+}
+
+@ "Update an item"
+PATCH /api/items/:id {
+  <- id    uuid    required
+  <- name  string  required
+  |> item = fetch item(id)
+  |> guard item -> 404 "Item not found"
+  |> update item { name: name }
+  -> 200 { id: item.id, name: name }
+}
+
+@ "Delete an item"
+DELETE /api/items/:id {
+  <- id  uuid  required
+  |> item = fetch item(id)
+  |> guard item -> 404 "Item not found"
+  |> delete item
+  -> 204 "deleted"
+}

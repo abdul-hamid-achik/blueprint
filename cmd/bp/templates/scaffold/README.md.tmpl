@@ -1,0 +1,26 @@
+# {{.Service}}
+
+{{.Template.Summary}}.
+
+Scaffolded with `bp init` (template: `{{.Template.Name}}`).
+
+## Commands
+
+```sh
+bp check {{.Service}}.bp   # validate the blueprint
+bp dev {{.Service}}.bp     # rebuild and restart on every change
+bp test {{.Service}}.bp    # build and run the generated tests
+bp run {{.Service}}.bp     # build to generated/ and start the server
+```
+{{- if .Template.Secrets}}
+
+## Environment
+
+`bp run` needs {{range $i, $s := .Template.Secrets}}{{if $i}} and {{end}}`{{$s}}`{{end}}. After the first build, copy `generated/.env.example` to `.env` and fill in the values.
+{{- end}}
+{{- if .Template.Note}}
+
+## Notes
+
+{{.Template.Note}}
+{{- end}}
