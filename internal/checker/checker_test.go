@@ -2118,3 +2118,33 @@ func TestNamesOfKind(t *testing.T) {
 		t.Fatalf("expected 0 pipe names, got %d", len(pipes))
 	}
 }
+
+func TestCheckLogLevels(t *testing.T) {
+	src := func(level string) string {
+		return `blueprint "logs" {
+  version "1.0.0"
+  runtime node
+}
+
+GET /api/health {
+  |> log "health check"` + level + `
+  -> 200 { status: "ok" }
+}`
+	}
+	for _, level := range []string{"", " level(debug)", " level(info)", " level(warn)", " level(error)"} {
+		if errs := check(t, src(level)); len(errs) != 0 {
+			t.Errorf("log%s: unexpected errors %v", level, errs)
+		}
+	}
+
+	errs := check(t, src(" level(warning)"))
+	if len(errs) != 1 || errs[0].Code != CodeUnknownLogLevel {
+		t.Fatalf("level(warning): want one %s error, got %v", CodeUnknownLogLevel, errs)
+	}
+	if !strings.Contains(errs[0].Hint, `did you mean "warn"?`) {
+		t.Errorf("level(warning): hint should suggest warn, got %q", errs[0].Hint)
+	}
+	if errs[0].Loc.Line != 7 {
+		t.Errorf("level(warning): error should point at the level identifier line, got %v", errs[0].Loc)
+	}
+}

@@ -26,7 +26,7 @@ Codes are namespaced by the pass that emits them:
 |--------|------|-------|
 | `L###` | Lexer | Token-level errors. `L001` documented below. |
 | `P###` | Parser | Syntax errors. `P001`-`P002` documented below; broader coverage in progress. |
-| `C###` | Checker | Semantic errors. `C001`–`C050` documented below. |
+| `C###` | Checker | Semantic errors. `C001`–`C051` documented below. |
 | `R###` | Resolver | Reserved. Resolver does not currently emit user-facing errors. |
 | `G###` | Codegen | Reserved. |
 
@@ -1247,6 +1247,26 @@ GET /api/check {
 
 Compare values of the same kind. To build text from other values, use string
 interpolation (`"{name} has {count} items"`) rather than `+`.
+
+### C051 — unknown log level
+
+`log ... level(x)` names a level the targets cannot map to a logger method. The
+supported levels are `debug`, `info`, `warn`, and `error`; without `level(...)`
+a `log` step logs at `info`.
+
+```bp
+blueprint "todo-api" {
+  version "1.0.0"
+  runtime node
+}
+
+GET /api/health {
+  |> log "health check" level(warning)   # C051: did you mean "warn"?
+  -> 200 { status: "ok" }
+}
+```
+
+Use one of the supported levels, for example `level(warn)`.
 
 ---
 

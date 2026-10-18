@@ -108,7 +108,7 @@ table and the CHANGELOG together.
 | 2 | No `: any` in handler boundaries | ✅ Hono `Variables` typed from middleware-injected model (`typeof schema.M.$inferSelect` with `NonNullable` mapped fields); merged fn scaffolds typed from `fn.Inputs`/`Outputs` instead of `...args: any[]` | 2026-05-29 |
 | 2 | Relationship/computed target behavior | ✅ Node emits one-level LEFT JOINs and pure computed materializers; Python/Effect reject unsupported ASTs | 2026-07-14 |
 | 3 | Errors have `Hint:` on every kind | ✅ green; every checker diagnostic path supplies a hint | 2026-07-14 |
-| 3 | Structured error codes | ✅ green (L001, P001, C001–C050 documented + emitted; every checker error is coded; `bp explain` shipped) | 2026-05-29 |
+| 3 | Structured error codes | ✅ green (L001, P001, C001–C051 documented + emitted; every checker error is coded; `bp explain` shipped) | 2026-05-29 |
 | 3 | `bp fmt --check` on all examples | ✅ green — column alignment shipped (v0.14.0); all 5 examples pass `bp fmt --check`; CI gate extended to all `examples/*.bp` | 2026-07-10 |
 | 3 | LSP feature depth | ✅ diagnostics, definition, hover, context-aware completion, local-workspace symbols, workspace-folder updates, and packaged configurable VS Code stdio client | 2026-07-14 |
 | 3 | Honest TypeScript import scaffold | ✅ static Drizzle/Hono plus transport-compatible `zValidator` facts only; nullable/type-changing Zod fields skip, Drizzle SQL/options loss warns, and all handlers are reported TODO/501 stubs | 2026-07-14 |

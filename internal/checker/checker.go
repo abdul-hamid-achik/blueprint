@@ -200,6 +200,9 @@ const (
 	// CodeOperatorTypeMismatch = an operator is applied to operands whose
 	// types are both known and incompatible (for example "abc" > 3).
 	CodeOperatorTypeMismatch = "C050"
+	// CodeUnknownLogLevel = `log ... level(x)` names a level other than
+	// debug, info, warn, or error.
+	CodeUnknownLogLevel = "C051"
 )
 
 // --- Pass 1: Collect top-level declarations ---
@@ -1688,10 +1691,21 @@ func (c *Checker) checkLocalCallArgs(call *ast.FnCall, scope *Scope) {
 		if len(call.Args) > 0 {
 			c.checkLocalExpr(call.Args[0], scope)
 		}
-		// Remaining bare identifiers are log levels (info, warn, error).
+		// Remaining bare identifiers are log levels. Targets map them onto a
+		// fixed set of logger methods (Node emits console.<level>), so an
+		// unknown level would only fail at runtime.
 		for _, arg := range call.Args[1:] {
-			if _, symbolic := arg.(*ast.Ident); !symbolic {
+			level, symbolic := arg.(*ast.Ident)
+			if !symbolic {
 				c.checkLocalExpr(arg, scope)
+				continue
+			}
+			if !logLevels[level.Name] {
+				hint := "Use one of: debug, info, warn, error"
+				if suggestion := suggestName(level.Name, logLevelNames); suggestion != "" {
+					hint += fmt.Sprintf("; did you mean %q?", suggestion)
+				}
+				c.addErrorCode(level.Loc, CodeUnknownLogLevel, fmt.Sprintf("unknown log level %q", level.Name), hint)
 			}
 		}
 	case "map":
@@ -2892,6 +2906,13 @@ func levenshtein(a, b string) int {
 }
 
 // suggestName finds the closest match from candidates within a threshold.
+// logLevels are the `log ... level(x)` names every target maps to a logger
+// method; logLevelNames is the same set in suggestion order.
+var (
+	logLevels     = map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+	logLevelNames = []string{"debug", "info", "warn", "error"}
+)
+
 func suggestName(name string, candidates []string) string {
 	if len(candidates) == 0 {
 		return ""
