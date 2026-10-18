@@ -2228,3 +2228,77 @@ GET /api/rooms/:id/members {
 		}
 	}
 }
+
+func TestCheckCloseOnlyInWsHandlers(t *testing.T) {
+	header := `blueprint "close" {
+  version "1.0.0"
+  runtime node
+}
+`
+	if errs := check(t, header+`
+WS /ws/chat {
+  on_connect {
+    |> close
+  }
+  on_message {
+    |> when message.type == "bye" {
+      |> close
+    }
+  }
+}
+`); len(errs) > 0 {
+		t.Fatalf("close in WS handlers must check: %v", errs)
+	}
+	for _, body := range []string{
+		"GET /api/x {\n  |> close\n  -> 200 \"ok\"\n}\n",
+		"STREAM /api/live {\n  |> close\n}\n",
+	} {
+		errs := check(t, header+body)
+		found := false
+		for _, e := range errs {
+			if e.Code == CodeUnboundIdentifier && strings.Contains(e.Message, `"close" is only available in WS handlers`) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected C035 for close outside WS in %q, got %v", body, errs)
+		}
+	}
+}
+
+// room(x) in join/leave/broadcast names a room; it is not a function call and
+// needs no `model room`. Its argument is still checked.
+func TestCheckRoomTargetIsNotAFunction(t *testing.T) {
+	header := `blueprint "rooms" {
+  version "1.0.0"
+  runtime node
+}
+`
+	if errs := check(t, header+`
+WS /ws/chat {
+  on_message {
+    |> join room(message.channel)
+    |> broadcast room(message.channel) { text: message.text }
+    |> leave room(message.channel)
+  }
+}
+`); len(errs) > 0 {
+		t.Fatalf("room targets must check without a room model: %v", errs)
+	}
+	errs := check(t, header+`
+WS /ws/chat {
+  on_message {
+    |> join room(channel)
+  }
+}
+`)
+	found := false
+	for _, e := range errs {
+		if e.Code == CodeUnboundIdentifier && strings.Contains(e.Message, `"channel"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the room argument to be checked, got %v", errs)
+	}
+}

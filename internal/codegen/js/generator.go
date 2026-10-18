@@ -1366,6 +1366,13 @@ func (g *Generator) emitArrowStmts(b *strings.Builder, stmts []ast.ArrowStmt, in
 				}
 			}
 
+			// `|> close` in a WS handler closes this connection and ends the
+			// handler: nothing after it can reach the client.
+			if ident, ok := s.Expr.(*ast.Ident); ok && ident.Name == "close" && s.Binding == "" && ctx.kind == "ws" {
+				fmt.Fprintf(b, "%sws.close();\n%sreturn;\n", indent, indent)
+				continue
+			}
+
 			expr := exprToJSWithCtx(s.Expr, &ctx)
 			if s.Binding != "" {
 				name := toCamelCase(s.Binding)

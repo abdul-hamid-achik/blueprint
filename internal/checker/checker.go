@@ -741,6 +741,8 @@ func (c *Checker) checkWsEndpoint(n *ast.WsEndpoint) {
 		c.checkEndpointAuth(m)
 	}
 	scope := c.newRealtimeEndpointScope(n.Path, n.Meta)
+	// `|> close` closes this connection; it means nothing outside a WS handler.
+	bindArrowName(scope, "close", SymVariable, n.Loc)
 	c.checkArrowStmtExprsInScope(n.Stmts, scope)
 	c.checkArrowStmtExprsInScope(n.OnConnect, scope)
 	messageScope := cloneArrowScope(scope)
@@ -1653,7 +1655,7 @@ func isInterpolationIdentContinue(ch byte) bool {
 }
 
 func (c *Checker) checkLocalIdent(ident *ast.Ident, scope *Scope) {
-	if ident == nil || ident.Name == "close" {
+	if ident == nil {
 		return
 	}
 	if scope != nil {
@@ -1670,6 +1672,13 @@ func (c *Checker) checkLocalIdent(ident *ast.Ident, scope *Scope) {
 			c.addArityError(ident.Loc, symbol, 1, 0)
 			return
 		}
+	}
+	if ident.Name == "close" {
+		c.addErrorCode(ident.Loc, CodeUnboundIdentifier,
+			`"close" is only available in WS handlers`,
+			"Use |> close in on_connect, on_message, or on_disconnect of a WS endpoint",
+		)
+		return
 	}
 	c.addErrorCode(ident.Loc, CodeUnboundIdentifier,
 		fmt.Sprintf("unbound identifier %q", ident.Name),
@@ -2286,7 +2295,15 @@ func (c *Checker) checkExpr(expr ast.Expr) {
 		c.checkExpr(e.Operand)
 	case *ast.FnCall:
 		c.checkFnCall(e)
-		for _, arg := range e.Args {
+		for i, arg := range e.Args {
+			// `join room(x)`, `leave room(x)`, and `broadcast room(x) { ... }`
+			// name a room, not a function; codegen uses only x.
+			if target, ok := arg.(*ast.FnCall); ok && i == 0 && target.Name == "room" && isRoomBuiltin(e.Name) {
+				for _, targetArg := range target.Args {
+					c.checkExpr(targetArg)
+				}
+				continue
+			}
 			c.checkExpr(arg)
 		}
 	case *ast.FieldAccess:
@@ -2305,6 +2322,10 @@ func (c *Checker) checkExpr(expr ast.Expr) {
 			c.checkExpr(kv.Value)
 		}
 	}
+}
+
+func isRoomBuiltin(name string) bool {
+	return name == "join" || name == "leave" || name == "broadcast"
 }
 
 func (c *Checker) checkFnCall(call *ast.FnCall) {

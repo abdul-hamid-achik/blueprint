@@ -83,6 +83,12 @@ All notable changes to this project will be documented in this file.
   only the endpoint kind or a path parameter name differs: STREAM and WS
   endpoints are GET routes, so `GET /rooms/:id`, `STREAM /rooms/:room_id`, and
   `WS /rooms/:x` collide and only the first one was reachable.
+- **`|> close` in a WS handler closes the connection.** It generated a bare
+  `close;` statement that did nothing; it now emits `ws.close()` and ends the
+  handler. Outside `on_connect`/`on_message`/`on_disconnect` the checker rejects
+  it (C035) instead of accepting a no-op. `join`/`leave`/`broadcast room(x)` no
+  longer require a `model room` declaration, and the language reference no
+  longer advertises the unimplemented `whisper` and `connection.id`.
 - **Unknown flags, value flags with no value, and unexpected extra arguments
   exit `2`**, the documented usage-error code, instead of `1`, so CI can tell
   a mistyped command from a failed validation.

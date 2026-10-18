@@ -4111,3 +4111,47 @@ WS /ws/rooms/:id {
 	}
 	requireTypeScriptCompile(t, outDir)
 }
+
+// The rooms need no `model room`: room(x) only names the room x.
+func TestGenerateWsCloseClosesTheConnection(t *testing.T) {
+	src := `blueprint "ws-close" {
+  version "0.1.0"
+  port    3000
+  runtime node
+}
+
+WS /ws/chat {
+  on_message {
+    |> when message.type == "bye" {
+      |> close
+    }
+    |> when message.type == "join" {
+      |> join room(message.channel)
+      |> broadcast room(message.channel) { type: "joined" }
+    }
+    -> { type: "echo", text: message.text }
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if errs := checker.Check(file); len(errs) > 0 {
+		t.Fatalf("check errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	route, err := os.ReadFile(filepath.Join(outDir, "src/routes/ws.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(route), "ws.close();\n") {
+		t.Errorf("|> close must close the socket; got:\n%s", route)
+	}
+	if strings.Contains(string(route), "  close;") {
+		t.Errorf("|> close must not emit a bare identifier; got:\n%s", route)
+	}
+	requireTypeScriptCompile(t, outDir)
+}

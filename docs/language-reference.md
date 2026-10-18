@@ -956,7 +956,7 @@ WS /ws/chat {
   auth bearer
 
   on_connect {
-    |> log "Connected: {connection.id}"
+    |> log "Client connected"
     -> { type: "connected" }
   }
 
@@ -974,7 +974,7 @@ WS /ws/chat {
   }
 
   on_disconnect {
-    |> log "Disconnected: {connection.id}"
+    |> log "Client disconnected"
   }
 }
 ```
@@ -1000,9 +1000,12 @@ WS /ws/rooms/:id {
 join room(name)                            # join a pub/sub room
 leave room(name)                           # leave a room
 broadcast room(name) { data }              # send to all in room
-whisper connection(id) { data }            # send to specific connection
-close                                      # close the connection
+close                                      # close this connection
 ```
+
+`close` closes the current connection and ends the handler; it is only valid
+inside `on_connect`, `on_message`, and `on_disconnect`. Sending to one specific
+connection (`whisper`) is not implemented: the checker rejects it.
 
 In OpenAPI output: exposed as `GET` with `101` response and `x-websocket: true`.
 
