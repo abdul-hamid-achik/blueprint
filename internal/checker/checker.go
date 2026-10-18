@@ -56,13 +56,9 @@ func Check(file *ast.File) []CheckError {
 	return c.errors
 }
 
-func (c *Checker) addError(loc lexer.Loc, msg, hint string) {
-	c.errors = append(c.errors, CheckError{Loc: loc, Message: msg, Hint: hint})
-}
-
-// addErrorCode is addError with a structured error code (e.g. "C001").
-// Use this for error sites documented in docs/error-codes.md so users can
-// `bp explain <code>` to see the long-form explanation.
+// addErrorCode records a checker error with its structured code (e.g. "C001").
+// Every checker error must carry a code documented in internal/diag/error-codes.md
+// so users can `bp explain <code>`; there is deliberately no uncoded variant.
 func (c *Checker) addErrorCode(loc lexer.Loc, code, msg, hint string) {
 	c.errors = append(c.errors, CheckError{Loc: loc, Message: msg, Hint: hint, Code: code})
 }
@@ -100,9 +96,106 @@ const (
 	// CodeUnknownRefTarget = `ref <model>` points at an identifier that isn't
 	// a known model (or isn't a model symbol at all).
 	CodeUnknownRefTarget = "C014"
-	// CodeUnknownExternal = `call <service> ...` references a service that
-	// wasn't declared via an `external "..." { ... }` block.
+	// CodeUnknownExternal = `call <service> ...` (or `subscribe <service>`)
+	// references a service that wasn't declared via an `external "..." { ... }` block.
 	CodeUnknownExternal = "C015"
+	// CodeDuplicateBlueprintSetting = a blueprint setting appears more than once.
+	CodeDuplicateBlueprintSetting = "C016"
+	// CodeInvalidSettingValue = a setting value is outside its allowed set
+	// (blueprint port/version/identifier values, analytics sink kinds).
+	CodeInvalidSettingValue = "C017"
+	// CodeComputedOperand = a computed field uses an operand, operator, or
+	// expression form that computed expressions don't allow (nullable field,
+	// non-scalar type, call, or anything outside pure operators).
+	CodeComputedOperand = "C018"
+	// CodeComputedFieldType = a computed field's result type is unsupported or
+	// disagrees with its declared type.
+	CodeComputedFieldType = "C019"
+	// CodeValueTypeMismatch = a value's type doesn't match its target: a fn or
+	// pipe argument, an input assignment, or a model write field.
+	CodeValueTypeMismatch = "C020"
+	// CodeReservedBuiltinName = a fn or pipe reuses a built-in operation name.
+	CodeReservedBuiltinName = "C021"
+	// CodeInvalidInputDecl = a pipe declares more than one <- input, or an
+	// input name is declared twice.
+	CodeInvalidInputDecl = "C022"
+	// CodeDuplicateEnumVariant = two variants of one enum share a name.
+	CodeDuplicateEnumVariant = "C023"
+	// CodeInvalidLocale = a locale declaration is malformed: empty code,
+	// fallback pointing at itself, or more than one default locale.
+	CodeInvalidLocale = "C024"
+	// CodeUnknownLocale = a locale fallback or translation bundle names a
+	// locale that isn't declared.
+	CodeUnknownLocale = "C025"
+	// CodeDuplicateTranslationEntry = a translation repeats a key, or a locale
+	// bundle appears twice or repeats a key.
+	CodeDuplicateTranslationEntry = "C026"
+	// CodeUnknownTranslationRef = a translation bundle assigns an undeclared
+	// key, or a tkey(...) names an undeclared translation namespace.
+	CodeUnknownTranslationRef = "C027"
+	// CodeDuplicateStateOrEvent = a state repeats a transition, or an analytics
+	// block repeats an event.
+	CodeDuplicateStateOrEvent = "C028"
+	// CodeSaveMissingClause = a save block lacks its model or version_field.
+	CodeSaveMissingClause = "C029"
+	// CodeInvalidSaveVersion = a save declares latest < 1, or a migration is
+	// not increasing, exceeds latest, or repeats.
+	CodeInvalidSaveVersion = "C030"
+	// CodeUnknownModelRef = a save or data operation names a model (or bound
+	// value) that isn't declared, or a data operation names no model at all.
+	CodeUnknownModelRef = "C031"
+	// CodeUnknownModelField = a field, version_field, computed field, or
+	// relationship referenced on a model doesn't exist on that model.
+	CodeUnknownModelField = "C032"
+	// CodeUnknownTestRef = a test_group names a test that isn't declared.
+	CodeUnknownTestRef = "C033"
+	// CodeDuplicateBinding = a `|> name = ...` binding reuses a name already
+	// bound in the same block.
+	CodeDuplicateBinding = "C034"
+	// CodeUnboundIdentifier = an identifier is used before anything binds it.
+	CodeUnboundIdentifier = "C035"
+	// CodeComputedReadOnly = a write (or direct assignment) targets a computed
+	// field, which is derived from persisted fields.
+	CodeComputedReadOnly = "C036"
+	// CodeDuplicateQueryModifier = a data operation repeats a modifier such as
+	// first(...), or a with(...) list repeats a relationship.
+	CodeDuplicateQueryModifier = "C037"
+	// CodeInvalidWith = a with(...) clause is used where it isn't allowed, is
+	// empty, or contains a non-identifier entry.
+	CodeInvalidWith = "C038"
+	// CodeConflictingQueryModifiers = a query combines modifiers that cannot
+	// be used together (paginate with first, or with(...) with legacy args).
+	CodeConflictingQueryModifiers = "C039"
+	// CodeRelationTargetNotJoinable = a with(...) relationship's target model
+	// has no unique id, or the ref and target id types differ.
+	CodeRelationTargetNotJoinable = "C040"
+	// CodeUnsupportedJoin = a with(...) relationship needs a join shape this
+	// release doesn't support (self-join aliasing, repeated joins to one model).
+	CodeUnsupportedJoin = "C041"
+	// CodeStorageNotConfigured = a storage operation is used without a
+	// `storage` setting in the blueprint block.
+	CodeStorageNotConfigured = "C042"
+	// CodeUnknownStateSaveSecret = a transition, upgrade_save, or webhook
+	// signature names a state, save, or secret that isn't declared.
+	CodeUnknownStateSaveSecret = "C043"
+	// CodeWrongSymbolKind = a name resolves to a declaration of the wrong kind
+	// for its position (for example a model used as a function).
+	CodeWrongSymbolKind = "C044"
+	// CodeArgumentCount = a fn, pipe, or builtin is called with the wrong
+	// number of arguments.
+	CodeArgumentCount = "C045"
+	// CodeInvalidCallTarget = `call` is missing its service name or the name
+	// is not an identifier.
+	CodeInvalidCallTarget = "C046"
+	// CodeWebhookSecretMissing = `auth webhook_sig` lacks a using(secret.NAME)
+	// argument.
+	CodeWebhookSecretMissing = "C047"
+	// CodeNameCase = a name or path segment uses the wrong letter case for its
+	// kind (SCREAMING_SNAKE_CASE, PascalCase, or kebab-case).
+	CodeNameCase = "C048"
+	// CodeRelationshipFieldCollision = a with(...) relationship name collides
+	// with a persisted field on the source model.
+	CodeRelationshipFieldCollision = "C049"
 )
 
 // --- Pass 1: Collect top-level declarations ---
@@ -178,7 +271,7 @@ func (c *Checker) validateBlueprint() {
 	locations := map[string]lexer.Loc{}
 	for _, e := range bp.Entries {
 		if previous, duplicate := locations[e.Key]; duplicate {
-			c.addError(e.Loc,
+			c.addErrorCode(e.Loc, CodeDuplicateBlueprintSetting,
 				fmt.Sprintf("duplicate blueprint entry %q (previously defined at %s)", e.Key, previous),
 				"Keep exactly one value for each blueprint setting",
 			)
@@ -189,21 +282,21 @@ func (c *Checker) validateBlueprint() {
 		switch e.Key {
 		case "version":
 			if _, ok := e.Value.(*ast.StringLit); !ok {
-				c.addError(e.Loc, "blueprint version must be a string", `Use: version "0.1.0"`)
+				c.addErrorCode(e.Loc, CodeInvalidSettingValue, "blueprint version must be a string", `Use: version "0.1.0"`)
 			}
 		case "port":
 			value, ok := e.Value.(*ast.IntLit)
 			if !ok {
-				c.addError(e.Loc, "blueprint port must be an integer", "Use a TCP port from 1 through 65535")
+				c.addErrorCode(e.Loc, CodeInvalidSettingValue, "blueprint port must be an integer", "Use a TCP port from 1 through 65535")
 				continue
 			}
 			port, err := strconv.Atoi(value.Value)
 			if err != nil || port < 1 || port > 65535 {
-				c.addError(e.Loc, fmt.Sprintf("blueprint port %q is outside 1..65535", value.Value), "Choose a valid TCP port")
+				c.addErrorCode(e.Loc, CodeInvalidSettingValue, fmt.Sprintf("blueprint port %q is outside 1..65535", value.Value), "Choose a valid TCP port")
 			}
 		case "runtime", "database", "cache", "storage":
 			if _, ok := e.Value.(*ast.Ident); !ok {
-				c.addError(e.Loc, fmt.Sprintf("blueprint %s must be an identifier", e.Key), fmt.Sprintf("Use: %s <name> without quotes", e.Key))
+				c.addErrorCode(e.Loc, CodeInvalidSettingValue, fmt.Sprintf("blueprint %s must be an identifier", e.Key), fmt.Sprintf("Use: %s <name> without quotes", e.Key))
 			}
 		}
 	}
@@ -322,7 +415,7 @@ func (c *Checker) checkModel(n *ast.Model) {
 		c.checkTypeRef(f.Type)
 		expected, supported := computedTypeFromTypeExpr(f.Type)
 		if !supported {
-			c.addError(f.Loc,
+			c.addErrorCode(f.Loc, CodeComputedFieldType,
 				fmt.Sprintf("computed field %q uses unsupported result type", f.Name),
 				"Use string, text, int, float, money, or bool for computed fields",
 			)
@@ -330,7 +423,7 @@ func (c *Checker) checkModel(n *ast.Model) {
 		}
 		actual, ok := c.inferComputedExprType(f.Expr, computedTypes, f.Name)
 		if ok && !computedTypesAssignable(expected, actual) {
-			c.addError(f.Loc,
+			c.addErrorCode(f.Loc, CodeComputedFieldType,
 				fmt.Sprintf("computed field %q declares %s but its expression produces %s", f.Name, expected, actual),
 				"Change the declared type or expression so they agree",
 			)
@@ -411,14 +504,14 @@ func (c *Checker) inferComputedExprType(expr ast.Expr, fields map[string]compute
 	case *ast.Ident:
 		if field, ok := fields[e.Name]; ok {
 			if !field.supported {
-				c.addError(e.Loc,
+				c.addErrorCode(e.Loc, CodeComputedOperand,
 					fmt.Sprintf("computed field %q cannot use field %q of type %s", computedName, e.Name, field.declared),
 					"Use fields with string, text, int, float, money, or bool values",
 				)
 				return "", false
 			}
 			if !field.total {
-				c.addError(e.Loc,
+				c.addErrorCode(e.Loc, CodeComputedOperand,
 					fmt.Sprintf("computed field %q cannot use nullable field %q", computedName, e.Name),
 					"Computed fields must be total; make the source required or primary, or compute the fallback in application code",
 				)
@@ -426,7 +519,7 @@ func (c *Checker) inferComputedExprType(expr ast.Expr, fields map[string]compute
 			}
 			return field.typ, true
 		}
-		c.addError(e.Loc,
+		c.addErrorCode(e.Loc, CodeUnknownModelField,
 			fmt.Sprintf("computed field %q references unknown or later field %q", computedName, e.Name),
 			"Reference a persisted field or a computed field declared earlier in the model",
 		)
@@ -448,7 +541,7 @@ func (c *Checker) inferComputedExprType(expr ast.Expr, fields map[string]compute
 				return operand, true
 			}
 		}
-		c.addError(e.Loc, fmt.Sprintf("operator %q is not valid for computed %s values", e.Op, operand), "Use a type-compatible pure expression")
+		c.addErrorCode(e.Loc, CodeComputedOperand, fmt.Sprintf("operator %q is not valid for computed %s values", e.Op, operand), "Use a type-compatible pure expression")
 		return "", false
 	case *ast.BinaryExpr:
 		left, leftOK := c.inferComputedExprType(e.Left, fields, computedName)
@@ -487,13 +580,13 @@ func (c *Checker) inferComputedExprType(expr ast.Expr, fields map[string]compute
 				return computedBool, true
 			}
 		}
-		c.addError(e.Loc,
+		c.addErrorCode(e.Loc, CodeComputedOperand,
 			fmt.Sprintf("operator %q is not valid for computed %s and %s values", e.Op, left, right),
 			"Use a type-compatible pure expression",
 		)
 		return "", false
 	default:
-		c.addError(expr.Location(),
+		c.addErrorCode(expr.Location(), CodeComputedOperand,
 			fmt.Sprintf("computed field %q uses unsupported expression %T", computedName, expr),
 			"Computed expressions may use literals, model fields, parentheses, and pure unary/binary operators",
 		)
@@ -511,7 +604,7 @@ func (c *Checker) checkContent(n *ast.Content) {
 func (c *Checker) checkFn(n *ast.Fn) {
 	c.checkSnakeCase(n.Name, "fn", n.Loc)
 	if isCheckerBuiltinFn(n.Name) {
-		c.addError(n.Loc,
+		c.addErrorCode(n.Loc, CodeReservedBuiltinName,
 			fmt.Sprintf("function name %q is reserved by a built-in", n.Name),
 			"Rename the function so calls cannot be mistaken for a built-in operation",
 		)
@@ -541,13 +634,13 @@ func (c *Checker) checkFn(n *ast.Fn) {
 func (c *Checker) checkPipe(n *ast.Pipe) {
 	c.checkSnakeCase(n.Name, "pipe", n.Loc)
 	if isCheckerBuiltinFn(n.Name) {
-		c.addError(n.Loc,
+		c.addErrorCode(n.Loc, CodeReservedBuiltinName,
 			fmt.Sprintf("pipe name %q is reserved by a built-in", n.Name),
 			"Rename the pipe so calls cannot be mistaken for a built-in operation",
 		)
 	}
 	if inputs := pipeInputs(n); len(inputs) > 1 && !hasDuplicateInputName(inputs) {
-		c.addError(n.Loc,
+		c.addErrorCode(n.Loc, CodeInvalidInputDecl,
 			fmt.Sprintf("pipe %q may declare at most one input, got %d", n.Name, len(inputs)),
 			"Pipes transform one value; keep a single <- input declaration",
 		)
@@ -695,7 +788,7 @@ func (c *Checker) checkSchedule(n *ast.Schedule) {
 func (c *Checker) checkSubscribe(n *ast.Subscribe) {
 	c.checkArrowOrdering(n.Stmts, n.Loc, "subscribe")
 	if n.From != "" && !c.hasExternal(n.From) {
-		c.addError(n.Loc, fmt.Sprintf("subscribe references unknown external %q", n.From), "Declare it with: external \"service-name\" { ... }")
+		c.addErrorCode(n.Loc, CodeUnknownExternal, fmt.Sprintf("subscribe references unknown external %q", n.From), "Declare it with: external \"service-name\" { ... }")
 	}
 	scope := c.newArrowScope()
 	bindArrowName(scope, "event", SymVariable, n.Loc)
@@ -709,7 +802,7 @@ func (c *Checker) checkEnum(n *ast.Enum) {
 	seen := make(map[string]lexer.Loc, len(n.Variants))
 	for _, variant := range n.Variants {
 		if previous, exists := seen[variant.Name]; exists {
-			c.addError(variant.Loc,
+			c.addErrorCode(variant.Loc, CodeDuplicateEnumVariant,
 				fmt.Sprintf("duplicate variant %q in enum %q", variant.Name, n.Name),
 				fmt.Sprintf("First defined at %s; remove or rename one of the variants", previous),
 			)
@@ -750,10 +843,10 @@ func (c *Checker) checkEnv(n *ast.Env) {
 
 func (c *Checker) checkLocale(n *ast.Locale) {
 	if n.Code == "" {
-		c.addError(n.Loc, "locale code cannot be empty", `Use locale en default or locale "en-US"`)
+		c.addErrorCode(n.Loc, CodeInvalidLocale, "locale code cannot be empty", `Use locale en default or locale "en-US"`)
 	}
 	if n.Fallback == n.Code && n.Fallback != "" {
-		c.addError(n.Loc, "locale fallback cannot point to itself", "Choose a different fallback locale")
+		c.addErrorCode(n.Loc, CodeInvalidLocale, "locale fallback cannot point to itself", "Choose a different fallback locale")
 	}
 	defaultCount := 0
 	known := map[string]bool{}
@@ -768,10 +861,10 @@ func (c *Checker) checkLocale(n *ast.Locale) {
 		}
 	}
 	if defaultCount > 1 && n.Default {
-		c.addError(n.Loc, "multiple default locales declared", "Keep exactly one locale marked default")
+		c.addErrorCode(n.Loc, CodeInvalidLocale, "multiple default locales declared", "Keep exactly one locale marked default")
 	}
 	if n.Fallback != "" && !known[n.Fallback] {
-		c.addError(n.Loc, fmt.Sprintf("locale %q references unknown fallback locale %q", n.Code, n.Fallback), "Declare the fallback locale before using it")
+		c.addErrorCode(n.Loc, CodeUnknownLocale, fmt.Sprintf("locale %q references unknown fallback locale %q", n.Code, n.Fallback), "Declare the fallback locale before using it")
 	}
 }
 
@@ -780,7 +873,7 @@ func (c *Checker) checkTranslation(n *ast.Translation) {
 	seen := map[string]bool{}
 	for _, key := range n.Keys {
 		if seen[key] {
-			c.addError(n.Loc, fmt.Sprintf("duplicate translation key %q in translation %q", key, n.Name), "Remove the duplicate key or rename it")
+			c.addErrorCode(n.Loc, CodeDuplicateTranslationEntry, fmt.Sprintf("duplicate translation key %q in translation %q", key, n.Name), "Remove the duplicate key or rename it")
 			continue
 		}
 		seen[key] = true
@@ -794,20 +887,20 @@ func (c *Checker) checkTranslation(n *ast.Translation) {
 	bundleLocales := map[string]bool{}
 	for _, bundle := range n.Bundles {
 		if !knownLocales[bundle.Locale] {
-			c.addError(bundle.Loc, fmt.Sprintf("translation %q references unknown locale %q", n.Name, bundle.Locale), "Declare the locale before using it in a translation bundle")
+			c.addErrorCode(bundle.Loc, CodeUnknownLocale, fmt.Sprintf("translation %q references unknown locale %q", n.Name, bundle.Locale), "Declare the locale before using it in a translation bundle")
 		}
 		if bundleLocales[bundle.Locale] {
-			c.addError(bundle.Loc, fmt.Sprintf("translation %q has duplicate bundle for locale %q", n.Name, bundle.Locale), "Keep at most one bundle per locale")
+			c.addErrorCode(bundle.Loc, CodeDuplicateTranslationEntry, fmt.Sprintf("translation %q has duplicate bundle for locale %q", n.Name, bundle.Locale), "Keep at most one bundle per locale")
 			continue
 		}
 		bundleLocales[bundle.Locale] = true
 		bundleKeys := map[string]bool{}
 		for _, kv := range bundle.Values {
 			if !seen[kv.Key] {
-				c.addError(kv.Loc, fmt.Sprintf("translation %q bundle for locale %q defines unknown key %q", n.Name, bundle.Locale, kv.Key), "Declare the key in the translation block before assigning localized values")
+				c.addErrorCode(kv.Loc, CodeUnknownTranslationRef, fmt.Sprintf("translation %q bundle for locale %q defines unknown key %q", n.Name, bundle.Locale, kv.Key), "Declare the key in the translation block before assigning localized values")
 			}
 			if bundleKeys[kv.Key] {
-				c.addError(kv.Loc, fmt.Sprintf("translation %q bundle for locale %q repeats key %q", n.Name, bundle.Locale, kv.Key), "Keep only one localized value per key")
+				c.addErrorCode(kv.Loc, CodeDuplicateTranslationEntry, fmt.Sprintf("translation %q bundle for locale %q repeats key %q", n.Name, bundle.Locale, kv.Key), "Keep only one localized value per key")
 			}
 			bundleKeys[kv.Key] = true
 		}
@@ -820,7 +913,7 @@ func (c *Checker) checkStateMachine(n *ast.StateMachine) {
 	for _, tr := range n.Transitions {
 		key := tr.From + "->" + tr.To
 		if seen[key] {
-			c.addError(tr.Loc, fmt.Sprintf("duplicate state transition %s in %q", key, n.Name), "Remove the duplicate transition")
+			c.addErrorCode(tr.Loc, CodeDuplicateStateOrEvent, fmt.Sprintf("duplicate state transition %s in %q", key, n.Name), "Remove the duplicate transition")
 			continue
 		}
 		seen[key] = true
@@ -832,7 +925,7 @@ func (c *Checker) checkAnalytics(n *ast.Analytics) {
 	seen := map[string]bool{}
 	for _, event := range n.Events {
 		if seen[event] {
-			c.addError(n.Loc, fmt.Sprintf("duplicate analytics event %q in %q", event, n.Name), "Remove the duplicate event")
+			c.addErrorCode(n.Loc, CodeDuplicateStateOrEvent, fmt.Sprintf("duplicate analytics event %q in %q", event, n.Name), "Remove the duplicate event")
 		}
 		seen[event] = true
 	}
@@ -840,7 +933,7 @@ func (c *Checker) checkAnalytics(n *ast.Analytics) {
 		switch sink.Kind {
 		case "console", "http":
 		default:
-			c.addError(sink.Loc, fmt.Sprintf("unsupported analytics sink %q", sink.Kind), "Use sink console or sink http(\"https://...\")")
+			c.addErrorCode(sink.Loc, CodeInvalidSettingValue, fmt.Sprintf("unsupported analytics sink %q", sink.Kind), "Use sink console or sink http(\"https://...\")")
 		}
 	}
 }
@@ -848,19 +941,19 @@ func (c *Checker) checkAnalytics(n *ast.Analytics) {
 func (c *Checker) checkSaveSchema(n *ast.SaveSchema) {
 	c.checkSnakeCase(n.Name, "save", n.Loc)
 	if n.Model == "" {
-		c.addError(n.Loc, fmt.Sprintf("save %q is missing a model", n.Name), "Add: model <model_name>")
+		c.addErrorCode(n.Loc, CodeSaveMissingClause, fmt.Sprintf("save %q is missing a model", n.Name), "Add: model <model_name>")
 		return
 	}
 	sym := c.global.Lookup(n.Model)
 	if sym == nil || sym.Kind != SymModel {
-		c.addError(n.Loc, fmt.Sprintf("save %q references unknown model %q", n.Name, n.Model), "Use an existing model or content block name")
+		c.addErrorCode(n.Loc, CodeUnknownModelRef, fmt.Sprintf("save %q references unknown model %q", n.Name, n.Model), "Use an existing model or content block name")
 		return
 	}
 	if n.VersionField == "" {
-		c.addError(n.Loc, fmt.Sprintf("save %q is missing version_field", n.Name), "Add: version_field <field_name>")
+		c.addErrorCode(n.Loc, CodeSaveMissingClause, fmt.Sprintf("save %q is missing version_field", n.Name), "Add: version_field <field_name>")
 	}
 	if n.Latest < 1 {
-		c.addError(n.Loc, fmt.Sprintf("save %q must declare latest >= 1", n.Name), "Add: latest 1")
+		c.addErrorCode(n.Loc, CodeInvalidSaveVersion, fmt.Sprintf("save %q must declare latest >= 1", n.Name), "Add: latest 1")
 	}
 	model, ok := sym.Node.(*ast.Model)
 	if !ok {
@@ -879,20 +972,20 @@ func (c *Checker) checkSaveSchema(n *ast.SaveSchema) {
 		}
 	}
 	if n.VersionField != "" && !found {
-		c.addError(n.Loc, fmt.Sprintf("save %q version_field %q does not exist on model %q", n.Name, n.VersionField, n.Model), "Point version_field to a field on the referenced model")
+		c.addErrorCode(n.Loc, CodeUnknownModelField, fmt.Sprintf("save %q version_field %q does not exist on model %q", n.Name, n.VersionField, n.Model), "Point version_field to a field on the referenced model")
 	}
 	seenMigrations := map[string]bool{}
 	for _, mig := range n.Migrations {
 		if mig.From >= mig.To {
-			c.addError(mig.Loc, fmt.Sprintf("save %q has invalid migration %d -> %d", n.Name, mig.From, mig.To), "Migration targets must increase version numbers")
+			c.addErrorCode(mig.Loc, CodeInvalidSaveVersion, fmt.Sprintf("save %q has invalid migration %d -> %d", n.Name, mig.From, mig.To), "Migration targets must increase version numbers")
 			continue
 		}
 		if n.Latest > 0 && mig.To > n.Latest {
-			c.addError(mig.Loc, fmt.Sprintf("save %q migration %d -> %d exceeds latest version %d", n.Name, mig.From, mig.To, n.Latest), "Keep migration targets within the declared latest version")
+			c.addErrorCode(mig.Loc, CodeInvalidSaveVersion, fmt.Sprintf("save %q migration %d -> %d exceeds latest version %d", n.Name, mig.From, mig.To, n.Latest), "Keep migration targets within the declared latest version")
 		}
 		key := fmt.Sprintf("%d->%d", mig.From, mig.To)
 		if seenMigrations[key] {
-			c.addError(mig.Loc, fmt.Sprintf("save %q repeats migration %s", n.Name, key), "Declare each migration step once")
+			c.addErrorCode(mig.Loc, CodeInvalidSaveVersion, fmt.Sprintf("save %q repeats migration %s", n.Name, key), "Declare each migration step once")
 		}
 		seenMigrations[key] = true
 	}
@@ -938,7 +1031,7 @@ func (c *Checker) checkTestGroup(n *ast.TestGroup) {
 			if suggestion := suggestName(testName, testNames); suggestion != "" {
 				hint += fmt.Sprintf("; did you mean %q?", suggestion)
 			}
-			c.addError(n.Loc,
+			c.addErrorCode(n.Loc, CodeUnknownTestRef,
 				fmt.Sprintf("test_group references unknown test %q", testName),
 				hint,
 			)
@@ -1040,7 +1133,7 @@ func (c *Checker) declareArrowInput(scope *Scope, input *ast.InputStmt) {
 		if existing.Loc.Line > 0 {
 			hint = fmt.Sprintf("First declared at %s; remove or rename one of the <- inputs", existing.Loc)
 		}
-		c.addError(input.Loc, fmt.Sprintf("duplicate input %q", input.Name), hint)
+		c.addErrorCode(input.Loc, CodeInvalidInputDecl, fmt.Sprintf("duplicate input %q", input.Name), hint)
 		return
 	}
 	declared := c.declaredValueType(input.Type, input.Constraints)
@@ -1091,7 +1184,7 @@ func pipeCallInputs(pipe *ast.Pipe) []*ast.InputStmt {
 }
 
 func (c *Checker) addDuplicateLocalBinding(name string, loc, previous lexer.Loc) {
-	c.addError(loc,
+	c.addErrorCode(loc, CodeDuplicateBinding,
 		fmt.Sprintf("duplicate local binding %q", name),
 		fmt.Sprintf("First bound at %s; choose a new name (only <- inputs may be reassigned)", previous),
 	)
@@ -1418,7 +1511,7 @@ func (c *Checker) checkComputedFieldAssignment(expr ast.Expr, scope *Scope) {
 		}
 	}
 	if modelHasComputedField(c.modelNode(modelName), access.Field) {
-		c.addError(access.Loc,
+		c.addErrorCode(access.Loc, CodeComputedReadOnly,
 			fmt.Sprintf("cannot assign to computed field %q on model %q", access.Field, modelName),
 			"Change one of the persisted source fields instead",
 		)
@@ -1494,7 +1587,7 @@ func (c *Checker) checkLocalIdent(ident *ast.Ident, scope *Scope) {
 			return
 		}
 	}
-	c.addError(ident.Loc,
+	c.addErrorCode(ident.Loc, CodeUnboundIdentifier,
 		fmt.Sprintf("unbound identifier %q", ident.Name),
 		"Declare it with <-, bind it with |> name = ..., or fix the name",
 	)
@@ -1607,7 +1700,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 	}
 	model, ok := call.Args[0].(*ast.Ident)
 	if !ok {
-		c.addError(call.Loc,
+		c.addErrorCode(call.Loc, CodeUnknownModelRef,
 			fmt.Sprintf("data operation %q requires a model name", call.Name),
 			"Pass a declared model or content name as the first argument",
 		)
@@ -1629,13 +1722,13 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 	if !knownModel {
 		if call.Name == "update" || call.Name == "delete" {
 			if !localTarget {
-				c.addError(model.Loc,
+				c.addErrorCode(model.Loc, CodeUnknownModelRef,
 					fmt.Sprintf("data operation %q references unknown model or binding %q", call.Name, modelName),
 					"Use a declared model or a value bound earlier in this block",
 				)
 			}
 		} else {
-			c.addError(model.Loc,
+			c.addErrorCode(model.Loc, CodeUnknownModelRef,
 				fmt.Sprintf("data operation %q references unknown model %q", call.Name, modelName),
 				"Declare the model or fix its name",
 			)
@@ -1649,7 +1742,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 			}
 			for _, entry := range block.Entries {
 				if modelHasComputedField(c.modelNode(fieldModelName), entry.Key) {
-					c.addError(entry.Loc,
+					c.addErrorCode(entry.Loc, CodeComputedReadOnly,
 						fmt.Sprintf("%s cannot write computed field %q on model %q", call.Name, entry.Key, fieldModelName),
 						"Remove the computed field from the write body; it is derived from persisted fields",
 					)
@@ -1665,7 +1758,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 	for _, arg := range call.Args[1:] {
 		if marker, ok := arg.(*ast.FnCall); ok {
 			if previous, duplicate := seenModifiers[marker.Name]; duplicate {
-				c.addError(marker.Loc,
+				c.addErrorCode(marker.Loc, CodeDuplicateQueryModifier,
 					fmt.Sprintf("duplicate %s modifier on %s", marker.Name, call.Name),
 					fmt.Sprintf("Keep one %s(...) modifier; the first is at %s", marker.Name, previous),
 				)
@@ -1694,19 +1787,19 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 				continue
 			case "with":
 				if call.Name != "query" {
-					c.addError(marker.Loc, fmt.Sprintf("%s does not support with(...) relationships", call.Name), "Use with(...) on a query operation")
+					c.addErrorCode(marker.Loc, CodeInvalidWith, fmt.Sprintf("%s does not support with(...) relationships", call.Name), "Use with(...) on a query operation")
 				}
 				if len(marker.Args) == 0 {
-					c.addError(marker.Loc, "with(...) requires at least one relationship", "Name a ref-backed relationship, for example with(author)")
+					c.addErrorCode(marker.Loc, CodeInvalidWith, "with(...) requires at least one relationship", "Name a ref-backed relationship, for example with(author)")
 				}
 				for _, relationExpr := range marker.Args {
 					relation, symbolic := relationExpr.(*ast.Ident)
 					if !symbolic {
-						c.addError(relationExpr.Location(), "with(...) relationships must be bare identifiers", "Use with(author), not a dynamic expression")
+						c.addErrorCode(relationExpr.Location(), CodeInvalidWith, "with(...) relationships must be bare identifiers", "Use with(author), not a dynamic expression")
 						continue
 					}
 					if previous, duplicate := seenRelations[relation.Name]; duplicate {
-						c.addError(relation.Loc, fmt.Sprintf("duplicate relationship %q in with(...) modifiers", relation.Name), fmt.Sprintf("Remove the duplicate; first requested at %s", previous))
+						c.addErrorCode(relation.Loc, CodeDuplicateQueryModifier, fmt.Sprintf("duplicate relationship %q in with(...) modifiers", relation.Name), fmt.Sprintf("Remove the duplicate; first requested at %s", previous))
 						continue
 					}
 					seenRelations[relation.Name] = relation.Loc
@@ -1714,7 +1807,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 						continue
 					}
 					if relation.Name == "_base" || fields[relation.Name] || modelHasComputedField(c.modelNode(modelName), relation.Name) {
-						c.addError(relation.Loc,
+						c.addErrorCode(relation.Loc, CodeRelationshipFieldCollision,
 							fmt.Sprintf("relationship %q collides with a field on model %q", relation.Name, modelName),
 							"Rename the relationship or the colliding model field",
 						)
@@ -1722,7 +1815,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 					}
 					sourceField, target, found := relationDefinition(fieldsForModel(c, modelName), relation.Name)
 					if !found {
-						c.addError(relation.Loc,
+						c.addErrorCode(relation.Loc, CodeUnknownModelField,
 							fmt.Sprintf("model %q has no ref-backed relationship %q", modelName, relation.Name),
 							fmt.Sprintf("Declare %s_id with ref(<model>) or remove it from with(...)", relation.Name),
 						)
@@ -1731,35 +1824,35 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 					targetFields, _ := c.modelFields(target)
 					targetID := modelFieldNamed(targetFields, "id")
 					if targetID == nil {
-						c.addError(relation.Loc,
+						c.addErrorCode(relation.Loc, CodeRelationTargetNotJoinable,
 							fmt.Sprintf("relationship %q targets model %q without a persisted id field", relation.Name, target),
 							"Add an id field to the target model; with(...) joins refs against target.id",
 						)
 						continue
 					}
 					if !modelFieldHasConstraint(targetID, "primary") && !modelFieldHasConstraint(targetID, "unique") {
-						c.addError(relation.Loc,
+						c.addErrorCode(relation.Loc, CodeRelationTargetNotJoinable,
 							fmt.Sprintf("relationship %q targets %s.id, which is neither primary nor unique", relation.Name, target),
 							"Mark the target id field primary or unique so each source row joins at most one target row",
 						)
 						continue
 					}
 					if checkerTypeKey(sourceField.Type) != checkerTypeKey(targetID.Type) {
-						c.addError(relation.Loc,
+						c.addErrorCode(relation.Loc, CodeRelationTargetNotJoinable,
 							fmt.Sprintf("relationship %q has type %s but %s.id has type %s", relation.Name, checkerTypeKey(sourceField.Type), target, checkerTypeKey(targetID.Type)),
 							"Use the same type for the ref field and target id",
 						)
 						continue
 					}
 					if target == modelName {
-						c.addError(relation.Loc,
+						c.addErrorCode(relation.Loc, CodeUnsupportedJoin,
 							fmt.Sprintf("self relationship %q on model %q requires a join alias", relation.Name, modelName),
 							"Self-join aliases are not supported in this release; omit it from with(...)",
 						)
 						continue
 					}
 					if previous, collision := seenTargets[target]; collision && previous != relation.Name {
-						c.addError(relation.Loc,
+						c.addErrorCode(relation.Loc, CodeUnsupportedJoin,
 							fmt.Sprintf("relationships %q and %q both join model %q", previous, relation.Name, target),
 							"This release does not alias repeated joins to the same target model; request one relationship",
 						)
@@ -1772,7 +1865,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 		}
 		if ident, ok := arg.(*ast.Ident); ok && ident.Name == "first" {
 			if previous, duplicate := seenModifiers["first"]; duplicate {
-				c.addError(ident.Loc, "duplicate first modifier", fmt.Sprintf("Keep one first modifier; the first is at %s", previous))
+				c.addErrorCode(ident.Loc, CodeDuplicateQueryModifier, "duplicate first modifier", fmt.Sprintf("Keep one first modifier; the first is at %s", previous))
 			} else {
 				seenModifiers["first"] = ident.Loc
 			}
@@ -1782,7 +1875,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 	}
 	if _, paginated := seenModifiers["paginate"]; paginated {
 		if firstLoc, first := seenModifiers["first"]; first {
-			c.addError(firstLoc, "query cannot combine paginate(...) and first", "Choose a paginated collection or a single first record")
+			c.addErrorCode(firstLoc, CodeConflictingQueryModifiers, "query cannot combine paginate(...) and first", "Choose a paginated collection or a single first record")
 		}
 	}
 	if withLoc, hasWith := seenModifiers["with"]; hasWith {
@@ -1790,7 +1883,7 @@ func (c *Checker) checkDataOperationRefs(call *ast.FnCall, scope *Scope) {
 			if isStructuredDataOperationModifier(arg) {
 				continue
 			}
-			c.addError(withLoc,
+			c.addErrorCode(withLoc, CodeConflictingQueryModifiers,
 				"query with(...) cannot be combined with legacy positional or block arguments",
 				"Use structured where(...), order(...), paginate(...), and first modifiers",
 			)
@@ -1997,7 +2090,7 @@ func (c *Checker) checkKnownModelFieldAccess(access *ast.FieldAccess, scope *Sco
 	if suggestion := suggestName(access.Field, candidates); suggestion != "" {
 		hint += fmt.Sprintf("; did you mean %q?", suggestion)
 	}
-	c.addError(access.Loc,
+	c.addErrorCode(access.Loc, CodeUnknownModelField,
 		fmt.Sprintf("model %q has no field %q", modelName, access.Field),
 		hint,
 	)
@@ -2122,7 +2215,7 @@ func (c *Checker) checkFnCall(call *ast.FnCall) {
 			c.checkExternalCall(call)
 		}
 		if isStorageOperation(call.Name) && !c.hasBlueprintEntry("storage") {
-			c.addError(call.Loc,
+			c.addErrorCode(call.Loc, CodeStorageNotConfigured,
 				fmt.Sprintf("storage operation %q requires blueprint storage", call.Name),
 				"Add `storage s3` to the blueprint block or remove the storage operation",
 			)
@@ -2130,14 +2223,14 @@ func (c *Checker) checkFnCall(call *ast.FnCall) {
 		if call.Name == "transition" && len(call.Args) > 0 {
 			if id, ok := call.Args[0].(*ast.Ident); ok {
 				if sym := c.global.Lookup(id.Name); sym == nil || sym.Kind != SymType {
-					c.addError(call.Loc, fmt.Sprintf("transition references unknown state %q", id.Name), "Declare it with: state <name> { ... }")
+					c.addErrorCode(call.Loc, CodeUnknownStateSaveSecret, fmt.Sprintf("transition references unknown state %q", id.Name), "Declare it with: state <name> { ... }")
 				}
 			}
 		}
 		if call.Name == "upgrade_save" && len(call.Args) > 0 {
 			if id, ok := call.Args[0].(*ast.Ident); ok {
 				if sym := c.global.Lookup(id.Name); sym == nil || sym.Kind != SymSave {
-					c.addError(call.Loc, fmt.Sprintf("upgrade_save references unknown save %q", id.Name), "Declare it with: save <name> { ... }")
+					c.addErrorCode(call.Loc, CodeUnknownStateSaveSecret, fmt.Sprintf("upgrade_save references unknown save %q", id.Name), "Declare it with: save <name> { ... }")
 				}
 			}
 		}
@@ -2163,7 +2256,7 @@ func (c *Checker) checkFnCall(call *ast.FnCall) {
 			// symbolic target is validated by the enclosing builtin.
 			return
 		default:
-			c.addError(call.Loc,
+			c.addErrorCode(call.Loc, CodeWrongSymbolKind,
 				fmt.Sprintf("%q is a %s, not a function or pipe", call.Name, sym.Kind),
 				"Use a declared fn or pipe name here",
 			)
@@ -2215,7 +2308,7 @@ func (c *Checker) addArityError(loc lexer.Loc, symbol *Symbol, expected, actual 
 		params = append(params, input.Name)
 	}
 	signature := fmt.Sprintf("%s%s(%s)", callPrefix, symbol.Name, strings.Join(params, ", "))
-	c.addError(loc,
+	c.addErrorCode(loc, CodeArgumentCount,
 		fmt.Sprintf("%s %q expects %d %s, got %d", kind, symbol.Name, expected, argumentWord, actual),
 		fmt.Sprintf("Call it as %s; declared at %s", signature, symbol.Loc),
 	)
@@ -2223,12 +2316,12 @@ func (c *Checker) addArityError(loc lexer.Loc, symbol *Symbol, expected, actual 
 
 func (c *Checker) checkExternalCall(call *ast.FnCall) {
 	if len(call.Args) == 0 {
-		c.addError(call.Loc, "call requires an external service name", "Use: call service_name GET /path")
+		c.addErrorCode(call.Loc, CodeInvalidCallTarget, "call requires an external service name", "Use: call service_name GET /path")
 		return
 	}
 	service, ok := call.Args[0].(*ast.Ident)
 	if !ok {
-		c.addError(call.Loc, "call service must be an identifier", "Use: call service_name GET /path")
+		c.addErrorCode(call.Loc, CodeInvalidCallTarget, "call service must be an identifier", "Use: call service_name GET /path")
 		return
 	}
 	if !c.hasExternal(service.Name) {
@@ -2246,7 +2339,7 @@ func (c *Checker) checkEndpointAuth(meta *ast.EndpointMeta) {
 	fn, ok := meta.Value.(*ast.FnCall)
 	if !ok {
 		if id, isIdent := meta.Value.(*ast.Ident); isIdent && id.Name == "webhook_sig" {
-			c.addError(meta.Loc,
+			c.addErrorCode(meta.Loc, CodeWebhookSecretMissing,
 				"auth webhook_sig requires using(secret.NAME)",
 				"Use: auth webhook_sig using(secret.WEBHOOK_SECRET)",
 			)
@@ -2258,7 +2351,7 @@ func (c *Checker) checkEndpointAuth(meta *ast.EndpointMeta) {
 	}
 	secretName, ok := webhookSignatureSecretName(fn)
 	if !ok {
-		c.addError(meta.Loc,
+		c.addErrorCode(meta.Loc, CodeWebhookSecretMissing,
 			"auth webhook_sig requires using(secret.NAME)",
 			"Use: auth webhook_sig using(secret.WEBHOOK_SECRET)",
 		)
@@ -2266,7 +2359,7 @@ func (c *Checker) checkEndpointAuth(meta *ast.EndpointMeta) {
 	}
 	sym := c.global.Lookup(secretName)
 	if sym == nil || sym.Kind != SymSecret {
-		c.addError(meta.Loc,
+		c.addErrorCode(meta.Loc, CodeUnknownStateSaveSecret,
 			fmt.Sprintf("auth webhook_sig references unknown secret %q", secretName),
 			"Declare it with: secret "+secretName+" required",
 		)
@@ -2477,12 +2570,12 @@ func (c *Checker) checkTypeRef(te ast.TypeExpr) {
 	case *ast.TranslationKeyType:
 		sym := c.global.Lookup(t.Namespace)
 		if sym == nil {
-			c.addError(t.Loc, fmt.Sprintf("unknown translation namespace %q", t.Namespace), "Define it with: translation <name> { ... }")
+			c.addErrorCode(t.Loc, CodeUnknownTranslationRef, fmt.Sprintf("unknown translation namespace %q", t.Namespace), "Define it with: translation <name> { ... }")
 			return
 		}
 		tr, ok := sym.Node.(*ast.Translation)
 		if !ok {
-			c.addError(t.Loc, fmt.Sprintf("%q is not a translation namespace", t.Namespace), "Use a translation block name in tkey(...) types")
+			c.addErrorCode(t.Loc, CodeWrongSymbolKind, fmt.Sprintf("%q is not a translation namespace", t.Namespace), "Use a translation block name in tkey(...) types")
 			return
 		}
 		t.Keys = append(t.Keys[:0], tr.Keys...)
@@ -2557,7 +2650,7 @@ func (c *Checker) checkMiddlewareRef(name string, loc lexer.Loc) {
 		return
 	}
 	if sym.Kind != SymMiddleware {
-		c.addError(loc,
+		c.addErrorCode(loc, CodeWrongSymbolKind,
 			fmt.Sprintf("%q is a %s, not a middleware", name, sym.Kind),
 			"Use a middleware name here",
 		)
@@ -2583,7 +2676,7 @@ func (c *Checker) checkPathNaming(path string, loc lexer.Loc) {
 				)
 			}
 		} else if !isKebabCase(seg) {
-			c.addError(loc,
+			c.addErrorCode(loc, CodeNameCase,
 				fmt.Sprintf("path segment %q should be kebab-case", seg),
 				"Use lowercase letters, digits, and hyphens (e.g. user-profiles)",
 			)
@@ -2691,7 +2784,7 @@ func (c *Checker) checkSnakeCase(name, what string, loc lexer.Loc) {
 
 func (c *Checker) checkScreamingSnakeCase(name, what string, loc lexer.Loc) {
 	if !isScreamingSnakeCase(name) {
-		c.addError(loc,
+		c.addErrorCode(loc, CodeNameCase,
 			fmt.Sprintf("%s name %q must be SCREAMING_SNAKE_CASE", what, name),
 			"Use uppercase letters, digits, and underscores (e.g. MY_THING)",
 		)
@@ -2700,7 +2793,7 @@ func (c *Checker) checkScreamingSnakeCase(name, what string, loc lexer.Loc) {
 
 func (c *Checker) checkPascalCase(name, what string, loc lexer.Loc) {
 	if !isPascalCase(name) {
-		c.addError(loc,
+		c.addErrorCode(loc, CodeNameCase,
 			fmt.Sprintf("%s name %q must be PascalCase", what, name),
 			"Start with uppercase, use mixed case (e.g. MyThing)",
 		)

@@ -2563,23 +2563,31 @@ func printJSONCheckResult(filename string, valid bool, parseErrors []parser.Pars
 		var errors []map[string]interface{}
 
 		for _, e := range parseErrors {
-			errors = append(errors, map[string]interface{}{
+			entry := map[string]interface{}{
 				"type":    "parse",
 				"message": e.Message,
 				"line":    e.Loc.Line,
 				"column":  e.Loc.Col,
 				"file":    e.Loc.File,
-			})
+			}
+			if e.Code != "" {
+				entry["code"] = e.Code
+			}
+			errors = append(errors, entry)
 		}
 
 		for _, e := range checkErrors {
-			errors = append(errors, map[string]interface{}{
+			entry := map[string]interface{}{
 				"type":    "semantic",
 				"message": e.Message,
 				"line":    e.Loc.Line,
 				"column":  e.Loc.Col,
 				"file":    e.Loc.File,
-			})
+			}
+			if e.Code != "" {
+				entry["code"] = e.Code
+			}
+			errors = append(errors, entry)
 		}
 
 		output["errors"] = errors

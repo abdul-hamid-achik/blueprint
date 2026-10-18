@@ -25,7 +25,7 @@ Color is auto-detected (TTY → color; pipe → plain). `NO_COLOR=1` forces plai
 |---|---|---|
 | `L###` | Lexer | `L001` `'|'` not part of `'|>'` (use `'|>'`?) |
 | `P###` | Parser | `P001` file does not start with a `blueprint` block |
-| `C###` | Checker (semantic) | `C001`–`C015` — duplicate names, unknown types, unknown refs, hint capitalization, etc. |
+| `C###` | Checker (semantic) | `C001`–`C049` — duplicate names, unknown types, unknown refs, type mismatches, locale/translation/save rules, etc. |
 | `R###` | Resolver / typed IR | reserved |
 | `G###` | Codegen | reserved (codegen panics are bugs, not user diagnostics) |
 
@@ -41,7 +41,7 @@ bp explain P001
 
 ## Why some errors don't have a code yet
 
-Codes are added incrementally as we identify high-traffic sites. Uncoded errors render the same way but without the `[Cxxx]` bracket. The current namespace covers the audit's "top 80% of common errors" threshold; adding a new code is a small PR (one constant + one `addErrorCode` migration + one doc section).
+Every checker error carries a code: the checker has no uncoded error path, and a test rejects one. Lexer and parser errors are still being migrated, and an uncoded error renders without the `[Cxxx]` bracket. Adding a checker code is a small change: one constant, `addErrorCode` at the site, and a catalog section whose first `bp` example really produces it.
 
 ## LSP rendering
 

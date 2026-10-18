@@ -1048,6 +1048,40 @@ func TestExplainKnownCode(t *testing.T) {
 	}
 }
 
+func TestExplainNewCheckerCode(t *testing.T) {
+	stdout, _, code := runBP(t, "explain", "C016")
+	if code != 0 {
+		t.Fatalf("bp explain C016 should exit 0, got %d (stdout=%q)", code, stdout)
+	}
+	if !strings.Contains(stdout, "### C016 — duplicate blueprint setting") {
+		t.Errorf("expected C016 heading in explain output, got: %q", stdout)
+	}
+}
+
+func TestCheckJSONIncludesSemanticErrorCode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dup.bp")
+	src := "blueprint \"todo-api\" {\n  version \"1.0.0\"\n  version \"2.0.0\"\n  runtime node\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runBP(t, "check", path, "--json")
+	if exitCode == 0 {
+		t.Fatalf("expected check to fail, stdout=%q", stdout)
+	}
+	var parsed struct {
+		Errors []struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
+	}
+	if len(parsed.Errors) != 1 || parsed.Errors[0].Type != "semantic" || parsed.Errors[0].Code != "C016" {
+		t.Errorf("expected one semantic C016 error, got %+v", parsed.Errors)
+	}
+}
+
 func TestExplainCaseInsensitive(t *testing.T) {
 	if _, _, code := runBP(t, "explain", "c004"); code != 0 {
 		t.Errorf("lowercase code should hit, exit was %d", code)

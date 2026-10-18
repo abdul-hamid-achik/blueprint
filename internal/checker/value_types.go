@@ -532,7 +532,7 @@ func (c *Checker) checkCallableArgumentTypes(call *ast.FnCall, scope *Scope) {
 		if c.exprAssignableTo(expected, call.Args[i], scope) {
 			continue
 		}
-		c.addError(call.Args[i].Location(),
+		c.addErrorCode(call.Args[i].Location(), CodeValueTypeMismatch,
 			fmt.Sprintf("argument %d to %s %q expects %s, got %s", i+1, callable, call.Name, expected, describeActualType(actual, call.Args[i])),
 			fmt.Sprintf("Parameter %q is declared at %s", input.Name, input.Loc),
 		)
@@ -544,7 +544,7 @@ func (c *Checker) addAssignmentTypeError(loc lexer.Loc, name string, input *Symb
 	if input != nil && input.Loc.Line > 0 {
 		hint = fmt.Sprintf("Input %q is declared as %s at %s", name, expected, input.Loc)
 	}
-	c.addError(loc,
+	c.addErrorCode(loc, CodeValueTypeMismatch,
 		fmt.Sprintf("cannot assign %s to input %q of type %s", describeActualType(actual, expr), name, expected),
 		hint,
 	)
@@ -564,7 +564,7 @@ func (c *Checker) checkModelWriteValueType(operation, modelName string, entry as
 	if c.exprAssignableTo(expected, entry.Value, scope) {
 		return
 	}
-	c.addError(entry.Loc,
+	c.addErrorCode(entry.Loc, CodeValueTypeMismatch,
 		fmt.Sprintf("%s field %q on model %q expects %s, got %s", operation, entry.Key, modelName, expected, describeActualType(actual, entry.Value)),
 		fmt.Sprintf("Field %q is declared at %s", entry.Key, field.Loc),
 	)
