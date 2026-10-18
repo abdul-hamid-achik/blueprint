@@ -204,6 +204,10 @@ const (
 	// CodeUnknownLogLevel = `log ... level(x)` names a level other than
 	// debug, info, warn, or error.
 	CodeUnknownLogLevel = "C051"
+	// CodeInvalidConstraintValue = a default, min, max, or format constraint
+	// value cannot apply to the declared type (for example default("abc") on
+	// an int, or max(3) on a bool).
+	CodeInvalidConstraintValue = "C052"
 )
 
 // --- Pass 1: Collect top-level declarations ---
@@ -392,6 +396,7 @@ func (c *Checker) checkModel(n *ast.Model) {
 			seen[f.Name] = f.Loc
 		}
 		c.checkTypeRef(f.Type)
+		c.checkConstraintValues(f.Type, f.Constraints)
 		for _, con := range f.Constraints {
 			if con.Kind == "ref" && con.Value != nil {
 				c.checkRefTarget(con.Value, con.Loc)
@@ -621,6 +626,7 @@ func (c *Checker) checkFn(n *ast.Fn) {
 	for _, inp := range n.Inputs {
 		c.checkTypeRef(inp.Type)
 		c.checkConstraints(inp.Constraints)
+		c.checkConstraintValues(inp.Type, inp.Constraints)
 		c.declareArrowInput(scope, inp)
 	}
 	for _, out := range n.Outputs {
@@ -901,6 +907,7 @@ func (c *Checker) checkTypeDecl(n *ast.TypeDecl) {
 	for _, f := range n.Fields {
 		c.checkSnakeCase(f.Name, "field", f.Loc)
 		c.checkTypeRef(f.Type)
+		c.checkConstraintValues(f.Type, f.Constraints)
 	}
 }
 
@@ -909,6 +916,7 @@ func (c *Checker) checkTypeDecl(n *ast.TypeDecl) {
 func (c *Checker) checkAlias(n *ast.Alias) {
 	c.checkPascalCase(n.Name, "alias", n.Loc)
 	c.checkTypeRef(n.Type)
+	c.checkConstraintValues(n.Type, n.Constraints)
 }
 
 // --- Secret ---
@@ -1360,6 +1368,7 @@ func (c *Checker) checkArrowStmtExprsInScope(stmts []ast.ArrowStmt, scope *Scope
 		case *ast.InputStmt:
 			c.checkTypeRef(s.Type)
 			c.checkConstraints(s.Constraints)
+			c.checkConstraintValues(s.Type, s.Constraints)
 			c.declareArrowInput(scope, s)
 		case *ast.StepStmt:
 			c.checkExpr(s.Expr)
