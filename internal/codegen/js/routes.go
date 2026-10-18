@@ -1104,7 +1104,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	if needsWebhookAuth {
 		ic.needsEnv = true
 	}
-	// Redis pub/sub backbone always references env.REDIS_URL
+	// WS handler bodies may read env.NAME; env.ts is always generated.
 	ic.needsEnv = true
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
@@ -1123,11 +1123,15 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	b.WriteString("  let _redisPub: any = null;\n")
 	b.WriteString("  let _redisInit: Promise<void> | null = null;\n")
 	b.WriteString("  function _ensureRedis(): Promise<void> {\n")
-	b.WriteString("    if (!_redisInit && env.REDIS_URL) {\n")
+	// REDIS_URL is optional here (read from process.env, like the STREAM
+	// fan-out): env.ts only declares it when cache/queue/workers need it, and
+	// without it rooms stay local to this instance.
+	b.WriteString("    const _redisUrl = process.env.REDIS_URL;\n")
+	b.WriteString("    if (!_redisInit && _redisUrl) {\n")
 	b.WriteString("      _redisInit = (async () => {\n")
 	b.WriteString("        const { createClient } = await import('redis');\n")
-	b.WriteString("        _redisSub = createClient({ url: env.REDIS_URL });\n")
-	b.WriteString("        _redisPub = createClient({ url: env.REDIS_URL });\n")
+	b.WriteString("        _redisSub = createClient({ url: _redisUrl });\n")
+	b.WriteString("        _redisPub = createClient({ url: _redisUrl });\n")
 	b.WriteString("        await _redisSub.connect();\n")
 	b.WriteString("        await _redisPub.connect();\n")
 	b.WriteString("      })().catch((e: any) => { console.error('Redis pub/sub init failed:', e); });\n")

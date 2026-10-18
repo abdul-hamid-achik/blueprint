@@ -4059,3 +4059,55 @@ GET /api/notes/:id/tags {
 		t.Errorf("should .map() to extract tag_id field; got:\n%s", ts)
 	}
 }
+
+// TestGenerateWsRoomsWithoutRedisConfigCompiles pins that a WS blueprint with
+// join/broadcast but no cache/queue/worker (so env.ts declares no REDIS_URL)
+// still type-checks: the room backbone reads REDIS_URL optionally from
+// process.env and the redis package is a dependency.
+func TestGenerateWsRoomsWithoutRedisConfigCompiles(t *testing.T) {
+	src := `blueprint "ws-rooms" {
+  version "0.1.0"
+  port    3000
+  runtime node
+}
+
+model room {
+  id   uuid   primary
+  name string required
+}
+
+WS /ws/rooms/:id {
+  on_connect {
+    |> join room(id)
+  }
+  on_message {
+    |> broadcast room(id) { body: message.body }
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if errs := checker.Check(file); len(errs) > 0 {
+		t.Fatalf("check errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	route, err := os.ReadFile(filepath.Join(outDir, "src/routes/ws.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ReplaceAll(string(route), "process.env.REDIS_URL", ""), "env.REDIS_URL") {
+		t.Error("WS room backbone must not require env.REDIS_URL when env.ts does not declare it")
+	}
+	pkg, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pkg), `"redis"`) {
+		t.Error("WS blueprints import redis for room broadcast; package.json must depend on it")
+	}
+	requireTypeScriptCompile(t, outDir)
+}

@@ -677,10 +677,11 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// package.json
-	// STREAM fan-out (events.ts) imports the redis client, so STREAM blueprints
-	// get the same redis dependency as cache blueprints. REDIS_URL stays optional
-	// for them: it is read lazily from process.env, not declared in env.ts.
-	files = append(files, g.genPackageJSON(bp, hasDB, hasCache || len(streams) > 0, hasStorage, len(workers)+len(schedules) > 0 || hasEnqueue(endpoints), len(endpoints) > 0, len(ws) > 0))
+	// STREAM fan-out (events.ts) and WS room broadcast import the redis client,
+	// so those blueprints get the same redis dependency as cache blueprints.
+	// REDIS_URL stays optional for them: it is read lazily from process.env, not
+	// declared in env.ts.
+	files = append(files, g.genPackageJSON(bp, hasDB, hasCache || len(streams) > 0 || len(ws) > 0, hasStorage, len(workers)+len(schedules) > 0 || hasEnqueue(endpoints), len(endpoints) > 0, len(ws) > 0))
 
 	// tsconfig.json
 	files = append(files, g.genTSConfig())
