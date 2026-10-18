@@ -12,9 +12,17 @@ import (
 // --- Subscriptions ---
 
 // genEventsLib generates the shared event subscription registry (src/lib/events.ts).
-func (g *Generator) genEventsLib() codegen.OutputFile {
+// When the blueprint declares STREAM endpoints, the registry also carries the
+// multi-instance STREAM fan-out (see eventsStreamSection) so that a STREAM client
+// connected to one instance receives events emitted on another. Without STREAM
+// endpoints the file is byte-identical to the single-instance registry.
+func (g *Generator) genEventsLib(hasStreams bool) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
+	if hasStreams {
+		b.WriteString("import { randomUUID } from 'node:crypto';\n")
+		b.WriteString("import { createClient } from 'redis';\n")
+	}
 	b.WriteString(`// Event subscription registry — wire up in src/index.ts
 export type EventHandler = (event: unknown) => Promise<void>;
 export const subscriptions: Record<string, EventHandler[]> = {};
@@ -31,7 +39,11 @@ export function off(event: string, handler: EventHandler) {
   const idx = handlers.indexOf(handler);
   if (idx !== -1) handlers.splice(idx, 1);
 }
-export async function emit(event: string, data: unknown) {
+`)
+	if hasStreams {
+		b.WriteString(eventsStreamSection)
+	} else {
+		b.WriteString(`export async function emit(event: string, data: unknown) {
   // Iterate a snapshot of the handlers array — a handler that calls off()
   // during emit() would splice the live array and cause other subscribers
   // to miss the event (e.g. a STREAM/SSE client disconnecting mid-emit).
@@ -40,8 +52,198 @@ export async function emit(event: string, data: unknown) {
   }
 }
 `)
+	}
 	return codegen.OutputFile{Path: "src/lib/events.ts", Content: []byte(b.String())}
 }
+
+// eventsStreamSection is appended to src/lib/events.ts when the blueprint has
+// STREAM endpoints. STREAM listeners register through onStream()/offStream() so
+// they can be told apart from subscribe handlers. emit() still runs every local
+// handler exactly once and then publishes {origin, event, payload} on the Redis
+// channel bp:stream:<event> (one channel per event, so an instance only receives
+// events it has local STREAM listeners for). A message from another instance is
+// delivered ONLY to local STREAM listeners; subscribe handlers never run from the
+// Redis path, so their side effects still happen once, on the emitting instance.
+// Without REDIS_URL, or under a test runner (VITEST), no Redis client is created
+// and emit() is local-only.
+const eventsStreamSection = `
+// --- Multi-instance STREAM fan-out ---
+// Random per-process id; messages carrying it are our own echoes and are ignored.
+export const INSTANCE_ID = randomUUID();
+
+// Transport used for STREAM fan-out. The default is Redis (REDIS_URL); tests or
+// embedders may install another implementation with setStreamBus().
+export interface StreamBus {
+  publish(channel: string, message: string): void;
+  subscribe(channel: string, onMessage: (message: string) => void): void;
+  unsubscribe(channel: string): void;
+}
+
+const streamHandlers = new WeakSet<EventHandler>();
+const streamListenerCounts = new Map<string, number>();
+let streamBusInstance: StreamBus | null | undefined;
+let streamErrorLogged = false;
+
+// Log the first fan-out failure only; later failures are dropped silently so a
+// Redis outage cannot flood the console. Local delivery is unaffected.
+function logStreamError(err: unknown) {
+  if (streamErrorLogged) return;
+  streamErrorLogged = true;
+  console.error('STREAM Redis fan-out unavailable; delivering to local clients only:', err);
+}
+
+function streamChannel(event: string): string {
+  return 'bp:stream:' + event;
+}
+
+// Redis-backed bus. Desired subscriptions are reconciled against live ones
+// whenever the subscriber is ready, so a STREAM listener registered before the
+// connection is up is subscribed as soon as it is. Publishes issued before the
+// publisher first connects are held in a small bounded backlog and flushed on
+// connect; after that, publish is fire-and-forget and skipped while the publisher
+// is not ready, so an outage never grows memory without bound.
+function createRedisStreamBus(url: string): StreamBus {
+  const desired = new Map<string, (message: string) => void>();
+  const live = new Set<string>();
+  const backlog: Array<[string, string]> = [];
+  let publisherConnected = false;
+  const sub = createClient({ url });
+  const pub = createClient({ url });
+  sub.on('error', logStreamError);
+  pub.on('error', logStreamError);
+  pub.on('ready', () => {
+    publisherConnected = true;
+    for (const [channel, message] of backlog.splice(0)) {
+      pub.publish(channel, message).catch(logStreamError);
+    }
+  });
+
+  const reconcile = () => {
+    if (!sub.isReady) return;
+    for (const [channel, onMessage] of desired) {
+      if (live.has(channel)) continue;
+      live.add(channel);
+      sub.subscribe(channel, onMessage).catch((err: unknown) => {
+        live.delete(channel);
+        logStreamError(err);
+      });
+    }
+    for (const channel of [...live]) {
+      if (desired.has(channel)) continue;
+      live.delete(channel);
+      sub.unsubscribe(channel).catch(logStreamError);
+    }
+  };
+  sub.on('ready', reconcile);
+  sub.connect().catch(logStreamError);
+  pub.connect().catch(logStreamError);
+
+  return {
+    publish(channel, message) {
+      if (pub.isReady) {
+        pub.publish(channel, message).catch(logStreamError);
+      } else if (!publisherConnected && backlog.length < 1000) {
+        backlog.push([channel, message]);
+      }
+    },
+    subscribe(channel, onMessage) {
+      desired.set(channel, onMessage);
+      reconcile();
+    },
+    unsubscribe(channel) {
+      desired.delete(channel);
+      reconcile();
+    },
+  };
+}
+
+// The bus is created on first use (first STREAM listener or first emit) and only
+// when REDIS_URL is set. It is never created under a test runner.
+function streamBus(): StreamBus | null {
+  if (streamBusInstance === undefined) {
+    const url = process.env.REDIS_URL;
+    try {
+      streamBusInstance = url && !process.env.VITEST ? createRedisStreamBus(url) : null;
+    } catch (err) {
+      logStreamError(err);
+      streamBusInstance = null;
+    }
+  }
+  return streamBusInstance;
+}
+
+// setStreamBus replaces the fan-out transport (null disables fan-out).
+export function setStreamBus(bus: StreamBus | null) {
+  streamBusInstance = bus;
+}
+
+// onStream registers a STREAM listener. The first local listener for an event
+// subscribes this instance to that event's Redis channel.
+export function onStream(event: string, handler: EventHandler) {
+  on(event, handler);
+  streamHandlers.add(handler);
+  const count = streamListenerCounts.get(event) ?? 0;
+  streamListenerCounts.set(event, count + 1);
+  if (count === 0) {
+    streamBus()?.subscribe(streamChannel(event), (message) => deliverRemote(event, message));
+  }
+}
+
+// offStream removes a STREAM listener. Removing the last local listener for an
+// event releases its Redis channel subscription.
+export function offStream(event: string, handler: EventHandler) {
+  off(event, handler);
+  if (!streamHandlers.delete(handler)) return;
+  const count = (streamListenerCounts.get(event) ?? 1) - 1;
+  if (count > 0) {
+    streamListenerCounts.set(event, count);
+    return;
+  }
+  streamListenerCounts.delete(event);
+  streamBus()?.unsubscribe(streamChannel(event));
+}
+
+// deliverRemote hands a message published by another instance to this instance's
+// STREAM listeners. Messages this instance published are ignored because its own
+// listeners already received the event through the local emit().
+function deliverRemote(event: string, message: string) {
+  let envelope: { origin?: unknown; event?: unknown; payload?: unknown } | null;
+  try {
+    envelope = JSON.parse(message);
+  } catch (err) {
+    console.error('STREAM fan-out: malformed message on ' + streamChannel(event), err);
+    return;
+  }
+  if (!envelope || envelope.origin === INSTANCE_ID || envelope.event !== event) return;
+  for (const handler of [...(subscriptions[event] ?? [])]) {
+    if (!streamHandlers.has(handler)) continue;
+    handler(envelope.payload).catch((err: unknown) => {
+      console.error('STREAM fan-out handler failed for ' + event, err);
+    });
+  }
+}
+
+function publishStream(event: string, data: unknown) {
+  try {
+    streamBus()?.publish(streamChannel(event), JSON.stringify({ origin: INSTANCE_ID, event, payload: data }));
+  } catch (err) {
+    logStreamError(err);
+  }
+}
+
+export async function emit(event: string, data: unknown) {
+  // Local dispatch is unchanged: a snapshot of the handlers array, awaited in
+  // order. The fan-out publish runs in finally so a failing local handler does not
+  // suppress delivery to other instances.
+  try {
+    for (const handler of [...(subscriptions[event] ?? [])]) {
+      await handler(data);
+    }
+  } finally {
+    publishStream(event, data);
+  }
+}
+`
 
 // genSubscribe generates an event subscription handler file (src/subscriptions/<name>.ts).
 func (g *Generator) genSubscribe(sub *ast.Subscribe) codegen.OutputFile {

@@ -928,6 +928,15 @@ STREAM /api/jobs/:id/progress {
 
 `close` terminates the SSE stream.
 
+When the service runs on more than one instance, set `REDIS_URL`. A STREAM
+listener then receives events that `emit` publishes on any instance: each
+`emit` is also published to Redis on the channel `bp:stream:<event>`, and every
+other instance forwards it only to its own STREAM listeners. Subscribe handlers
+never run from Redis, so their side effects happen once, on the emitting
+instance. Without `REDIS_URL`, or when Redis is unreachable, listeners receive
+only events emitted on their own instance, and one error is logged. Event
+payloads cross instances as JSON, so `Date` values arrive as strings.
+
 In OpenAPI output: exposed as `GET` with `text/event-stream` content type.
 
 ---
@@ -1128,6 +1137,9 @@ subscribe "user.deleted" {
 ```
 
 `event` is implicitly bound to the event payload.
+
+Subscribe handlers run only on the instance that called `emit`. Unlike STREAM
+listeners, they are not sent to other instances through Redis.
 
 The Node target registers this handler on Blueprint's in-process event bus; use
 `emit` to publish to it. The parser accepts `from(service)`, but Node codegen

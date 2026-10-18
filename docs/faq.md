@@ -449,8 +449,9 @@ Trigger jobs from endpoints:
 ```
 
 `enqueue` sends a BullMQ job to the queue named by `trigger queue(...)`.
-`emit` is the local event bus used by STREAM/subscription handlers; it does not
-enqueue worker jobs.
+`emit` is the event bus used by STREAM/subscription handlers; it does not
+enqueue worker jobs. With `REDIS_URL` set, STREAM listeners on other instances
+also receive emitted events; subscribe handlers run only where `emit` was called.
 
 ---
 

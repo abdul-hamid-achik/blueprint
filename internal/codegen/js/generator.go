@@ -677,7 +677,10 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 
 	// package.json
-	files = append(files, g.genPackageJSON(bp, hasDB, hasCache, hasStorage, len(workers)+len(schedules) > 0 || hasEnqueue(endpoints), len(endpoints) > 0, len(ws) > 0))
+	// STREAM fan-out (events.ts) imports the redis client, so STREAM blueprints
+	// get the same redis dependency as cache blueprints. REDIS_URL stays optional
+	// for them: it is read lazily from process.env, not declared in env.ts.
+	files = append(files, g.genPackageJSON(bp, hasDB, hasCache || len(streams) > 0, hasStorage, len(workers)+len(schedules) > 0 || hasEnqueue(endpoints), len(endpoints) > 0, len(ws) > 0))
 
 	// tsconfig.json
 	files = append(files, g.genTSConfig())
@@ -900,7 +903,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		}
 	}
 	if needsEventsLib {
-		files = append(files, g.genEventsLib())
+		files = append(files, g.genEventsLib(len(streams) > 0))
 	}
 	for _, sub := range subscribes {
 		files = append(files, g.genSubscribe(sub))

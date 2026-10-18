@@ -247,9 +247,11 @@ Review these behaviors before scaling beyond one process:
 - Endpoint rate limits use an in-process map. Every replica has its own counter,
   and the generated code trusts `X-Forwarded-For`. Use a trusted proxy plus a
   gateway or distributed limiter for production enforcement.
-- `emit` and ordinary subscriptions are process-local. Use BullMQ `enqueue` for
-  distributed worker jobs. Configure and test Redis-backed realtime behavior
-  before relying on cross-replica WebSocket delivery.
+- `emit` runs subscribe handlers on the emitting replica only. STREAM listeners
+  also receive events emitted on other replicas when `REDIS_URL` is set; without
+  it they receive only local events. Use BullMQ `enqueue` for distributed worker
+  jobs. Configure and test Redis-backed realtime behavior before relying on
+  cross-replica WebSocket or STREAM delivery.
 - `/health` proves that the process can answer HTTP; it does not prove that the
   database, Redis, object storage, or downstream APIs are ready.
 - Every replica creates its own database/Redis connections. Size pools and

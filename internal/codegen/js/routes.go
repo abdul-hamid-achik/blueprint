@@ -777,11 +777,11 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 		}
 	}
 	if hasEventHandlers {
-		// off() unsubscribes a handler on stream.onAbort — per-connection
+		// offStream() unsubscribes a handler on stream.onAbort — per-connection
 		// subscriptions that are never removed accumulate for the lifetime
 		// of the process (unbounded memory leak, silent because hono
 		// swallows writes to an already-closed stream).
-		b.WriteString("import { on, off } from '../lib/events.js';\n")
+		b.WriteString("import { onStream, offStream } from '../lib/events.js';\n")
 	}
 	if needsWebhookAuth {
 		ic.needsEnv = true
@@ -961,8 +961,8 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 					fmt.Fprintf(&b, "      await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData)
 				}
 				b.WriteString("    };\n")
-				fmt.Fprintf(&b, "    on('%s', %s);\n", h.EventName, handlerVar)
-				fmt.Fprintf(&b, "    stream.onAbort(() => off('%s', %s));\n", h.EventName, handlerVar)
+				fmt.Fprintf(&b, "    onStream('%s', %s);\n", h.EventName, handlerVar)
+				fmt.Fprintf(&b, "    stream.onAbort(() => offStream('%s', %s));\n", h.EventName, handlerVar)
 			}
 		}
 

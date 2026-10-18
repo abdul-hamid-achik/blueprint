@@ -2178,16 +2178,16 @@ STREAM /api/updates {
 	}
 	routeStr := string(routeContent)
 
-	if !strings.Contains(routeStr, "import { on, off } from '../lib/events.js';") {
-		t.Errorf("stream route should import off() alongside on(), got:\n%s", routeStr)
+	if !strings.Contains(routeStr, "import { onStream, offStream } from '../lib/events.js';") {
+		t.Errorf("stream route should import offStream() alongside onStream(), got:\n%s", routeStr)
 	}
 	for _, expected := range []string{
 		"const _streamHandler0 = async (eventData: any) => {",
-		"on('update', _streamHandler0);",
-		"stream.onAbort(() => off('update', _streamHandler0));",
+		"onStream('update', _streamHandler0);",
+		"stream.onAbort(() => offStream('update', _streamHandler0));",
 		"const _streamHandler1 = async (eventData: any) => {",
-		"on('error', _streamHandler1);",
-		"stream.onAbort(() => off('error', _streamHandler1));",
+		"onStream('error', _streamHandler1);",
+		"stream.onAbort(() => offStream('error', _streamHandler1));",
 	} {
 		if !strings.Contains(routeStr, expected) {
 			t.Errorf("expected %q in generated stream route, got:\n%s", expected, routeStr)

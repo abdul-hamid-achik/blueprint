@@ -89,7 +89,7 @@ Every endpoint body, middleware `before`/`after`, and fn `logic` is a pipeline o
 | `log "msg" [level(debug\|info\|warn\|error)]` | Log line; default level is info. Any other level is an error on Python. |
 | `inject <binding> as <name>` | (Middleware) Expose to handler context. |
 | `return <value>` | Explicit return. |
-| `emit "<event>" { data }` | Publish in-process event. |
+| `emit "<event>" { data }` | Publish in-process event. With `REDIS_URL`, STREAM listeners on other instances also receive it; subscribe handlers do not. |
 | `enqueue "<queue>" { data }` | Enqueue a job to a BullMQ worker queue (multi-instance safe). |
 | `broadcast room(id) { data }` | (WS) Send to all connections in a room (multi-instance via Redis pub/sub). |
 | `join room(id)` / `leave room(id)` | (WS) Join/leave a room. |
