@@ -706,6 +706,8 @@ pipe validate_image {
 
 Pipes return either an error response (from guards) or the transformed value. They become TypeScript functions in the generated code.
 
+On `--target python`, each pipe becomes `src/pipes/<name>.py`, a synchronous function that takes the `<-` input (or `input` when there is none) and returns the `->` value. Guards raise an `HTTPException` with the guard's message. The Python target accepts only these pipe bodies: guards, `->` outputs without a status code, block literal bindings, and calls to declared `fn` or `pipe` names. Data operations, `log`, `when`, `try`/`recover`, `env`/`header` reads, nested field access, and recursive pipe call graphs fail the build with an error that names the construct.
+
 ---
 
 ## 12. `middleware`

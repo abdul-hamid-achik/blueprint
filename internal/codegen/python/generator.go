@@ -3,8 +3,8 @@
 // The advanced-beta target emits FastAPI routes, Pydantic/SQLAlchemy models,
 // Alembic migrations, middleware dependencies, native-function scaffolds,
 // endpoint data operations, and generated pytest contracts. Constructs that
-// would otherwise be lost—including realtime handlers, workers, pipes,
-// authored tests, and inline fn logic—must be rejected by unsupportedFeatures
+// would otherwise be lost—including realtime handlers, workers, authored
+// tests, and inline fn logic—must be rejected by unsupportedFeatures
 // until their semantics are implemented.
 package python
 
@@ -143,6 +143,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	var secrets []*ast.Secret
 	var models []*ast.Model
 	var fns []*ast.Fn
+	var pipes []*ast.Pipe
 	var mws []*ast.Middleware
 	for _, b := range g.file.Blocks {
 		switch n := b.(type) {
@@ -158,6 +159,8 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 			models = append(models, n)
 		case *ast.Fn:
 			fns = append(fns, n)
+		case *ast.Pipe:
+			pipes = append(pipes, n)
 		case *ast.Middleware:
 			mws = append(mws, n)
 		}
@@ -201,6 +204,9 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// endpoints reference via `use <name>`.
 	if len(fns) > 0 {
 		out = append(out, g.genFunctions(fns)...)
+	}
+	if len(pipes) > 0 {
+		out = append(out, g.genPipes(pipes)...)
 	}
 	if len(mws) > 0 {
 		out = append(out, g.genMiddlewares(mws)...)
@@ -349,7 +355,15 @@ func (g *Generator) unsupportedFeatures() []string {
 		case *ast.Content:
 			add("`content` declarations")
 		case *ast.Pipe:
-			add("`pipe` declarations")
+			if !validPythonIdentifier(n.Name) {
+				add(fmt.Sprintf("pipe name %q that is not a valid Python identifier", n.Name))
+			}
+			for _, reason := range pythonArrowNameFeatures(n.Stmts) {
+				add(reason)
+			}
+			for _, reason := range g.pipeFeatures(n) {
+				add(reason)
+			}
 		case *ast.Worker:
 			add("`worker` declarations")
 		case *ast.Schedule:
@@ -1129,8 +1143,8 @@ func (g *Generator) pythonEnvNames() map[string]bool {
 // complexStepFeatures inspects a |> step and reports any sub-feature that
 // Python codegen doesn't translate yet. Phase 3c expanded the supported set
 // to include `order`, `map` (save/update bodies), `log`, and FK access; the
-// remaining rejections (non-`==` predicates, `or`/`in` predicates, step calls
-// to user-defined fn/pipe names) are tracked under Phase 3d in BACKLOG.md.
+// remaining rejections (data-op step forms outside the supported set) are
+// tracked under Phase 3d in BACKLOG.md.
 func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 	// A bare BlockExpr step (`|> filters = { status: "active" }`) is a dict
 	// literal binding — emitStep handles it as a Python dict assignment.
@@ -1141,8 +1155,8 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 	if !ok {
 		return []string{"step expressions that aren't data operations"}
 	}
-	// Step calls to a declared user fn / pipe are supported in Phase 3d —
-	// they dispatch through the generated wrapper in src/functions/<name>.py.
+	// Step calls to a declared user fn / pipe dispatch through the generated
+	// wrapper in src/functions/<name>.py or the module in src/pipes/<name>.py.
 	if g.userFnNames()[fn.Name] {
 		return nil
 	}

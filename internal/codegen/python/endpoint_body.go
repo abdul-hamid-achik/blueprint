@@ -204,8 +204,8 @@ func emitFKAliases(b *strings.Builder, stmt ast.ArrowStmt, ctx *bodyCtx, indent 
 
 // emitStep translates one |> step into Python. Phase 3c supports the full
 // data-op set (`save`/`fetch`/`update`/`delete`/`query`), plus `map`, `log`,
-// and `where`/`order`/`paginate` markers on `query`. Step calls to user-defined
-// fn/pipe names are still rejected upstream.
+// and `where`/`order`/`paginate` markers on `query`. Step calls to declared
+// fn/pipe names dispatch through emitUserFnCall.
 func emitStep(b *strings.Builder, s *ast.StepStmt, ctx *bodyCtx, indent string) {
 	// Bare BlockExpr step: `|> filters = { status: "active" }` → Python dict.
 	if blk, ok := s.Expr.(*ast.BlockExpr); ok && s.Binding != "" {

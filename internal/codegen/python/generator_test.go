@@ -197,8 +197,8 @@ GET /api/x { -> 200 "ok" }
 		"out-of-range blueprint port": `blueprint "x" { version "1.0" port 70000 runtime node }
 GET /api/x { -> 200 "ok" }
 `,
-		"pipe declaration": `blueprint "x" { version "1.0" port 3000 runtime node }
-pipe validate { <- v string  -> v }
+		"pipe data operation": `blueprint "x" { version "1.0" port 3000 runtime node }
+pipe validate { <- v string  |> row = fetch item(v)  -> row }
 GET /api/x { -> 200 "ok" }
 `,
 		"worker declaration": `blueprint "x" { version "1.0" port 3000 runtime node }

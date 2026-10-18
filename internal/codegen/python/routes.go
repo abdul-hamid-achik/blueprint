@@ -201,8 +201,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			names = append(names, n)
 		}
 		sort.Strings(names)
+		pipes := g.pipeNames()
 		for _, n := range names {
-			fmt.Fprintf(b, "from src.functions.%s import %s\n", n, n)
+			fmt.Fprintf(b, "from %s import %s\n", userCallModule(n, pipes), n)
 		}
 	}
 }

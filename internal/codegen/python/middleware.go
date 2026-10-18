@@ -38,7 +38,7 @@ func (g *Generator) genMiddleware(mw *ast.Middleware) codegen.OutputFile {
 
 	// Compute what the body needs and emit only those imports.
 	used := scanMiddlewareUsage(mw, g.userFnNames(), g.models())
-	writeMiddlewareImports(&b, used)
+	writeMiddlewareImports(&b, used, g.pipeNames())
 	b.WriteString("\n")
 
 	// Determine the header parameter(s) (e.g. `header.Authorization`).
@@ -183,7 +183,7 @@ func scanMiddlewareUsage(mw *ast.Middleware, userFns map[string]bool, models []*
 	return u
 }
 
-func writeMiddlewareImports(b *strings.Builder, u middlewareUsage) {
+func writeMiddlewareImports(b *strings.Builder, u middlewareUsage, pipes map[string]bool) {
 	fastapi := []string{}
 	if len(u.headerFields) > 0 {
 		fastapi = append(fastapi, "Header")
@@ -215,7 +215,7 @@ func writeMiddlewareImports(b *strings.Builder, u middlewareUsage) {
 	}
 	sort.Strings(u.userFnCalls)
 	for _, name := range u.userFnCalls {
-		fmt.Fprintf(b, "from src.functions.%s import %s\n", name, name)
+		fmt.Fprintf(b, "from %s import %s\n", userCallModule(name, pipes), name)
 	}
 }
 
