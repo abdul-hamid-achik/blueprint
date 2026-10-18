@@ -160,14 +160,15 @@ func rejectPositional(positional []string) error {
 	return nil
 }
 
-// exitOnArgError prints err (if any) as "Error: ..." to stderr and exits 1.
-// Shared tail call for every command's flag-parsing block.
+// exitOnArgError prints err (if any) as "Error: ..." to stderr and exits 2,
+// the documented usage-error code. Shared tail call for every command's
+// flag-parsing block.
 func exitOnArgError(err error) {
 	if err == nil {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-	os.Exit(1)
+	os.Exit(2)
 }
 
 // checkOutDirSafety refuses to build into an existing, non-empty directory

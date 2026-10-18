@@ -1131,7 +1131,7 @@ code without parsing command-specific output:
 |------|---------|
 | `0` | Success |
 | `1` | Validation error — parse/semantic errors from `bp check`/`bp build`/etc., lint errors, `bp fmt --check` on an unformatted file, a failed test run, an undocumented `bp explain <code>` |
-| `2` | Environment or file error — the input file couldn't be read, an unknown/malformed `--target` or flag, a path argument of `bp check`/`bp lint`/`bp fmt` that doesn't exist or is a directory with no `.bp` files, `bp fmt` on several files without `--write`/`--check`, `bp diff --force` without `--apply`, a required external tool is missing (`docker`, `uv`), an output-directory safety check failed (see `--force` on `bp build`) |
+| `2` | Environment or file error — the input file couldn't be read, an unknown/malformed `--target` or flag, a value flag with no value, an unexpected extra argument, a path argument of `bp check`/`bp lint`/`bp fmt` that doesn't exist or is a directory with no `.bp` files, `bp fmt` on several files without `--write`/`--check`, `bp diff --force` without `--apply`, a required external tool is missing (`docker`, `uv`), an output-directory safety check failed (see `--force` on `bp build`) |
 | `4` | Codegen error — the AST parsed and checked cleanly, but the target generator itself failed (e.g. an unsupported construct for `--target python`/`--target effect`) |
 
 `--help`/`-h` on any command always exits `0` after printing usage.

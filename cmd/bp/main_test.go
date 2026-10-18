@@ -1459,8 +1459,8 @@ func TestBuildUnknownFlagTypoSuggestion(t *testing.T) {
 	root := getProjectRoot()
 	bp := filepath.Join(root, "examples", "hello-world.bp")
 	_, stderr, code := runBP(t, "build", bp, "--out", t.TempDir(), "--gentests")
-	if code != 1 {
-		t.Errorf("expected exit 1 for typo flag, got %d (stderr=%q)", code, stderr)
+	if code != 2 {
+		t.Errorf("expected exit 2 for typo flag, got %d (stderr=%q)", code, stderr)
 	}
 	if !strings.Contains(stderr, "unknown flag") {
 		t.Errorf("expected 'unknown flag' in stderr, got: %q", stderr)
@@ -1474,8 +1474,8 @@ func TestBuildMissingFlagValue(t *testing.T) {
 	root := getProjectRoot()
 	bp := filepath.Join(root, "examples", "hello-world.bp")
 	_, stderr, code := runBP(t, "build", bp, "--out")
-	if code != 1 {
-		t.Errorf("expected exit 1 for --out with no value, got %d", code)
+	if code != 2 {
+		t.Errorf("expected exit 2 for --out with no value, got %d", code)
 	}
 	if !strings.Contains(stderr, "needs a value") {
 		t.Errorf("expected 'needs a value' message, got: %q", stderr)
@@ -1488,8 +1488,8 @@ func TestBuildMissingTargetValueBeforeAnotherFlag(t *testing.T) {
 	root := getProjectRoot()
 	bp := filepath.Join(root, "examples", "hello-world.bp")
 	_, stderr, code := runBP(t, "build", bp, "--out", t.TempDir(), "--target", "--gen-tests")
-	if code != 1 {
-		t.Errorf("expected exit 1, got %d", code)
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
 	}
 	if !strings.Contains(stderr, "needs a value") {
 		t.Errorf("expected 'needs a value' message, got: %q", stderr)
@@ -1500,8 +1500,8 @@ func TestCheckUnknownFlagRejected(t *testing.T) {
 	root := getProjectRoot()
 	bp := filepath.Join(root, "examples", "hello-world.bp")
 	_, stderr, code := runBP(t, "check", bp, "--jsonn")
-	if code != 1 {
-		t.Errorf("expected exit 1 for unknown flag, got %d", code)
+	if code != 2 {
+		t.Errorf("expected exit 2 for unknown flag, got %d", code)
 	}
 	if !strings.Contains(stderr, "unknown flag") {
 		t.Errorf("expected 'unknown flag' message, got: %q", stderr)

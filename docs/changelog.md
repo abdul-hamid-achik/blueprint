@@ -62,6 +62,9 @@ All notable changes to this project will be documented in this file.
 - **The language server no longer reports errors on files that open with a
   file-level `@` intent**, which included every example. Hover and definition
   also work from the full AST on those files.
+- **Unknown flags, value flags with no value, and unexpected extra arguments
+  exit `2`**, the documented usage-error code, instead of `1`, so CI can tell
+  a mistyped command from a failed validation.
 
 ### Added (2026-07-14 audit and polish pass)
 
