@@ -466,7 +466,13 @@ bp docs my-service.bp | bunx @redocly/cli lint /dev/stdin
 - STREAM endpoints → GET paths with `text/event-stream` response
 - WS endpoints → GET paths with `101` response and `x-websocket: true`
 - Models and types → `components/schemas`
-- Path parameters, query parameters, request bodies, responses
+- Path parameters (REST, STREAM and WS), query parameters, request bodies, responses
+- `servers` → `http://localhost:<port>` from the blueprint `port` entry (3000 when absent)
+- `auth` → `components/securitySchemes` and per-operation `security`. An endpoint without `auth` gets `security: []`; an endpoint that only uses middleware gets an `x-blueprint-middleware` list and a description, because middleware checks are not modeled
+- `guard ... -> <status> "msg"` → error response with a `{ "error": string }` body. The generated server also documents 400 (zValidator failures), 401/400 for `auth webhook_sig`, 429 for `limit`, and 500 for REST routes
+- Inputs are required unless they declare `optional` or `default(...)`, matching the generated validation
+- `operationId`s are unique (a numeric suffix resolves collisions). Two declarations for the same method and path are an error
+- The output is byte-for-byte deterministic for the same input
 
 ---
 

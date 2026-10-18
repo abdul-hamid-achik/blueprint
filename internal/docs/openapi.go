@@ -21,8 +21,14 @@ func GenerateOpenAPI(f *ast.File) ([]byte, error) {
 	info := buildInfo(f)
 	result["info"] = info
 
+	// --- servers ---
+	result["servers"] = buildServers(f)
+
 	// --- paths ---
-	paths := buildPaths(f)
+	paths, err := buildPaths(f)
+	if err != nil {
+		return nil, err
+	}
 	result["paths"] = paths
 
 	// --- components ---
@@ -92,65 +98,101 @@ func buildInfo(f *ast.File) map[string]any {
 	return info
 }
 
-// buildPaths constructs the paths object from all Endpoint top-level blocks.
-func buildPaths(f *ast.File) map[string]any {
+// buildServers returns the server list. The Node target listens on the
+// blueprint `port` entry (3000 when absent), so the local URL is derived from it.
+func buildServers(f *ast.File) []any {
+	port := 3000
+	if f.Blueprint != nil {
+		for _, e := range f.Blueprint.Entries {
+			if lit, ok := e.Value.(*ast.IntLit); ok && e.Key == "port" {
+				if n, err := strconv.Atoi(lit.Value); err == nil && n > 0 {
+					port = n
+				}
+			}
+		}
+	}
+	return []any{map[string]any{"url": fmt.Sprintf("http://localhost:%d", port)}}
+}
+
+// buildPaths constructs the paths object from all endpoint top-level blocks.
+// Operation IDs are made unique in declaration order. Two operations that
+// claim the same METHOD + path are an error rather than a silent overwrite.
+func buildPaths(f *ast.File) (map[string]any, error) {
 	paths := map[string]any{}
+	usedOpIDs := map[string]bool{}
+	declared := map[string]string{} // "METHOD /openapi/path" -> Blueprint declaration
+
+	addOperation := func(method, bpPath string, op map[string]any) error {
+		oaPath := toOpenAPIPath(bpPath)
+		key := strings.ToUpper(method) + " " + oaPath
+		if prev, dup := declared[key]; dup {
+			return fmt.Errorf("openapi: %s is declared by both %s and %s", key, prev, bpPath)
+		}
+		declared[key] = bpPath
+		op["operationId"] = uniqueOperationID(usedOpIDs, op["operationId"].(string))
+		pathItem, exists := paths[oaPath]
+		if !exists {
+			pathItem = map[string]any{}
+			paths[oaPath] = pathItem
+		}
+		pathItem.(map[string]any)[strings.ToLower(method)] = op
+		return nil
+	}
 
 	for _, block := range f.Blocks {
 		switch b := block.(type) {
 		case *ast.Endpoint:
-			oaPath := toOpenAPIPath(b.Path)
-			pathItem, exists := paths[oaPath]
-			if !exists {
-				pathItem = map[string]any{}
-				paths[oaPath] = pathItem
+			if err := addOperation(b.Method, b.Path, buildOperation(b)); err != nil {
+				return nil, err
 			}
-			pathItemMap := pathItem.(map[string]any)
-			method := strings.ToLower(b.Method)
-			pathItemMap[method] = buildOperation(b)
 
 		case *ast.StreamEndpoint:
 			// SSE endpoints are exposed as GET with text/event-stream response
-			oaPath := toOpenAPIPath(b.Path)
-			pathItem, exists := paths[oaPath]
-			if !exists {
-				pathItem = map[string]any{}
-				paths[oaPath] = pathItem
+			if err := addOperation("GET", b.Path, buildStreamOperation(b)); err != nil {
+				return nil, err
 			}
-			pathItemMap := pathItem.(map[string]any)
-			pathItemMap["get"] = buildStreamOperation(b)
 
 		case *ast.WsEndpoint:
 			// WebSocket endpoints are exposed as GET with 101 upgrade response
-			oaPath := toOpenAPIPath(b.Path)
-			pathItem, exists := paths[oaPath]
-			if !exists {
-				pathItem = map[string]any{}
-				paths[oaPath] = pathItem
+			if err := addOperation("GET", b.Path, buildWsOperation(b)); err != nil {
+				return nil, err
 			}
-			pathItemMap := pathItem.(map[string]any)
-			pathItemMap["get"] = buildWsOperation(b)
 		}
 	}
 
-	return paths
+	return paths, nil
+}
+
+// uniqueOperationID returns base, or base followed by the first free numeric
+// suffix (2, 3, ...) when an earlier operation already claimed it.
+func uniqueOperationID(used map[string]bool, base string) string {
+	id := base
+	for n := 2; used[id]; n++ {
+		id = base + strconv.Itoa(n)
+	}
+	used[id] = true
+	return id
+}
+
+// operationSummary returns the intent text, or "METHOD /path" when the
+// endpoint has no intent, so every operation carries a summary.
+func operationSummary(intent *ast.Intent, method, bpPath string) string {
+	if intent != nil && intent.Text != "" {
+		return intent.Text
+	}
+	return method + " " + bpPath
 }
 
 // buildStreamOperation builds an OpenAPI operation for a STREAM (SSE) endpoint.
 func buildStreamOperation(ep *ast.StreamEndpoint) map[string]any {
 	op := map[string]any{}
-	if ep.Intent != nil && ep.Intent.Text != "" {
-		op["summary"] = ep.Intent.Text
-	}
+	op["summary"] = operationSummary(ep.Intent, "STREAM", ep.Path)
 	op["operationId"] = buildOperationId("stream", ep.Path)
-	for _, meta := range ep.Meta {
-		if meta.Kind == "tags" {
-			if tags := exprToStringSlice(meta.Value); len(tags) > 0 {
-				op["tags"] = tags
-			}
-		}
+	applyEndpointMeta(op, ep.Meta)
+	if params := buildPathParameters(ep.Path, nil); len(params) > 0 {
+		op["parameters"] = params
 	}
-	op["responses"] = map[string]any{
+	responses := map[string]any{
 		"200": map[string]any{
 			"description": "Server-Sent Events stream",
 			"content": map[string]any{
@@ -160,31 +202,62 @@ func buildStreamOperation(ep *ast.StreamEndpoint) map[string]any {
 			},
 		},
 	}
+	// Stream setup statements run before the SSE response starts, so their
+	// guards answer with the error body and the guard status.
+	addGuardResponses(responses, ep.Stmts)
+	addGeneratedErrorResponses(responses, ep.Meta, false)
+	op["responses"] = responses
 	return op
 }
 
 // buildWsOperation builds an OpenAPI operation for a WebSocket endpoint.
 func buildWsOperation(ep *ast.WsEndpoint) map[string]any {
 	op := map[string]any{}
-	if ep.Intent != nil && ep.Intent.Text != "" {
-		op["summary"] = ep.Intent.Text
-	}
+	op["summary"] = operationSummary(ep.Intent, "WS", ep.Path)
 	op["operationId"] = buildOperationId("ws", ep.Path)
-	for _, meta := range ep.Meta {
-		if meta.Kind == "tags" {
-			if tags := exprToStringSlice(meta.Value); len(tags) > 0 {
-				op["tags"] = tags
-			}
-		}
+	applyEndpointMeta(op, ep.Meta)
+	if params := buildPathParameters(ep.Path, nil); len(params) > 0 {
+		op["parameters"] = params
 	}
-	op["responses"] = map[string]any{
+	responses := map[string]any{
 		"101": map[string]any{
 			"description": "Switching Protocols — WebSocket upgrade",
 		},
 	}
+	addGeneratedErrorResponses(responses, ep.Meta, false)
+	op["responses"] = responses
 	// x-websocket extension for tooling that supports it
 	op["x-websocket"] = true
 	return op
+}
+
+// applyEndpointMeta copies the tags and security requirement from endpoint
+// metadata. An endpoint without an auth declaration gets an explicit empty
+// security list, meaning no requirement is declared (operation-level security
+// is required by Redocly, and middleware checks are not modeled).
+func applyEndpointMeta(op map[string]any, meta []*ast.EndpointMeta) {
+	for _, m := range meta {
+		if m.Kind == "tags" {
+			if tags := exprToStringSlice(m.Value); len(tags) > 0 {
+				op["tags"] = tags
+			}
+		}
+	}
+	security := []any{}
+	name, _, hasAuth := endpointAuthScheme(meta)
+	if hasAuth {
+		security = append(security, map[string]any{name: []any{}})
+	}
+	op["security"] = security
+	if names := middlewareNames(meta); len(names) > 0 {
+		// Middleware is opaque to the spec. Listed so readers can see it, and
+		// without an auth declaration the empty security list must not read as public.
+		op["x-blueprint-middleware"] = names
+		if !hasAuth {
+			op["description"] = "Runs middleware " + strings.Join(names, ", ") +
+				"; middleware checks are not modeled in this spec, so no security requirement is listed."
+		}
+	}
 }
 
 // buildOperation constructs the operation object for a single endpoint.
@@ -192,22 +265,12 @@ func buildOperation(ep *ast.Endpoint) map[string]any {
 	op := map[string]any{}
 
 	// summary from intent
-	if ep.Intent != nil && ep.Intent.Text != "" {
-		op["summary"] = ep.Intent.Text
-	}
+	op["summary"] = operationSummary(ep.Intent, ep.Method, ep.Path)
 
 	// operationId: method + path segments in camelCase
 	op["operationId"] = buildOperationId(ep.Method, ep.Path)
 
-	// tags from EndpointMeta
-	for _, meta := range ep.Meta {
-		if meta.Kind == "tags" {
-			tags := exprToStringSlice(meta.Value)
-			if len(tags) > 0 {
-				op["tags"] = tags
-			}
-		}
-	}
+	applyEndpointMeta(op, ep.Meta)
 
 	// Collect inputs from Stmts
 	var inputs []*ast.InputStmt
@@ -226,31 +289,53 @@ func buildOperation(ep *ast.Endpoint) map[string]any {
 		op["parameters"] = params
 	}
 
-	// requestBody for POST/PUT/PATCH
+	// requestBody for POST/PUT/PATCH, only when some input travels in the body
 	method := strings.ToUpper(ep.Method)
-	if (method == "POST" || method == "PUT" || method == "PATCH") && len(inputs) > 0 {
+	if (method == "POST" || method == "PUT" || method == "PATCH") && hasBodyInputs(inputs, pathParams) {
 		op["requestBody"] = buildRequestBody(inputs, pathParams)
 	}
 
-	// responses from OutputStmt nodes
-	op["responses"] = buildResponses(ep)
+	// responses from OutputStmt nodes and runtime-generated errors
+	op["responses"] = buildResponses(ep, hasBodyInputs(inputs, pathParams))
 
 	return op
 }
 
-// buildParameters returns OpenAPI parameter objects for an endpoint.
-func buildParameters(method, path string, inputs []*ast.InputStmt, pathParams map[string]bool) []any {
-	var params []any
+// hasBodyInputs reports whether any non-path input exists. The Node target
+// validates those (JSON body, or query string for GET/DELETE) with zValidator.
+func hasBodyInputs(inputs []*ast.InputStmt, pathParams map[string]bool) bool {
+	for _, input := range inputs {
+		if !pathParams[input.Name] {
+			return true
+		}
+	}
+	return false
+}
 
-	// Add path parameters first (from URL template)
-	for paramName := range pathParams {
+// pathParamNames returns the ":name" segments of a Blueprint path in URL order.
+func pathParamNames(path string) []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, segment := range strings.Split(path, "/") {
+		if strings.HasPrefix(segment, ":") && !seen[segment[1:]] {
+			seen[segment[1:]] = true
+			names = append(names, segment[1:])
+		}
+	}
+	return names
+}
+
+// buildPathParameters returns the required path parameters in URL order.
+// A declared input of the same name supplies the schema, otherwise it is a string.
+func buildPathParameters(path string, inputs []*ast.InputStmt) []any {
+	var params []any
+	for _, paramName := range pathParamNames(path) {
 		p := map[string]any{
 			"in":       "path",
 			"name":     paramName,
 			"required": true,
 			"schema":   map[string]any{"type": "string"},
 		}
-		// If there's a matching input with a type, use it
 		for _, input := range inputs {
 			if input.Name == paramName {
 				p["schema"] = typeToJSONSchema(input.Type, input.Constraints)
@@ -259,6 +344,13 @@ func buildParameters(method, path string, inputs []*ast.InputStmt, pathParams ma
 		}
 		params = append(params, p)
 	}
+	return params
+}
+
+// buildParameters returns OpenAPI parameter objects for an endpoint.
+func buildParameters(method, path string, inputs []*ast.InputStmt, pathParams map[string]bool) []any {
+	// Add path parameters first (from URL template)
+	params := buildPathParameters(path, inputs)
 
 	// For GET/DELETE endpoints, non-path inputs become query parameters
 	m := strings.ToUpper(method)
@@ -273,8 +365,7 @@ func buildParameters(method, path string, inputs []*ast.InputStmt, pathParams ma
 				"name":   input.Name,
 				"schema": typeToJSONSchema(input.Type, input.Constraints),
 			}
-			// required if it has the required constraint
-			if hasConstraint(input.Constraints, "required") {
+			if inputIsRequired(input.Constraints) {
 				p["required"] = true
 			}
 			params = append(params, p)
@@ -282,6 +373,13 @@ func buildParameters(method, path string, inputs []*ast.InputStmt, pathParams ma
 	}
 
 	return params
+}
+
+// inputIsRequired reports whether the Node target rejects a request without
+// the input. Inputs are zod fields, so they are required unless they declare
+// `optional` or a `default(...)`.
+func inputIsRequired(constraints []*ast.Constraint_) bool {
+	return !hasConstraint(constraints, "optional") && !hasConstraint(constraints, "default")
 }
 
 // buildRequestBody returns an OpenAPI requestBody object.
@@ -295,7 +393,7 @@ func buildRequestBody(inputs []*ast.InputStmt, pathParams map[string]bool) map[s
 		}
 		schema := typeToJSONSchema(input.Type, input.Constraints)
 		properties[input.Name] = schema
-		if hasConstraint(input.Constraints, "required") {
+		if inputIsRequired(input.Constraints) {
 			required = append(required, input.Name)
 		}
 	}
@@ -318,8 +416,9 @@ func buildRequestBody(inputs []*ast.InputStmt, pathParams map[string]bool) map[s
 	}
 }
 
-// buildResponses returns the responses object for an endpoint.
-func buildResponses(ep *ast.Endpoint) map[string]any {
+// buildResponses returns the responses object for an endpoint. validatesInput
+// is true when the Node target validates request inputs with zValidator.
+func buildResponses(ep *ast.Endpoint, validatesInput bool) map[string]any {
 	responses := map[string]any{}
 
 	for _, stmt := range ep.Stmts {
@@ -365,6 +464,9 @@ func buildResponses(ep *ast.Endpoint) map[string]any {
 		}
 	}
 
+	// guard statements answer their failing status with the error body
+	addGuardResponses(responses, ep.Stmts)
+
 	// on_error block
 	if ep.OnError != nil {
 		status := ep.OnError.Status
@@ -393,7 +495,251 @@ func buildResponses(ep *ast.Endpoint) map[string]any {
 		}
 	}
 
+	addGeneratedErrorResponses(responses, ep.Meta, validatesInput)
+	// The Node target's app.onError answers any unhandled error with 500 and
+	// the error body, for every REST route.
+	addJSONResponse(responses, "500", httpStatusDescription("500"), errorBodySchema())
+
 	return responses
+}
+
+// addGuardResponses adds one error response per guard status. Guards that
+// share a status list their messages in declaration order.
+func addGuardResponses(responses map[string]any, stmts []ast.ArrowStmt) {
+	var statuses []string
+	messages := map[string][]string{}
+	walkGuards(stmts, func(g *ast.GuardStmt) {
+		if g.Status == "" {
+			return
+		}
+		if _, seen := messages[g.Status]; !seen {
+			statuses = append(statuses, g.Status)
+		}
+		for _, m := range messages[g.Status] {
+			if m == g.Message {
+				return
+			}
+		}
+		messages[g.Status] = append(messages[g.Status], g.Message)
+	})
+	for _, status := range statuses {
+		description := strings.Join(messages[status], "; ")
+		if description == "" {
+			description = httpStatusDescription(status)
+		}
+		addJSONResponse(responses, status, description, errorBodySchema())
+	}
+}
+
+// walkGuards calls visit for every guard in stmts, including those inside try/recover.
+func walkGuards(stmts []ast.ArrowStmt, visit func(*ast.GuardStmt)) {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *ast.GuardStmt:
+			visit(s)
+		case *ast.TryRecover:
+			walkGuards(s.Try, visit)
+			walkGuards(s.Recover, visit)
+		}
+	}
+}
+
+// addGeneratedErrorResponses adds the errors the Node target emits from endpoint
+// metadata and input validation: zValidator 400, webhook 401/400, and the rate
+// limit 429. Each body uses the shape the generated code returns.
+func addGeneratedErrorResponses(responses map[string]any, meta []*ast.EndpointMeta, validatesInput bool) {
+	if validatesInput {
+		addJSONResponse(responses, "400", httpStatusDescription("400"), validationErrorSchema())
+	}
+	for _, m := range meta {
+		switch m.Kind {
+		case "auth":
+			if authStrategy(m.Value) == "webhook_sig" {
+				addJSONResponse(responses, "401", httpStatusDescription("401"), errorBodySchema())
+				addJSONResponse(responses, "400", httpStatusDescription("400"), errorBodySchema())
+			}
+		case "limit":
+			addJSONResponse(responses, "429", httpStatusDescription("429"), errorBodySchema())
+		}
+	}
+}
+
+// addJSONResponse adds a JSON response for status unless it is already declared.
+// When the status already has a JSON body with another schema, both are listed
+// under oneOf. Declared responses without a body are left as they are.
+func addJSONResponse(responses map[string]any, status, description string, schema map[string]any) {
+	existing, ok := responses[status].(map[string]any)
+	if !ok {
+		responses[status] = jsonResponse(description, schema)
+		return
+	}
+	content, _ := existing["content"].(map[string]any)
+	media, _ := content["application/json"].(map[string]any)
+	if media == nil {
+		return
+	}
+	current, _ := media["schema"].(map[string]any)
+	if current == nil {
+		return
+	}
+	if alts, ok := current["oneOf"].([]any); ok && len(current) == 1 {
+		for _, alt := range alts {
+			if sameJSON(alt, schema) {
+				return
+			}
+		}
+		media["schema"] = map[string]any{"oneOf": append(alts, schema)}
+		return
+	}
+	if sameJSON(current, schema) {
+		return
+	}
+	media["schema"] = map[string]any{"oneOf": []any{current, schema}}
+}
+
+// jsonResponse returns a response object whose body is application/json with schema.
+func jsonResponse(description string, schema map[string]any) map[string]any {
+	return map[string]any{
+		"description": description,
+		"content": map[string]any{
+			"application/json": map[string]any{
+				"schema": schema,
+			},
+		},
+	}
+}
+
+// sameJSON reports whether two schema values marshal to the same JSON.
+func sameJSON(a, b any) bool {
+	ja, errA := json.Marshal(a)
+	jb, errB := json.Marshal(b)
+	return errA == nil && errB == nil && string(ja) == string(jb)
+}
+
+// errorBodySchema is the `{ "error": string }` body the Node target returns for
+// guards, webhook rejections, rate limiting and unhandled errors.
+func errorBodySchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"error": map[string]any{"type": "string"},
+		},
+		"required": []string{"error"},
+	}
+}
+
+// validationErrorSchema is the body of a failed zValidator check. The Node target
+// uses @hono/zod-validator's default hook, which returns the zod safeParse result
+// (`{ success: false, error: ZodError }`) with status 400.
+func validationErrorSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"success": map[string]any{"const": false},
+			"error": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"const": "ZodError"},
+					"issues": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"code":    map[string]any{"type": "string"},
+								"path":    map[string]any{"type": "array", "items": map[string]any{"type": []string{"string", "integer"}}},
+								"message": map[string]any{"type": "string"},
+							},
+							"required": []string{"code", "path", "message"},
+						},
+					},
+				},
+				"required": []string{"issues"},
+			},
+		},
+		"required": []string{"success", "error"},
+	}
+}
+
+// endpointAuthScheme maps an endpoint `auth` declaration to an OpenAPI security
+// scheme. The scheme name is shared by every endpoint with the same strategy.
+// Only the webhook HMAC is enforced by the generated server; the other strategies
+// are declared requirements, and the description says so.
+func endpointAuthScheme(meta []*ast.EndpointMeta) (string, map[string]any, bool) {
+	for _, m := range meta {
+		if m.Kind != "auth" {
+			continue
+		}
+		strategy := authStrategy(m.Value)
+		notVerified := "Declared with `auth " + strategy + "`; the generated Node server does not verify it. Use middleware for credential checks."
+		switch strategy {
+		case "bearer":
+			return "bearerAuth", map[string]any{"type": "http", "scheme": "bearer", "description": notVerified}, true
+		case "jwt":
+			return "jwtAuth", map[string]any{"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": notVerified}, true
+		case "basic":
+			return "basicAuth", map[string]any{"type": "http", "scheme": "basic", "description": notVerified}, true
+		case "api_key":
+			return "apiKeyAuth", map[string]any{
+				"type": "apiKey", "in": "header", "name": "X-API-Key",
+				"description": notVerified + " Blueprint does not name the header; X-API-Key is assumed.",
+			}, true
+		case "session":
+			return "sessionAuth", map[string]any{
+				"type": "apiKey", "in": "cookie", "name": "session",
+				"description": notVerified + " Blueprint does not name the transport; a cookie named session is assumed.",
+			}, true
+		case "webhook_sig":
+			return "webhookSignature", map[string]any{
+				"type": "apiKey", "in": "header", "name": "X-Webhook-Signature",
+				"description": "HMAC-SHA256 hex digest of the raw request body, keyed with the secret named in the endpoint's auth declaration. Enforced by the generated Node server.",
+			}, true
+		}
+	}
+	return "", nil, false
+}
+
+// authStrategy returns the strategy name of an auth value: `bearer` for a bare
+// identifier, `api_key` for `api_key(...)`, and so on.
+func authStrategy(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.FnCall:
+		return v.Name
+	}
+	return ""
+}
+
+// middlewareNames returns the names of the middleware an endpoint uses, in declaration order.
+func middlewareNames(meta []*ast.EndpointMeta) []string {
+	var names []string
+	for _, m := range meta {
+		if m.Kind == "use" && m.Use != nil {
+			names = append(names, m.Use.Name)
+		}
+	}
+	return names
+}
+
+// buildSecuritySchemes collects the security schemes used by any endpoint.
+func buildSecuritySchemes(f *ast.File) map[string]any {
+	schemes := map[string]any{}
+	add := func(meta []*ast.EndpointMeta) {
+		if name, scheme, ok := endpointAuthScheme(meta); ok {
+			schemes[name] = scheme
+		}
+	}
+	for _, block := range f.Blocks {
+		switch b := block.(type) {
+		case *ast.Endpoint:
+			add(b.Meta)
+		case *ast.StreamEndpoint:
+			add(b.Meta)
+		case *ast.WsEndpoint:
+			add(b.Meta)
+		}
+	}
+	return schemes
 }
 
 // buildResponseObject builds a single response object from an OutputStmt.
@@ -460,7 +806,7 @@ func inferExprSchema(e ast.Expr) map[string]any {
 	case *ast.StringLit:
 		return map[string]any{"type": "string"}
 	case *ast.NullLit:
-		return map[string]any{"nullable": true}
+		return map[string]any{"type": "null"}
 	case *ast.ListExpr:
 		return map[string]any{"type": "array"}
 	case *ast.BlockExpr:
@@ -537,9 +883,13 @@ func buildComponents(f *ast.File) map[string]any {
 		}
 	}
 
-	return map[string]any{
+	components := map[string]any{
 		"schemas": schemas,
 	}
+	if schemes := buildSecuritySchemes(f); len(schemes) > 0 {
+		components["securitySchemes"] = schemes
+	}
+	return components
 }
 
 // modelToSchema builds a JSON Schema object from persisted and read-only
@@ -722,9 +1072,18 @@ func applyConstraints(schema map[string]any, t ast.TypeExpr, constraints []*ast.
 				}
 			}
 		case "default":
-			schema["default"] = exprToDefaultValue(c.Value)
+			// default(now) is server-filled and has no literal JSON value to show.
+			if v := exprToDefaultValue(c.Value); v != nil && !isNowLit(c.Value) {
+				schema["default"] = v
+			}
 		}
 	}
+}
+
+// isNowLit reports whether a constraint value is the `now` keyword.
+func isNowLit(e ast.Expr) bool {
+	_, ok := e.(*ast.NowLit)
+	return ok
 }
 
 // hasConstraint returns true if the given constraint kind is in the list.
@@ -932,6 +1291,8 @@ func httpStatusDescription(status string) string {
 		return "OK"
 	case "201":
 		return "Created"
+	case "202":
+		return "Accepted"
 	case "204":
 		return "No Content"
 	case "400":
