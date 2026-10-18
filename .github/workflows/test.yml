@@ -93,7 +93,8 @@ jobs:
             # "Cannot read properties of null (reading 'edgesOut')".
             # `--no-package-lock` keeps the output dir bp-generated for the
             # next step's `bp diff --exit-code`.
-            npm install --no-package-lock
+            npm --version
+            npm install --no-package-lock || { grep -nE "verbose stack|edgesOut|silly placeDep|silly fetch manifest|verbose (cwd|node|npm)" ~/.npm/_logs/*-debug-0.log | tail -60; exit 1; }
             npx tsc --noEmit --skipLibCheck
           done
 
