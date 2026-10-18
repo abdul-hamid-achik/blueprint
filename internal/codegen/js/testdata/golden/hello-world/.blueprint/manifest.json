@@ -17,7 +17,7 @@
     "src/lib/env.ts": "sha256:111ba9b4b470de36f1a6aaf8e958f0e302e4f4da797e827d9c56c429f8c2b919",
     "src/lib/errors.ts": "sha256:872aebec06beaf2da1fe6accf825a71b591f9fb3a2d6b9f8e56b066379522be4",
     "src/routes/health.ts": "sha256:dcc8fb9c717697a0b19df55638c924e059c5dbd87cf0f9285e19bf8168d1fd24",
-    "src/routes/hello.ts": "sha256:f5f8a6b015a337db449706a924ef6d856916e2a8617f08465e2161e611d9ea42",
+    "src/routes/hello.ts": "sha256:19979b11b8c74b7011cff15daa305942d5d701df199a0b02eb9fd329761ff7dc",
     "src/types/api.ts": "sha256:32b194adcc0eb32ac07d82449b27390f45d5ff4bd6de3525f02353db63c0f90c",
     "src/types/client.ts": "sha256:1f0a163b7b55ea9b4188da9e53ff1f8fc3dcca11c4463a5d7daea8c4c3d4d2f1",
     "src/types/schemas.ts": "sha256:610ae1d20ae9c747fe62e76f995c0cd3d0435b3273da6c0f6d830b882ab9d921",

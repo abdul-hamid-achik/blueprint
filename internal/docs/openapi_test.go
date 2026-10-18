@@ -289,6 +289,10 @@ GET /api/tags/:slug {
   -> 200 "ok"
 }
 
+GET /api/pages/:page {
+  -> 200 "ok"
+}
+
 STREAM /api/items/:id/live {
   <- id uuid required
 }
@@ -302,7 +306,8 @@ WS /ws/lobby {
 `)
 	for path, want := range map[string]bool{
 		"/api/items/{id}":      true,
-		"/api/tags/{slug}":     false,
+		"/api/tags/{slug}":     true,
+		"/api/pages/{page}":    false,
 		"/api/items/{id}/live": true,
 		"/ws/items/{id}":       true,
 		"/ws/lobby":            false,

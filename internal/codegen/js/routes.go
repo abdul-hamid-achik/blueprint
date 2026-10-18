@@ -364,6 +364,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	needsZValidator := false
 	needsWebhookAuth := false
 	needsZodPathParam := false
+	pathEnumSchemas := make(map[string]bool)
 	needsRateLimit := false
 	needsHTTPCache := false
 
@@ -388,10 +389,12 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 					needsZValidator = true
 					schemaNames[endpointSchemaName(ep.Method, ep.Path)] = true
 				} else {
-					// Check if typed path param needs Zod validation
-					tn := pathParamTypeName(inp.Type)
-					if tn == "uuid" || tn == "int" {
-						needsZodPathParam = true
+					// Every declared path input is validated (restPathParamSchema),
+					// so every route file needs zod; a named enum also needs its
+					// schema from types/schemas.ts.
+					needsZodPathParam = true
+					if name, ok := g.pathEnumName(inp.Type); ok {
+						pathEnumSchemas[frontendSchemaName(name)] = true
 					}
 				}
 			}
@@ -430,6 +433,10 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	}
 	if needsZodPathParam {
 		b.WriteString("import { z } from 'zod';\n")
+	}
+	if len(pathEnumSchemas) > 0 {
+		fmt.Fprintf(&b, "import { %s } from '../types/schemas.js';\n",
+			strings.Join(sortedKeys2(pathEnumSchemas), ", "))
 	}
 	if needsDB {
 		b.WriteString("import { db } from '../lib/db.js';\n")
@@ -728,6 +735,45 @@ func (g *Generator) realtimePathParamCheck(inputs []*ast.InputStmt) (schema, raw
 	}
 	return "z.object({ " + strings.Join(fields, ", ") + " })",
 		"{ " + strings.Join(values, ", ") + " }"
+}
+
+// restPathParamSchema returns the Zod schema that validates a declared REST
+// path input. Path segments always arrive as strings, so the derivation is the
+// realtime one (typeToZodCoerce + constraintsToZod). optional and default are
+// dropped here: a matched segment is never undefined, so they cannot change the
+// outcome. A named enum resolves to its generated schema (types/schemas.ts),
+// which needs the import genRoute adds for it.
+func (g *Generator) restPathParamSchema(inp *ast.InputStmt) string {
+	var base string
+	if name, ok := g.pathEnumName(inp.Type); ok {
+		base = frontendSchemaName(name)
+	} else {
+		base = g.typeToZodCoerce(inp.Type)
+	}
+	return base + constraintsToZod(pathParamConstraints(inp.Constraints))
+}
+
+// pathEnumName reports the declared enum a path input's type names, if any.
+// Aliases are excluded: they are lowered to their primitive by typeToZodCoerce.
+func (g *Generator) pathEnumName(t ast.TypeExpr) (string, bool) {
+	nt, ok := t.(*ast.NamedType)
+	if !ok || g.lookupAlias(nt.Name) != nil || len(g.enumVariants[nt.Name]) == 0 {
+		return "", false
+	}
+	return nt.Name, true
+}
+
+// pathParamConstraints drops the constraints that never apply to a path
+// segment (see restPathParamSchema).
+func pathParamConstraints(cs []*ast.Constraint_) []*ast.Constraint_ {
+	var out []*ast.Constraint_
+	for _, c := range cs {
+		if c.Kind == "optional" || c.Kind == "default" {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // --- Stream Endpoints ---

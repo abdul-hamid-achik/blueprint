@@ -876,6 +876,13 @@ Do not rely on a bare `auth` line as a security boundary.
 | Any | `header.X-Name` for headers |
 | Any | `:param` in path for path params |
 
+On the Node target, every declared REST path input is validated at runtime
+against its type and constraints (for example `max(50)`, `min(1)`, an enum's
+variants, or a named enum). A segment that fails answers `400` with the
+`{ success: false, error }` body before the handler runs. `optional` and
+`default` have no effect on a path input, since a matched segment is always
+present.
+
 On the Python target, GET/DELETE inputs become FastAPI `Query(...)` parameters,
 POST/PUT/PATCH inputs become embedded `Body(...)` parameters, and supported
 `min`/`max` constraints are preserved. Direct header references, including

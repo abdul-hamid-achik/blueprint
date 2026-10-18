@@ -4156,3 +4156,84 @@ WS /ws/chat {
 	}
 	requireTypeScriptCompile(t, outDir)
 }
+
+func TestGenerateRestPathInputsAreValidated(t *testing.T) {
+	src := `blueprint "rest-path" {
+  version "0.1.0"
+  port    3000
+  runtime node
+}
+
+enum Tier {
+  gold
+  silver
+}
+
+GET /api/items/:slug {
+  <- slug string required max(50)
+  -> 200 { slug: slug }
+}
+
+GET /api/modes/:mode {
+  <- mode enum(center, corner, tile) required
+  -> 200 { mode: mode }
+}
+
+GET /api/ranked/:tier {
+  <- tier Tier required
+  -> 200 { tier: tier }
+}
+
+GET /api/pages/:page {
+  <- page int required min(1)
+  -> 200 { page: page }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if errs := checker.Check(file); len(errs) > 0 {
+		t.Fatalf("check errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	cases := []struct {
+		file string
+		want []string
+	}{
+		{"src/routes/items.ts", []string{
+			"const _slugParam = z.string().max(50).safeParse(c.req.param('slug'));",
+		}},
+		{"src/routes/modes.ts", []string{
+			`const _modeParam = z.enum(["center", "corner", "tile"]).safeParse(c.req.param('mode'));`,
+		}},
+		{"src/routes/ranked.ts", []string{
+			"import { TierSchema } from '../types/schemas.js';",
+			"const _tierParam = TierSchema.safeParse(c.req.param('tier'));",
+		}},
+		{"src/routes/pages.ts", []string{
+			"const _pageParam = z.coerce.number().int().min(1).safeParse(c.req.param('page'));",
+		}},
+	}
+	for _, tc := range cases {
+		raw, err := os.ReadFile(filepath.Join(outDir, tc.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		route := string(raw)
+		for _, want := range tc.want {
+			if !strings.Contains(route, want) {
+				t.Errorf("%s: missing %q; route:\n%s", tc.file, want, route)
+			}
+		}
+		if !strings.Contains(route, "400 as const);") || !strings.Contains(route, "import { z } from 'zod';") {
+			t.Errorf("%s: path input must answer 400 and import z; route:\n%s", tc.file, route)
+		}
+		if strings.Contains(route, "|| ''") {
+			t.Errorf("%s: path input must not fall back to an unvalidated string; route:\n%s", tc.file, route)
+		}
+	}
+	requireTypeScriptCompile(t, outDir)
+}
