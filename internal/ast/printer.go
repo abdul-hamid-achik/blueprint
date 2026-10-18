@@ -14,14 +14,16 @@ import (
 func blueprintQuote(s string) string {
 	var sb strings.Builder
 	sb.WriteByte('"')
-	for _, c := range s {
-		switch c {
+	// Bytes, not runes: the lexer reads string contents byte by byte, so
+	// invalid UTF-8 must pass through unchanged.
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
 		case '"':
 			sb.WriteString(`\"`)
 		case '\\':
 			sb.WriteString(`\\`)
 		default:
-			sb.WriteRune(c)
+			sb.WriteByte(c)
 		}
 	}
 	sb.WriteByte('"')
@@ -29,13 +31,49 @@ func blueprintQuote(s string) string {
 }
 
 // Print formats an AST back to canonical .bp source code.
+//
+// When the AST came from source, blank lines are taken from the source alone:
+// the printer's own separators are removed and blank lines are restored where
+// the source had them (see stripBlankLines and restoreComments). An AST built
+// without source tokens keeps the printer's separators.
 func Print(f *File) string {
 	var p printer
 	formatted := p.printFile(f)
-	if len(f.Comments) == 0 || len(f.SourceTokens) == 0 {
+	if len(f.SourceTokens) == 0 {
 		return formatted
 	}
+	formatted = stripBlankLines(formatted)
 	return restoreComments(formatted, f.SourceTokens, f.Comments)
+}
+
+// stripBlankLines removes every empty line from formatted except lines that
+// are inside a multi-line string literal, where they are part of the value.
+func stripBlankLines(formatted string) string {
+	tokens, _, errs := lexer.TokenizeWithTrivia("<formatted>", []byte(formatted))
+	if len(errs) > 0 {
+		return formatted
+	}
+	inString := make(map[int]bool)
+	for _, tok := range tokens {
+		if tok.Kind != lexer.TokenString {
+			continue
+		}
+		for line := tok.Loc.Line + 1; line <= tok.Loc.Line+strings.Count(tok.Value, "\n"); line++ {
+			inString[line] = true
+		}
+	}
+	lines := strings.Split(formatted, "\n")
+	var sb strings.Builder
+	for i, line := range lines {
+		if line == "" && !inString[i+1] {
+			continue
+		}
+		sb.WriteString(line)
+		if i < len(lines)-1 {
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
 }
 
 type tokenIdentity struct {
@@ -46,6 +84,7 @@ type tokenIdentity struct {
 type placedComment struct {
 	comment lexer.Comment
 	indent  int
+	blank   bool // the source had a blank line before this comment
 }
 
 // restoreComments reattaches lexer trivia to canonical output. The parser does
@@ -82,6 +121,29 @@ func restoreComments(formatted string, sourceTokens []lexer.Token, comments []le
 		}
 	}
 
+	// A blank line before a token is kept only when that token starts its
+	// output line. A token that does not start a line has no line to precede.
+	blankBeforeLine := make(map[int]bool)
+	for i, token := range sourceTokens {
+		if !token.BlankBefore || token.Kind == lexer.TokenEOF {
+			continue
+		}
+		for j := i; j < len(sourceTokens); j++ {
+			mapped := tokenMap[j]
+			if mapped < 0 {
+				continue
+			}
+			if formattedTokens[mapped].Kind == lexer.TokenEOF {
+				break // end of file has no line of its own
+			}
+			line := formattedTokens[mapped].Loc.Line
+			if mapped == 0 || formattedTokens[mapped-1].Loc.Line < line {
+				blankBeforeLine[line] = true
+			}
+			break
+		}
+	}
+
 	leading := make(map[int][]placedComment)
 	inline := make(map[int][]placedComment)
 	for _, comment := range comments {
@@ -104,7 +166,7 @@ func restoreComments(formatted string, sourceTokens []lexer.Token, comments []le
 		if delta := comment.Loc.Col - sourceAnchor.Loc.Col; delta > 0 {
 			indent += delta
 		}
-		leading[line] = append(leading[line], placedComment{comment: comment, indent: indent})
+		leading[line] = append(leading[line], placedComment{comment: comment, indent: indent, blank: comment.BlankBefore})
 	}
 
 	// Canonicalization can collapse a multi-line expression onto one line. If
@@ -136,24 +198,43 @@ func restoreComments(formatted string, sourceTokens []lexer.Token, comments []le
 	}
 
 	var sb strings.Builder
+	// lastBlank suppresses a second blank line and any blank line at the top
+	// of the file.
+	lastBlank := true
+	writeBlank := func() {
+		if !lastBlank {
+			sb.WriteByte('\n')
+			lastBlank = true
+		}
+	}
+	writeLine := func(text string) {
+		sb.WriteString(text)
+		sb.WriteByte('\n')
+		lastBlank = text == ""
+	}
 	writeLeading := func(line int) {
 		for _, item := range leading[line] {
-			if item.indent > 0 {
-				sb.WriteString(strings.Repeat(" ", item.indent))
+			if item.blank {
+				writeBlank()
 			}
-			sb.WriteString(item.comment.Text)
-			sb.WriteByte('\n')
+			text := item.comment.Text
+			if item.indent > 0 {
+				text = strings.Repeat(" ", item.indent) + text
+			}
+			writeLine(text)
+		}
+		if blankBeforeLine[line] {
+			writeBlank()
 		}
 	}
 	for i, lineText := range lines {
 		line := i + 1
 		writeLeading(line)
-		sb.WriteString(lineText)
+		text := lineText
 		for _, item := range inline[line] {
-			sb.WriteString("  ")
-			sb.WriteString(item.comment.Text)
+			text += "  " + item.comment.Text
 		}
-		sb.WriteByte('\n')
+		writeLine(text)
 	}
 
 	// Comments anchored to EOF live after the printer's final newline. Compute
@@ -170,11 +251,24 @@ func restoreComments(formatted string, sourceTokens []lexer.Token, comments []le
 			lastTriviaLine = line
 		}
 	}
+	// Trivia past the last line has no code to sit beside, so its leading and
+	// inline comments are written together in source order.
 	for line := len(lines) + 1; line <= lastTriviaLine; line++ {
-		writeLeading(line)
-		for _, item := range inline[line] {
-			sb.WriteString(item.comment.Text)
-			sb.WriteByte('\n')
+		var items []placedComment
+		items = append(items, leading[line]...)
+		items = append(items, inline[line]...)
+		sort.SliceStable(items, func(i, j int) bool {
+			return items[i].comment.Loc.Offset < items[j].comment.Loc.Offset
+		})
+		for _, item := range items {
+			if item.blank {
+				writeBlank()
+			}
+			text := item.comment.Text
+			if !item.comment.Inline && item.indent > 0 {
+				text = strings.Repeat(" ", item.indent) + text
+			}
+			writeLine(text)
 		}
 	}
 	return sb.String()
@@ -478,7 +572,7 @@ func (p *printer) printLocaleCode(code string) string {
 // --- Include ---
 
 func (p *printer) printInclude(n *Include) string {
-	return fmt.Sprintf("include %q\n", n.Path)
+	return "include " + blueprintQuote(n.Path) + "\n"
 }
 
 // --- TypeDecl ---
@@ -518,6 +612,10 @@ func (p *printer) printEnum(n *Enum) string {
 	fmt.Fprintf(&sb, "enum %s {\n", n.Name)
 	for _, v := range n.Variants {
 		fmt.Fprintf(&sb, "  %s", v.Name)
+		if v.Body != nil && len(v.Body.Entries) == 0 {
+			// An explicit empty body is distinct from no body in the AST.
+			sb.WriteString(" {}")
+		}
 		if v.Body != nil && len(v.Body.Entries) > 0 {
 			sb.WriteString(" { ")
 			for i, kv := range v.Body.Entries {
@@ -550,17 +648,49 @@ func (p *printer) printModel(n *Model) string {
 			p.typeWidth = tw
 		}
 	}
-	for _, f := range n.Fields {
-		sb.WriteString("  ")
-		sb.WriteString(p.printField(f))
+	// Fields and computed fields are separate lists in the AST. Print them in
+	// source order so a computed field keeps its place between plain fields.
+	for _, item := range modelBodyInSourceOrder(n) {
+		if item.field != nil {
+			sb.WriteString("  ")
+			sb.WriteString(p.printField(item.field))
+		} else {
+			f := item.computed
+			fmt.Fprintf(&sb, "  computed %s %s = %s", f.Name, p.printType(f.Type), p.printExpr(f.Expr))
+		}
 		sb.WriteString("\n")
-	}
-	for _, f := range n.ComputedFields {
-		fmt.Fprintf(&sb, "  computed %s %s = %s\n", f.Name, p.printType(f.Type), p.printExpr(f.Expr))
 	}
 	p.nameWidth, p.typeWidth = 0, 0
 	sb.WriteString("}\n")
 	return sb.String()
+}
+
+// modelBodyItem is one entry of a model body: a field or a computed field.
+type modelBodyItem struct {
+	field    *Field
+	computed *ComputedField
+}
+
+// modelBodyInSourceOrder merges a model's fields and computed fields by
+// source position. Entries without a position keep their list order.
+func modelBodyInSourceOrder(n *Model) []modelBodyItem {
+	items := make([]modelBodyItem, 0, len(n.Fields)+len(n.ComputedFields))
+	for _, f := range n.Fields {
+		items = append(items, modelBodyItem{field: f})
+	}
+	for _, f := range n.ComputedFields {
+		items = append(items, modelBodyItem{computed: f})
+	}
+	offset := func(item modelBodyItem) int {
+		if item.field != nil {
+			return item.field.Loc.Offset
+		}
+		return item.computed.Loc.Offset
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return offset(items[i]) < offset(items[j])
+	})
+	return items
 }
 
 func (p *printer) printContent(n *Content) string {
@@ -725,9 +855,8 @@ func (p *printer) printMiddleware(n *Middleware) string {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
 	fmt.Fprintf(&sb, "middleware %s {\n", n.Name)
-	for _, kv := range n.Entries {
-		fmt.Fprintf(&sb, "  %s  %s\n", kv.Key, p.printExpr(kv.Value))
-	}
+	// The parser reads before, then after, then the config entries, so the
+	// entries must be printed last.
 	if len(n.Before) > 0 {
 		sb.WriteString("  before {\n")
 		sb.WriteString(p.printArrowStmtsBlock(n.Before, "    "))
@@ -737,6 +866,9 @@ func (p *printer) printMiddleware(n *Middleware) string {
 		sb.WriteString("  after {\n")
 		sb.WriteString(p.printArrowStmtsBlock(n.After, "    "))
 		sb.WriteString("  }\n")
+	}
+	for _, kv := range n.Entries {
+		fmt.Fprintf(&sb, "  %s  %s\n", kv.Key, p.printExpr(kv.Value))
 	}
 	sb.WriteString("}\n")
 	return sb.String()
@@ -774,7 +906,7 @@ func (p *printer) printEndpoint(n *Endpoint) string {
 	sb.WriteString(p.printArrowStmtsBlock(n.Stmts, "  "))
 	p.nameWidth, p.typeWidth = 0, 0
 	if n.OnError != nil {
-		fmt.Fprintf(&sb, "  on_error -> %s %q\n", n.OnError.Status, n.OnError.Message)
+		fmt.Fprintf(&sb, "  on_error -> %s %s\n", n.OnError.Status, blueprintQuote(n.OnError.Message))
 	}
 	sb.WriteString("}\n")
 	return sb.String()
@@ -788,6 +920,12 @@ func (p *printer) printEndpointMeta(m *EndpointMeta) string {
 		}
 		return fmt.Sprintf("use %s", p.printExpr(m.Value))
 	case "auth":
+		// The parser encodes `auth name using(secret.KEY)` as name(using(...)).
+		if fc, ok := m.Value.(*FnCall); ok && !fc.Pipe && len(fc.Args) == 1 {
+			if using, ok := fc.Args[0].(*FnCall); ok && using.Name == "using" && len(using.Args) == 1 {
+				return fmt.Sprintf("auth %s using(%s)", fc.Name, p.printExpr(using.Args[0]))
+			}
+		}
 		return fmt.Sprintf("auth %s", p.printExpr(m.Value))
 	case "limit":
 		return fmt.Sprintf("limit %s", p.printExpr(m.Value))
@@ -815,6 +953,9 @@ func (p *printer) printUseStmt(u *UseStmt) string {
 			args[i] = p.printExpr(a)
 		}
 		fmt.Fprintf(&sb, "(%s)", strings.Join(args, ", "))
+	}
+	if u.Body != nil && len(u.Body.Entries) == 0 {
+		sb.WriteString(" {}")
 	}
 	if u.Body != nil && len(u.Body.Entries) > 0 {
 		sb.WriteString(" { ")
@@ -951,14 +1092,20 @@ func (p *printer) printWorkerMeta(m *WorkerMeta) string {
 		fmt.Fprintf(&sb, "  %s", p.printExpr(m.Value))
 	}
 	if len(m.Extra) > 0 {
-		sb.WriteString(" {")
+		// Extra holds the backoff(...) options. A leading bare strategy name
+		// is parsed into a "strategy" entry, so it prints back as a bare name.
+		sb.WriteString(" backoff(")
 		for i, kv := range m.Extra {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			fmt.Fprintf(&sb, " %s: %s", kv.Key, p.printExpr(kv.Value))
+			if id, ok := kv.Value.(*Ident); ok && i == 0 && kv.Key == "strategy" {
+				sb.WriteString(id.Name)
+				continue
+			}
+			fmt.Fprintf(&sb, "%s: %s", kv.Key, p.printExpr(kv.Value))
 		}
-		sb.WriteString(" }")
+		sb.WriteString(")")
 	}
 	return sb.String()
 }
@@ -971,7 +1118,7 @@ func (p *printer) printSchedule(n *Schedule) string {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
 	fmt.Fprintf(&sb, "schedule %s {\n", n.Name)
-	fmt.Fprintf(&sb, "  cron %q\n", n.Cron)
+	fmt.Fprintf(&sb, "  cron %s\n", blueprintQuote(n.Cron))
 	sb.WriteString("\n")
 	sb.WriteString(p.printArrowStmtsBlock(n.Stmts, "  "))
 	sb.WriteString("}\n")
@@ -982,7 +1129,7 @@ func (p *printer) printSchedule(n *Schedule) string {
 
 func (p *printer) printExternal(n *External) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "external %q {\n", n.Name)
+	fmt.Fprintf(&sb, "external %s {\n", blueprintQuote(n.Name))
 	for _, kv := range n.Entries {
 		fmt.Fprintf(&sb, "  %s: %s\n", kv.Key, p.printExpr(kv.Value))
 	}
@@ -997,7 +1144,7 @@ func (p *printer) printSubscribe(n *Subscribe) string {
 	if n.Intent != nil {
 		sb.WriteString(p.printIntent(n.Intent))
 	}
-	fmt.Fprintf(&sb, "subscribe %q", n.Event)
+	fmt.Fprintf(&sb, "subscribe %s", blueprintQuote(n.Event))
 	if n.From != "" {
 		fmt.Fprintf(&sb, " from(%s)", n.From)
 	}
@@ -1011,11 +1158,14 @@ func (p *printer) printSubscribe(n *Subscribe) string {
 
 func (p *printer) printFixture(n *Fixture) string {
 	if n.FromPath != "" {
-		return fmt.Sprintf("fixture %q from %q\n", n.Name, n.FromPath)
+		return fmt.Sprintf("fixture %s from %s\n", blueprintQuote(n.Name), blueprintQuote(n.FromPath))
 	}
 	if n.SeedModel != "" {
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "fixture %q seed %s", n.Name, n.SeedModel)
+		fmt.Fprintf(&sb, "fixture %s seed %s", blueprintQuote(n.Name), n.SeedModel)
+		if n.SeedBody != nil && len(n.SeedBody.Entries) == 0 {
+			sb.WriteString(" {}")
+		}
 		if n.SeedBody != nil && len(n.SeedBody.Entries) > 0 {
 			sb.WriteString(" { ")
 			for i, kv := range n.SeedBody.Entries {
@@ -1031,7 +1181,10 @@ func (p *printer) printFixture(n *Fixture) string {
 	}
 	if n.Generated != nil {
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "fixture %q generated", n.Name)
+		fmt.Fprintf(&sb, "fixture %s generated", blueprintQuote(n.Name))
+		if len(n.Generated.Entries) == 0 {
+			sb.WriteString(" {}")
+		}
 		if len(n.Generated.Entries) > 0 {
 			sb.WriteString(" { ")
 			for i, kv := range n.Generated.Entries {
@@ -1045,7 +1198,7 @@ func (p *printer) printFixture(n *Fixture) string {
 		sb.WriteString("\n")
 		return sb.String()
 	}
-	return fmt.Sprintf("fixture %q\n", n.Name)
+	return fmt.Sprintf("fixture %s\n", blueprintQuote(n.Name))
 }
 
 // --- Test ---
@@ -1072,7 +1225,7 @@ func (p *printer) printTest(n *Test) string {
 	if len(n.Expect) > 0 {
 		sb.WriteString("  expect {\n")
 		for _, a := range n.Expect {
-			fmt.Fprintf(&sb, "    %s\n", a.Raw)
+			fmt.Fprintf(&sb, "    %s\n", printAssertion(a))
 		}
 		sb.WriteString("  }\n")
 	}
@@ -1084,6 +1237,40 @@ func (p *printer) printTest(n *Test) string {
 	}
 	sb.WriteString("}\n")
 	return sb.String()
+}
+
+// printAssertion renders an assertion from its source tokens. Raw is joined
+// with spaces and quotes strings without escaping, so it is not printable.
+func printAssertion(a *Assertion) string {
+	if len(a.Tokens) == 0 {
+		return a.Raw
+	}
+	var sb strings.Builder
+	for i, tok := range a.Tokens {
+		if i > 0 && assertionSpace(a.Tokens[i-1], tok) {
+			sb.WriteByte(' ')
+		}
+		if tok.Kind == lexer.TokenString {
+			sb.WriteString(blueprintQuote(tok.Value))
+		} else {
+			sb.WriteString(tok.Value)
+		}
+	}
+	return sb.String()
+}
+
+// assertionSpace reports whether a space separates two adjacent assertion
+// tokens. Spacing is cosmetic: the parser keeps only the token sequence.
+func assertionSpace(prev, cur lexer.Token) bool {
+	switch cur.Kind {
+	case lexer.TokenDot, lexer.TokenComma, lexer.TokenRParen, lexer.TokenRBracket, lexer.TokenLParen, lexer.TokenLBracket:
+		return false
+	}
+	switch prev.Kind {
+	case lexer.TokenDot, lexer.TokenLParen, lexer.TokenLBracket:
+		return false
+	}
+	return true
 }
 
 func (p *printer) printTestRequest(r *TestRequest, indent string) string {
@@ -1156,7 +1343,7 @@ func (p *printer) printArrowStmt(stmt ArrowStmt, indent string) string {
 	case *TryRecover:
 		return p.printTryRecover(s, indent)
 	case *IntentStep:
-		return fmt.Sprintf("|> @ %q", s.Text)
+		return "|> @ " + blueprintQuote(s.Text)
 	case *GenerateStep:
 		return p.printGenerateStep(s)
 	default:
@@ -1184,21 +1371,44 @@ func (p *printer) printInputStmt(s *InputStmt) string {
 
 func (p *printer) printStepStmt(s *StepStmt, indent string) string {
 	if s.Binding != "" {
-		return fmt.Sprintf("|> %s = %s", s.Binding, p.printExprAt(s.Expr, indent))
+		return fmt.Sprintf("|> %s = %s", s.Binding, p.printStepExpr(s.Expr, indent))
 	}
-	return fmt.Sprintf("|> %s", p.printExprAt(s.Expr, indent))
+	return fmt.Sprintf("|> %s", p.printStepExpr(s.Expr, indent))
+}
+
+// printStepExpr formats an expression in step position: a |> statement, the
+// right side of a field assignment, a when inline body or a map body. Only
+// step position parses keyword operations such as query, call or enqueue, so
+// the keyword shorthand is used there and nowhere else.
+func (p *printer) printStepExpr(e Expr, indent string) string {
+	switch n := e.(type) {
+	case *FnCall:
+		if !n.Pipe {
+			if s, ok := p.printStreamShorthand(n, indent); ok {
+				return s
+			}
+			if s, ok := p.printDataOpShorthand(n, indent); ok {
+				return s
+			}
+		}
+	case *BinaryExpr:
+		if n.Op == "=" {
+			return p.printExprAt(n.Left, indent) + " = " + p.printStepExpr(n.Right, indent)
+		}
+	}
+	return p.printExprAt(e, indent)
 }
 
 func (p *printer) printGuardStmt(s *GuardStmt, indent string) string {
 	if s.Message != "" {
-		return fmt.Sprintf("|> guard %s -> %s %q", p.printExprAt(s.Condition, indent), s.Status, s.Message)
+		return fmt.Sprintf("|> guard %s -> %s %s", p.printExprAt(s.Condition, indent), s.Status, blueprintQuote(s.Message))
 	}
 	return fmt.Sprintf("|> guard %s -> %s", p.printExprAt(s.Condition, indent), s.Status)
 }
 
 func (p *printer) printWhenStmt(s *WhenStmt, indent string) string {
 	if s.Inline != nil {
-		return fmt.Sprintf("|> when %s: %s", p.printExprAt(s.Condition, indent), p.printExprAt(s.Inline, indent))
+		return fmt.Sprintf("|> when %s: %s", p.printExprAt(s.Condition, indent), p.printStepExpr(s.Inline, indent))
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "|> when %s {\n", p.printExprAt(s.Condition, indent))
@@ -1213,6 +1423,13 @@ func (p *printer) printWhenStmt(s *WhenStmt, indent string) string {
 }
 
 func (p *printer) printOutputStmt(s *OutputStmt, indent string) string {
+	if s.Type != nil {
+		// fn output: `-> name type` or `-> type`
+		if s.Name != "" {
+			return "-> " + s.Name + " " + p.printType(s.Type)
+		}
+		return "-> " + p.printType(s.Type)
+	}
 	if s.Status != "" && s.Value != nil {
 		return fmt.Sprintf("-> %s %s", s.Status, p.printExprAt(s.Value, indent))
 	}
@@ -1246,7 +1463,7 @@ func (p *printer) printTryRecover(s *TryRecover, indent string) string {
 
 func (p *printer) printGenerateStep(s *GenerateStep) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "@> %q", s.Text)
+	sb.WriteString("@> " + blueprintQuote(s.Text))
 	for _, h := range s.Hints {
 		if h.Value != nil {
 			fmt.Fprintf(&sb, " %s(%s)", h.Name, p.printExpr(h.Value))
@@ -1288,6 +1505,9 @@ func (p *printer) printExprAt(e Expr, indent string) string {
 	}
 	switch n := e.(type) {
 	case *Ident:
+		if n.Pipe {
+			return "pipe " + strings.TrimPrefix(n.Name, "pipe_")
+		}
 		return n.Name
 	case *StringLit:
 		return blueprintQuote(n.Value)
@@ -1326,17 +1546,10 @@ func (p *printer) printExprAt(e Expr, indent string) string {
 	case *IndexAccess:
 		return fmt.Sprintf("%s[%s]", p.printExprAt(n.Base, indent), p.printExprAt(n.Index, indent))
 	case *FnCall:
-		if s, ok := p.printStreamShorthand(n, indent); ok {
-			return s
+		if n.Pipe {
+			return "pipe " + p.printCallArgs(n, indent)
 		}
-		if s, ok := p.printDataOpShorthand(n, indent); ok {
-			return s
-		}
-		args := make([]string, len(n.Args))
-		for i, a := range n.Args {
-			args[i] = p.printExprAt(a, indent)
-		}
-		return fmt.Sprintf("%s(%s)", n.Name, strings.Join(args, ", "))
+		return p.printCallArgs(n, indent)
 	case *ParenExpr:
 		return fmt.Sprintf("(%s)", p.printExprAt(n.Expr, indent))
 	case *ListExpr:
@@ -1352,6 +1565,15 @@ func (p *printer) printExprAt(e Expr, indent string) string {
 	default:
 		return fmt.Sprintf("/* unknown expr: %T */", e)
 	}
+}
+
+// printCallArgs renders the standard `name(args)` call form.
+func (p *printer) printCallArgs(n *FnCall, indent string) string {
+	args := make([]string, len(n.Args))
+	for i, a := range n.Args {
+		args[i] = p.printExprAt(a, indent)
+	}
+	return fmt.Sprintf("%s(%s)", n.Name, strings.Join(args, ", "))
 }
 
 // isDataOpName reports whether name is a Blueprint data-operation keyword
@@ -1397,14 +1619,17 @@ func (p *printer) printDataOpShorthand(n *FnCall, indent string) (string, bool) 
 		return "", false
 	}
 	if len(n.Args) == 0 {
-		return "", false
+		// A bare keyword step such as `save` has no model and no call syntax.
+		return n.Name, true
 	}
-	model, ok := n.Args[0].(*Ident)
-	if !ok {
-		return "", false
+	// The model name is optional in the grammar (`save { ... }`), so the
+	// first argument is a model only when it is an identifier.
+	var model *Ident
+	rest := n.Args
+	if id, ok := n.Args[0].(*Ident); ok {
+		model = id
+		rest = n.Args[1:]
 	}
-
-	rest := n.Args[1:]
 
 	// For `fetch`, the optional second positional argument is the id
 	// expression rendered inside parens: `fetch todo(id)`. Detect it as
@@ -1433,8 +1658,10 @@ func (p *printer) printDataOpShorthand(n *FnCall, indent string) (string, bool) 
 
 	var sb strings.Builder
 	sb.WriteString(n.Name)
-	sb.WriteByte(' ')
-	sb.WriteString(model.Name)
+	if model != nil {
+		sb.WriteByte(' ')
+		sb.WriteString(model.Name)
+	}
 	if idArg != nil {
 		sb.WriteByte('(')
 		sb.WriteString(p.printExprAt(idArg, indent))
@@ -1565,9 +1792,69 @@ func (p *printer) printStreamShorthand(n *FnCall, indent string) (string, bool) 
 		sb.WriteString(p.printExprAt(n.Args[0], indent))
 		if len(n.Args) == 2 {
 			sb.WriteString(": ")
-			sb.WriteString(p.printExprAt(n.Args[1], indent))
+			sb.WriteString(p.printStepExpr(n.Args[1], indent))
 		}
 		return sb.String(), true
+	case "call":
+		// Parser shape: { Name: "call", Args: [ service, METHOD?, PathExpr?, BlockExpr? ] }
+		// Source order is kept: `call svc GET /path { body }`.
+		if len(n.Args) == 0 {
+			return "", false
+		}
+		svc, ok := n.Args[0].(*Ident)
+		if !ok {
+			return "", false
+		}
+		parts := []string{"call", svc.Name}
+		for i, a := range n.Args[1:] {
+			switch v := a.(type) {
+			case *Ident:
+				if i != 0 || !isHTTPMethodName(v.Name) {
+					return "", false
+				}
+				parts = append(parts, v.Name)
+			case *PathExpr:
+				parts = append(parts, v.Value)
+			case *BlockExpr:
+				if i != len(n.Args)-2 {
+					return "", false
+				}
+				parts = append(parts, p.printBlockExprAt(v, indent))
+			default:
+				return "", false
+			}
+		}
+		return strings.Join(parts, " "), true
+	case "enqueue":
+		// Parser shape: { Name: "enqueue", Args: [ queueStringOrIdent, BlockExpr? ] }
+		if len(n.Args) == 0 || len(n.Args) > 2 {
+			return "", false
+		}
+		var sb strings.Builder
+		sb.WriteString("enqueue ")
+		switch q := n.Args[0].(type) {
+		case *StringLit:
+			sb.WriteString(blueprintQuote(q.Value))
+		case *Ident:
+			sb.WriteString(q.Name)
+		default:
+			return "", false
+		}
+		if len(n.Args) == 2 {
+			block, ok := n.Args[1].(*BlockExpr)
+			if !ok {
+				return "", false
+			}
+			sb.WriteByte(' ')
+			sb.WriteString(p.printBlockExprAt(block, indent))
+		}
+		return sb.String(), true
+	case "sleep":
+		// Parser shape: { Name: "sleep", Args: [ duration ] }
+		if len(n.Args) != 1 {
+			return "", false
+		}
+		return "sleep " + p.printExprAt(n.Args[0], indent), true
 	case "emit":
 		// Parser shape: { Name: "emit", Args: [ eventNameStringOrIdent, toIdent?, BlockExpr? ] }
 		// The optional service-target slot is identified by looking for the
@@ -1615,6 +1902,15 @@ func (p *printer) printStreamShorthand(n *FnCall, indent string) (string, bool) 
 		return sb.String(), true
 	}
 	return "", false
+}
+
+// isHTTPMethodName reports whether name is spelled as an HTTP method token.
+func isHTTPMethodName(name string) bool {
+	switch name {
+	case "GET", "POST", "PUT", "PATCH", "DELETE":
+		return true
+	}
+	return false
 }
 
 // printBlockExpr renders a BlockExpr without an enclosing indent context.

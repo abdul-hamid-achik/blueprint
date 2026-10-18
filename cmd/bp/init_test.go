@@ -57,19 +57,10 @@ func TestInitTemplatesCompileCleanly(t *testing.T) {
 }
 
 // TestInitTemplatesFormatterStable checks that bp fmt leaves each starter
-// unchanged. The worker starter is skipped: bp fmt rewrites `enqueue "q" {...}`
-// into `enqueue("q", {...})`, which no longer parses (a known formatter bug).
-// The default starter is also excluded: it is kept byte-identical to the
-// original `bp init` output, which predates the formatter's canonical spacing.
+// unchanged, so a fresh project passes `bp fmt --check`.
 func TestInitTemplatesFormatterStable(t *testing.T) {
 	for _, tpl := range initTemplates {
 		t.Run(tpl.Name, func(t *testing.T) {
-			switch tpl.Name {
-			case "default":
-				t.Skip("default template is pinned to the original bp init output, which is not formatter-canonical")
-			case "worker":
-				t.Skip("worker template uses enqueue, which bp fmt cannot round-trip yet")
-			}
 			src := renderForTest(t, tpl.Name, "Sample App", "sample-app")
 			file, parseErrs := parser.ParseFile("sample-app.bp", []byte(src))
 			if len(parseErrs) > 0 {
@@ -82,8 +73,9 @@ func TestInitTemplatesFormatterStable(t *testing.T) {
 	}
 }
 
-// TestInitDefaultTemplateUnchanged pins the default starter to the exact bytes
-// that `bp init` produced before templates existed.
+// TestInitDefaultTemplateUnchanged pins the default starter to its exact
+// bytes: the content `bp init` produced before templates existed, in the
+// formatter's canonical layout.
 func TestInitDefaultTemplateUnchanged(t *testing.T) {
 	want := `@ "test-project — describe your service here"
 blueprint "test-project" {
@@ -103,17 +95,17 @@ model item {
 
 @ "List all items"
 GET /api/items {
-  <- page     int default(1) min(1)
-  <- per_page int default(20) max(100)
+  <- page      int  default(1)  min(1)
+  <- per_page  int  default(20)  max(100)
 
-  |> items = query item order(created desc) paginate(page, per_page)
+  |> items = query item order(created, desc) paginate(page, per_page)
 
   -> 200 { items: items.items, total: items.total }
 }
 
 @ "Create an item"
 POST /api/items {
-  <- name string required
+  <- name  string  required
 
   |> item = save item { name: name }
 

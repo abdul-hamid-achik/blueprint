@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("blueprint\"\"{A 00000A 00A 00}model A0{A\"\"}")

@@ -911,3 +911,296 @@ middleware log_request {
 		t.Errorf("output missing after block: %s", output)
 	}
 }
+
+// formatSource parses src and returns its formatted output, failing the test on
+// parse errors or on output that does not re-parse to the same syntax tree.
+func formatSource(t *testing.T, src string) string {
+	t.Helper()
+	file := parseForPrint(t, src)
+	formatted := ast.Print(file)
+	reparsed := parseForPrint(t, formatted)
+	if same, where := ast.SameStructure(file, reparsed); !same {
+		t.Fatalf("formatting changed the AST (%s)\n%s", where, formatted)
+	}
+	return formatted
+}
+
+// requireLines fails unless every want line appears in got, in order.
+func requireLines(t *testing.T, got string, want ...string) {
+	t.Helper()
+	rest := got
+	for _, line := range want {
+		i := strings.Index(rest, line)
+		if i < 0 {
+			t.Fatalf("formatted output is missing %q, in order:\n%s", line, got)
+		}
+		rest = rest[i+len(line):]
+	}
+}
+
+func TestPrint_KeywordStepsKeepTheirSyntax(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+GET /api/users/me {
+  <- id uuid
+  |> user = call auth_service GET /api/users/me
+  |> pipe validate_name(id)
+  |> pipe check_all
+  |> enqueue "thumbnails" { job_id: id }
+  |> sleep 5s
+  -> 200 user
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out,
+		"|> user = call auth_service GET /api/users/me",
+		"|> pipe validate_name(id)",
+		"|> pipe check_all",
+		`|> enqueue "thumbnails" { job_id: id }`,
+		"|> sleep 5s",
+	)
+}
+
+func TestPrint_FnOutputKeepsNameAndMimeType(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+fn watermark {
+  <- file image/*
+  -> file image/*
+}
+
+fn thumbnail_url {
+  <- id uuid
+  -> thumbnail_url string
+}
+
+fn encode {
+  <- value string
+  -> json<map(string, int)>
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out,
+		"<- file  image/*",
+		"-> file image/*",
+		"-> thumbnail_url string",
+		"-> json<map(string, int)>",
+	)
+}
+
+func TestPrint_TestAssertionKeepsDotsAndStrings(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+test create_user {
+  target POST /users
+  request {
+    body { name: "Test User" }
+  }
+  expect {
+    status 201
+    body.name == "Test User"
+    model user where ( email == "a@b.c" ) exists
+  }
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out,
+		`body.name == "Test User"`,
+		`model user where(email == "a@b.c") exists`,
+	)
+	if strings.Contains(out, "body . name") {
+		t.Errorf("assertion printed with token spacing:\n%s", out)
+	}
+}
+
+func TestPrint_WorkerRetryUsesBackoffForm(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+worker generate {
+  trigger queue("thumbnails")
+  retry 3 backoff(exponential, base: 1s, max: 30s)
+  timeout 2min
+
+  <- job_id uuid
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out, "retry  3 backoff(exponential, base: 1s, max: 30s)")
+}
+
+func TestPrint_AuthWebhookSignatureUsingForm(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+POST /webhooks/stripe {
+  auth webhook_sig using(secret.SIGNING_KEY)
+  -> 200 "ok"
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out, "auth webhook_sig using(secret.SIGNING_KEY)")
+}
+
+func TestPrint_StringEscapesFollowTheLanguage(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+GET /quote {
+  -> 200 "say \"hi\"\tnow \\ done"
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out, `-> 200 "say \"hi\"`+"\t"+`now \\ done"`)
+}
+
+func TestPrint_MiddlewareBlocksBeforeEntries(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+middleware cors {
+  before {
+    |> log "start"
+  }
+  origins ["https://example.com"]
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out, `before {`, `origins  ["https://example.com"]`)
+}
+
+func TestPrint_ModelKeepsComputedFieldPosition(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+model order {
+  id uuid primary
+  computed total int = 1
+  note string
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out, "id", "computed total int = 1", "note string")
+}
+
+func TestPrint_BlankLinesFollowTheSource(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+
+# Secrets
+secret A required
+secret B required
+env C "x"
+
+GET /items {
+  <- id uuid
+
+  |> item = fetch item(id)
+  -> 200 item
+}
+GET /other {
+  -> 200 "ok"
+}
+`
+	out := formatSource(t, src)
+	want := `blueprint "svc" {
+  version "0.1.0"
+}
+
+# Secrets
+secret A required
+secret B required
+env C "x"
+
+GET /items {
+  <- id  uuid
+
+  |> item = fetch item(id)
+  -> 200 item
+}
+GET /other {
+  -> 200 "ok"
+}
+`
+	if out != want {
+		t.Errorf("blank lines were not kept as in the source\ngot:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+func TestPrint_BlankLineBetweenStatementGroupsIsKept(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+GET /items {
+  <- id uuid
+  |> item = fetch item(id)
+
+  -> 200 item
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out, "|> item = fetch item(id)\n\n  -> 200 item")
+}
+
+func TestPrint_CommentsKeepTheirBlankLines(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+# Before the env
+
+env C "x"  # trailing
+`
+	out := formatSource(t, src)
+	requireLines(t, out, "# Before the env\n\nenv C \"x\"  # trailing")
+}
+
+func TestPrint_WhenInlineIsStable(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+GET /items {
+  <- filters  json
+  |> when filters.status: filters.status = status
+  -> 200 filters
+}
+`
+	first := formatSource(t, src)
+	if second := ast.Print(parseForPrint(t, first)); second != first {
+		t.Fatalf("formatting is not idempotent\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestPrint_EmptyBlockBodiesAreKept(t *testing.T) {
+	src := `blueprint "svc" {
+  version "0.1.0"
+}
+
+enum level {
+  low {}
+  high
+}
+
+GET /items {
+  use cors {}
+  -> 200 "ok"
+}
+`
+	out := formatSource(t, src)
+	requireLines(t, out, "low {}", "use cors {}")
+}

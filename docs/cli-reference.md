@@ -570,6 +570,9 @@ bp fmt api services --check
 - Normalized whitespace around arrows
 - Consistent quote style (double quotes)
 - Preserved `#` comments
+- Blank lines kept where the source had them (at most one in a row); none added
+- Output is re-parsed and compared with the source before it is used; if it
+  differs, `bp fmt` leaves the file unchanged and exits `3`
 
 ---
 
@@ -1132,6 +1135,7 @@ code without parsing command-specific output:
 | `0` | Success |
 | `1` | Validation error — parse/semantic errors from `bp check`/`bp build`/etc., lint errors, `bp fmt --check` on an unformatted file, a failed test run, an undocumented `bp explain <code>` |
 | `2` | Environment or file error — the input file couldn't be read, an unknown/malformed `--target` or flag, a value flag with no value, an unexpected extra argument, a path argument of `bp check`/`bp lint`/`bp fmt` that doesn't exist or is a directory with no `.bp` files, `bp fmt` on several files without `--write`/`--check`, `bp diff --force` without `--apply`, a required external tool is missing (`docker`, `uv`), an output-directory safety check failed (see `--force` on `bp build`) |
+| `3` | Formatter bug — `bp fmt` produced output that does not re-parse or changes the syntax tree, so it refused to format the file. Report it; the file is unchanged |
 | `4` | Codegen error — the AST parsed and checked cleanly, but the target generator itself failed (e.g. an unsupported construct for `--target python`/`--target effect`) |
 
 `--help`/`-h` on any command always exits `0` after printing usage.

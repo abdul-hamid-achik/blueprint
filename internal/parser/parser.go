@@ -104,11 +104,12 @@ func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
 
 	// If included file starts with a blueprint block, parse and attach it
 	// but don't require it (unlike ParseFile). A root file may open with a
-	// file-level intent before that block, as ParseFile allows; without a
-	// following blueprint block the intent belongs to the first top-level
-	// block, so rewind.
-	start := p.pos
-	intent := p.maybeParseIntent()
+	// file-level intent before that block, as ParseFile allows. Any other
+	// leading intent belongs to the first top-level block.
+	var intent *ast.Intent
+	if p.check(lexer.TokenIntent) && p.peekAt(1).Kind == lexer.TokenString && p.peekAt(2).Kind == lexer.TokenBlueprint {
+		intent = p.maybeParseIntent()
+	}
 	if p.check(lexer.TokenBlueprint) {
 		func() {
 			defer func() {
@@ -123,14 +124,18 @@ func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
 			}()
 			f.Blueprint = p.parseBlueprintBlock(intent)
 		}()
-	} else {
-		p.pos = start
 	}
 
-	for !p.atEnd() {
+	for !p.atEnd() && len(p.errors) < maxErrors {
+		start := p.pos
 		block := p.parseTopLevelBlock()
 		if block != nil {
 			f.Blocks = append(f.Blocks, block)
+		}
+		// Recovery can stop at the token that failed. Skip it so the loop
+		// always makes progress.
+		if p.pos == start {
+			p.advance()
 		}
 	}
 	return f, p.errors
@@ -139,8 +144,21 @@ func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
 func (p *Parser) parseFile() *ast.File {
 	f := &ast.File{Loc: p.peek().Loc}
 
-	// Parse optional intent before blueprint
-	intent := p.maybeParseIntent()
+	// Parse optional intent before blueprint. Its error can reach the error
+	// limit before any block recovery runs, so it gets the same recovery.
+	var intent *ast.Intent
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if err, ok := r.(ParseError); ok {
+					p.appendRecovered(err)
+				} else {
+					panic(r)
+				}
+			}
+		}()
+		intent = p.maybeParseIntent()
+	}()
 
 	// Expect blueprint block first
 	if p.check(lexer.TokenBlueprint) {
@@ -158,16 +176,35 @@ func (p *Parser) parseFile() *ast.File {
 			f.Blueprint = p.parseBlueprintBlock(intent)
 		}()
 	} else {
-		p.addErrorCode(p.peek().Loc, CodeMissingBlueprint,
-			"Expected 'blueprint' declaration as first block",
-			"Every .bp file must start with: blueprint \"name\" { ... }")
+		// addErrorCode panics once the error limit is reached; recover it here
+		// so the file-level error is reported rather than crashing the parser.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if err, ok := r.(ParseError); ok {
+						p.appendRecovered(err)
+					} else {
+						panic(r)
+					}
+				}
+			}()
+			p.addErrorCode(p.peek().Loc, CodeMissingBlueprint,
+				"Expected 'blueprint' declaration as first block",
+				"Every .bp file must start with: blueprint \"name\" { ... }")
+		}()
 	}
 
 	// Parse remaining top-level blocks
-	for !p.atEnd() {
+	for !p.atEnd() && len(p.errors) < maxErrors {
+		start := p.pos
 		block := p.parseTopLevelBlock()
 		if block != nil {
 			f.Blocks = append(f.Blocks, block)
+		}
+		// Recovery can stop at the token that failed. Skip it so the loop
+		// always makes progress.
+		if p.pos == start {
+			p.advance()
 		}
 	}
 
@@ -246,6 +283,9 @@ func (p *Parser) parseTopLevelBlock() (block ast.TopLevel) {
 	case lexer.TokenGenerate:
 		return p.parseGenerateTopLevel()
 	case lexer.TokenEOF:
+		if intent != nil {
+			p.addError(intent.Loc, "Intent '@' must be followed by a block", "Place the intent directly above a declaration")
+		}
 		return nil
 	default:
 		p.addError(p.peek().Loc,
@@ -375,6 +415,7 @@ func (p *Parser) maybeParseIntent() *ast.Intent {
 	}
 	loc := p.advance().Loc // consume @
 	if !p.check(lexer.TokenString) {
+		p.addError(loc, "Expected a string after '@'", "Write the intent as @ \"description\"")
 		return nil
 	}
 	text := p.advance()
@@ -760,18 +801,19 @@ func (p *Parser) parseFnOutputStmt() *ast.OutputStmt {
 	out := &ast.OutputStmt{Loc: loc}
 
 	// fn outputs: "-> name type" or "-> type"
-	// e.g., "-> file image/*" or "-> bool" or "-> string"
+	// e.g., "-> file image/*" or "-> bool" or "-> string" or "-> image/*"
 	if !p.atEnd() && !p.check(lexer.TokenRBrace) && !p.check(lexer.TokenImpl) &&
 		!p.check(lexer.TokenLogic) && !p.check(lexer.TokenArrowIn) {
-		// Check for "name type" pattern: non-primitive ident followed by a type-ish token
+		// Check for "name type" pattern: non-primitive ident followed by a type-ish token.
+		// A MIME type such as `image/*` starts with a slash after its first
+		// identifier, so that shape is a bare type rather than a name.
 		if p.check(lexer.TokenIdent) || p.isKeywordUsableAsIdent() {
 			next := p.peekAt(1)
-			// If next token looks like a type (ident/slash for MIME), it's "name type"
-			if next.Kind == lexer.TokenSlash ||
-				(next.Kind == lexer.TokenIdent && p.isTypeValueAt(1)) ||
+			if (next.Kind == lexer.TokenIdent && p.isTypeValueAt(1)) ||
 				next.Kind == lexer.TokenEnum {
-				p.advance() // skip name
+				out.Name = p.advance().Value // the output name is kept for the formatter
 				typ := p.parseTypeExpr()
+				out.Type = typ
 				out.Value = typeExprToExpr(typ)
 				return out
 			}
@@ -779,6 +821,7 @@ func (p *Parser) parseFnOutputStmt() *ast.OutputStmt {
 		// Single type or expression
 		if p.isTypeStart() {
 			typ := p.parseTypeExpr()
+			out.Type = typ
 			out.Value = typeExprToExpr(typ)
 		}
 	}
@@ -1774,11 +1817,14 @@ func (p *Parser) parseInjectOperation() ast.Expr {
 func (p *Parser) parsePipeCall() ast.Expr {
 	loc := p.expect(lexer.TokenPipe).Loc
 	name := p.expectIdent()
-	// pipe name(args)
+	// pipe name(args). The Pipe marker keeps the keyword for the formatter;
+	// the checker and codegen see the same call as a plain `name(args)`.
 	if p.check(lexer.TokenLParen) {
-		return p.parseFnCall(name, loc)
+		call := p.parseFnCall(name, loc)
+		call.Pipe = true
+		return call
 	}
-	return &ast.Ident{Loc: loc, Name: "pipe_" + name}
+	return &ast.Ident{Loc: loc, Name: "pipe_" + name, Pipe: true}
 }
 
 func (p *Parser) parseGuardStmt(loc lexer.Loc) *ast.GuardStmt {
@@ -2147,9 +2193,30 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		return &ast.NamedType{Loc: tok.Loc, Name: tok.Value}
 	}
 
-	// Fallback
+	// Fallback: a word token that is not an identifier or keyword is taken as a
+	// primitive type name. A string, number or punctuation is not a type, and
+	// keeping it as a type name would print back as something else.
+	if tok.Kind == lexer.TokenString || !isWordText(tok.Value) {
+		panic(ParseError{Loc: tok.Loc, Message: "Expected a type"})
+	}
 	p.advance()
 	return &ast.PrimitiveType{Loc: tok.Loc, Name: tok.Value}
+}
+
+// isWordText reports whether s is spelled like an identifier or keyword.
+func isWordText(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isLetter := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		if !isLetter && !(isDigit && i > 0) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Parser) parseEnumInline() *ast.EnumInline {
@@ -2499,6 +2566,10 @@ func (p *Parser) parseStreamHandler() *ast.StreamHandler {
 		dur := p.expect(lexer.TokenDuration)
 		h.Timeout = dur.Value
 		p.expect(lexer.TokenRParen)
+	} else {
+		// Neither on event(NAME) nor on timeout(DURATION): the handler would have
+		// no trigger to print back.
+		panic(ParseError{Loc: p.peek().Loc, Message: "Expected 'event(NAME)' or 'timeout(DURATION)' after 'on'"})
 	}
 
 	p.expect(lexer.TokenLBrace)
@@ -2520,6 +2591,7 @@ func (p *Parser) parseAssertion() *ast.Assertion {
 	// encounter an assertion-start keyword on a different line and we are not
 	// inside parentheses (e.g. where(...) clauses can span keywords).
 	var raw []string
+	var tokens []lexer.Token
 	startLine := 0
 	parenDepth := 0
 	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
@@ -2544,6 +2616,7 @@ func (p *Parser) parseAssertion() *ast.Assertion {
 		} else {
 			raw = append(raw, tok.Value)
 		}
+		tokens = append(tokens, tok)
 		p.advance()
 	}
 
@@ -2552,7 +2625,9 @@ func (p *Parser) parseAssertion() *ast.Assertion {
 	}
 
 	kind := raw[0]
-	return &ast.Assertion{Loc: loc, Kind: kind, Raw: joinStrings(raw)}
+	// Tokens let the formatter print the assertion from its source tokens;
+	// Raw stays the codegen contract.
+	return &ast.Assertion{Loc: loc, Kind: kind, Raw: joinStrings(raw), Tokens: tokens}
 }
 
 // --- Predicate Helpers ---

@@ -33,6 +33,10 @@ type lexer struct {
 	pendingComments []int
 	errors          []LexError
 	lineHasCode     bool
+	// trivia is the byte offset just past the most recent token or comment.
+	// The gap between it and the next token or comment holds only whitespace,
+	// which is where blank-line trivia is detected.
+	trivia int
 }
 
 func (l *lexer) loc() Loc {
@@ -74,8 +78,30 @@ func (l *lexer) advance() byte {
 func (l *lexer) emit(kind TokenKind, value string, loc Loc) {
 	loc.Len = l.pos - loc.Offset
 	l.anchorPendingComments(len(l.tokens))
-	l.tokens = append(l.tokens, Token{Kind: kind, Value: value, Loc: loc})
+	blank := hasBlankLine(l.src, l.trivia, loc.Offset)
+	l.tokens = append(l.tokens, Token{Kind: kind, Value: value, Loc: loc, BlankBefore: blank})
+	l.trivia = l.pos
 	l.lineHasCode = true
+}
+
+// hasBlankLine reports whether the whitespace in src[from:to] contains a line
+// with no visible characters. The formatter uses this to keep the blank lines
+// that separate statement groups.
+func hasBlankLine(src []byte, from, to int) bool {
+	newlines := 0
+	for i := from; i < to && i < len(src); i++ {
+		switch src[i] {
+		case '\n':
+			newlines++
+			if newlines >= 2 {
+				return true
+			}
+		case ' ', '\t', '\r':
+		default:
+			newlines = 0
+		}
+	}
+	return false
 }
 
 func (l *lexer) anchorPendingComments(tokenIndex int) {
@@ -211,6 +237,7 @@ func (l *lexer) skipComment() {
 	loc := l.loc()
 	start := l.pos
 	inline := l.lineHasCode
+	blank := hasBlankLine(l.src, l.trivia, loc.Offset)
 
 	// Capture # and everything until end of line. String scanning consumes its
 	// own contents, so a # inside a quoted string never reaches this path.
@@ -218,11 +245,13 @@ func (l *lexer) skipComment() {
 		l.advance()
 	}
 	loc.Len = l.pos - loc.Offset
+	l.trivia = l.pos
 	comment := Comment{
 		Loc:         loc,
 		Text:        string(l.src[start:l.pos]),
 		Inline:      inline,
 		AnchorToken: -1,
+		BlankBefore: blank,
 	}
 	if inline {
 		comment.AnchorToken = len(l.tokens) - 1

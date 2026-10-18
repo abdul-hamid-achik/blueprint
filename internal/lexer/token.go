@@ -464,6 +464,9 @@ type Token struct {
 	Kind  TokenKind
 	Value string
 	Loc   Loc
+	// BlankBefore is true when the source has a blank line between the
+	// previous token or comment and this token. Only the formatter reads it.
+	BlankBefore bool
 }
 
 func (t Token) String() string {
@@ -486,6 +489,9 @@ type Comment struct {
 	Text        string
 	Inline      bool
 	AnchorToken int
+	// BlankBefore is true when the source has a blank line between the
+	// previous token or comment and this comment.
+	BlankBefore bool
 }
 
 // Loc represents a source location.

@@ -1059,17 +1059,9 @@ func cmdFmt(filename string, write, check bool) int {
 		return 2
 	}
 
-	file, parseErrors := parser.ParseFile(filename, src)
 	// Included .bp files are valid source fragments and intentionally omit the
-	// root blueprint block. If full-file parsing reports that specific absence,
-	// retry with the same partial-file parser used by include resolution. Any
-	// real fragment syntax errors are then reported normally.
-	for _, parseError := range parseErrors {
-		if parseError.Code == parser.CodeMissingBlueprint {
-			file, parseErrors = parser.ParsePartialFile(filename, src)
-			break
-		}
-	}
+	// root blueprint block; parseFormatSource retries them as partial files.
+	file, parseErrors := parseFormatSource(filename, src)
 	if len(parseErrors) > 0 {
 		for _, e := range parseErrors {
 			fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
@@ -1078,7 +1070,11 @@ func cmdFmt(filename string, write, check bool) int {
 		return 1
 	}
 
-	formatted := ast.Print(file)
+	formatted := formatPrinter(file)
+	if err := verifyFormatted(file, filename, formatted); err != nil {
+		reportFormatterBug(os.Stderr, filename, err)
+		return exitFormatterBug
+	}
 
 	if check {
 		if formatted != string(src) {

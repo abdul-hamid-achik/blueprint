@@ -477,6 +477,10 @@ type OutputStmt struct {
 	Loc    lexer.Loc
 	Status string // HTTP status code like "200", or ""
 	Value  Expr   // the response body expression
+	// Name and Type are set only for fn outputs (`-> name type`). They keep
+	// the source spelling the formatter needs; Value is the lossy form codegen reads.
+	Name string
+	Type TypeExpr
 }
 
 func (n *OutputStmt) nodeType() string    { return "OutputStmt" }
@@ -539,6 +543,9 @@ type FnCall struct {
 	Loc  lexer.Loc
 	Name string
 	Args []Expr
+	// Pipe is true when the call was written with the `pipe` keyword
+	// (`|> pipe name(args)`), which the formatter must keep.
+	Pipe bool
 }
 
 func (n *FnCall) nodeType() string    { return "FnCall" }
@@ -568,6 +575,9 @@ func (n *IndexAccess) expr()               {}
 type Ident struct {
 	Loc  lexer.Loc
 	Name string
+	// Pipe is true for a bare `pipe name` step; Name then carries the
+	// checker's "pipe_" prefix. It exists only so the formatter keeps the keyword.
+	Pipe bool
 }
 
 func (n *Ident) nodeType() string    { return "Ident" }
@@ -862,6 +872,9 @@ type Assertion struct {
 	Raw  string // raw text of the assertion for now
 	Kind string // "status", "body", "header", "duration", "model", "last_status"
 	Expr Expr   // parsed expression if applicable
+	// Tokens are the source tokens that make up Raw. The formatter prints
+	// from them so spacing and string escapes match the source spelling.
+	Tokens []lexer.Token
 }
 
 type Hint struct {

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("blueprint\"\"{}POST/{|>-00*A0000(0) *A0000(0)}@\"\"STREAM/000000000{<-A0|>00*\"\"stream{|>on{}}}")

@@ -2163,3 +2163,38 @@ model item {
 		t.Fatalf("fragment intent not attached to the model: %+v", fragment.Blocks[0])
 	}
 }
+
+// Inputs that the parser used to accept with a silently dropped or misread
+// part. Each must now report an error instead of producing a tree that cannot
+// be printed back as the same source.
+func TestParseRejectsIncompleteSyntax(t *testing.T) {
+	cases := map[string]string{
+		"field without type":        "blueprint \"x\" {\n}\nmodel m {\n  name \"x\"\n}\n",
+		"non-word type":             "blueprint \"x\" {\n}\nmodel m {\n  name 3\n}\n",
+		"stream on without trigger": "blueprint \"x\" {\n}\nSTREAM /s {\n  |> on { }\n}\n",
+		"intent without string":     "blueprint \"x\" {\n}\n@ 5\nsecret A required\n",
+		"intent at end of file":     "blueprint \"x\" {\n}\n@ \"dangling\"\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, errs := ParseFile("test.bp", []byte(src))
+			if len(errs) == 0 {
+				t.Fatalf("expected a parse error for:\n%s", src)
+			}
+		})
+	}
+}
+
+// A file whose top level is not a blueprint must not crash the parser when the
+// error limit is reached.
+func TestParseManyErrorsDoesNotPanic(t *testing.T) {
+	src := strings.Repeat("!", 200)
+	_, errs := ParseFile("test.bp", []byte(src))
+	if len(errs) == 0 {
+		t.Fatal("expected parse errors")
+	}
+	_, errs = ParsePartialFile("test.bp", []byte(src))
+	if len(errs) == 0 {
+		t.Fatal("expected parse errors from partial parse")
+	}
+}

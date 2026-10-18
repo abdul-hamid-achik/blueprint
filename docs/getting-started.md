@@ -92,17 +92,17 @@ model item {
 
 @ "List all items"
 GET /api/items {
-  <- page     int default(1) min(1)
-  <- per_page int default(20) max(100)
+  <- page      int  default(1)  min(1)
+  <- per_page  int  default(20)  max(100)
 
-  |> items = query item order(created desc) paginate(page, per_page)
+  |> items = query item order(created, desc) paginate(page, per_page)
 
   -> 200 { items: items.items, total: items.total }
 }
 
 @ "Create an item"
 POST /api/items {
-  <- name string required
+  <- name  string  required
 
   |> item = save item { name: name }
 

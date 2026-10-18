@@ -538,3 +538,32 @@ func TestCronKeyword(t *testing.T) {
 		tok(TokenString, "0 4 * * 0"),
 	})
 }
+
+// BlankBefore is set when a line with no visible characters separates a token
+// or comment from the one before it. Whitespace-only lines count as blank.
+func TestTokenizeWithTriviaMarksBlankLines(t *testing.T) {
+	src := "a\n\nb\n# c\n  \n\n  d\ne # trailing\n"
+	tokens, comments, errs := TokenizeWithTrivia("test.bp", []byte(src))
+	if len(errs) != 0 {
+		t.Fatalf("unexpected lex errors: %v", errs)
+	}
+	wantTokens := map[string]bool{"a": false, "b": true, "d": true, "e": false}
+	for _, token := range tokens {
+		want, ok := wantTokens[token.Value]
+		if !ok {
+			continue
+		}
+		if token.BlankBefore != want {
+			t.Errorf("token %q: BlankBefore = %v, want %v", token.Value, token.BlankBefore, want)
+		}
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want 2", len(comments))
+	}
+	if comments[0].BlankBefore {
+		t.Errorf("comment %q directly after b should not be blank-preceded", comments[0].Text)
+	}
+	if comments[1].BlankBefore || !comments[1].Inline {
+		t.Errorf("trailing comment should be inline with no blank line before it: %+v", comments[1])
+	}
+}

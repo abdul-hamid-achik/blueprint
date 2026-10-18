@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("blueprint\"\"{A0\"\"A 00A 00}  enum A{A0{}A} ")

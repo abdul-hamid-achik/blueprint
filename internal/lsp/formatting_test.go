@@ -86,9 +86,7 @@ func TestFormatDocumentText_ChangesUnformattedAndIsIdempotent(t *testing.T) {
 
 // TestFormatDocumentText_OnlyStableOutputIsReturned checks the property that
 // every edit the server offers is a fixed point of the printer, across all
-// fixtures. testdata/valid/when_inline.bp is a known printer bug: bp fmt turns
-// `sleep(1s)` into `sleep((1s))` on the second pass, so the LSP must refuse it.
-// Once the printer is fixed, drop the when_inline assertion.
+// fixtures.
 func TestFormatDocumentText_OnlyStableOutputIsReturned(t *testing.T) {
 	var paths []string
 	for _, pattern := range []string{"../../testdata/valid/*.bp", "../../examples/*.bp"} {
@@ -113,14 +111,6 @@ func TestFormatDocumentText_OnlyStableOutputIsReturned(t *testing.T) {
 		if _, again := formatDocumentText(path, formatted); again {
 			t.Errorf("%s: LSP offered an edit that is not stable on a second pass", path)
 		}
-	}
-
-	src, err := os.ReadFile("../../testdata/valid/when_inline.bp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, changed := formatDocumentText("when_inline.bp", string(src)); changed {
-		t.Fatal("when_inline.bp must be refused while the printer is unstable on it")
 	}
 }
 

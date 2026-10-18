@@ -169,10 +169,10 @@ test register_success {
 
   expect {
     status 201
-    body . id is uuid
-    body . email == "alice@example.com"
-    body . name == "Alice"
-    model user where ( email == "alice@example.com" ) exists
+    body.id is uuid
+    body.email == "alice@example.com"
+    body.name == "Alice"
+    model user where(email == "alice@example.com") exists
   }
 }
 

@@ -53,6 +53,23 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed (2026-10-18 tooling and completion pass)
 
+- **`bp fmt` no longer corrupts valid files.** Keyword steps (`call`,
+  `enqueue`, `pipe`, `sleep`, `save`/`query` shorthands), named and MIME fn
+  outputs (`-> file image/*`), `auth ... using(...)`, worker
+  `retry ... backoff(...)`, test assertions, empty bodies, computed-field and
+  middleware ordering, and string escapes now round-trip, and inline `when`
+  output is stable on a second pass. Blank lines are kept where the source had
+  them (at most one in a row; none added).
+- **`bp fmt` verifies its output before using it.** It re-parses the result
+  and compares the syntax tree with the source. On a mismatch it leaves the
+  file untouched and exits `3` with a request to report the formatter bug.
+  LSP formatting applies the same check. A round-trip test over every example
+  and fixture, plus a fuzz target, guards the printer.
+- **The parser rejects incomplete syntax it used to accept silently**: a
+  field with no type, a string/number/punctuation token used as a type, a
+  stream `on` without `event(...)` or `timeout(...)`, and an `@` with no string
+  or no declaration after it. A file with many errors no longer panics or
+  loops at the error limit.
 - **`bp docs` output passes Redocly with no errors**, and STREAM/WS path
   parameters now carry the schema of their declared `<-` input instead of a
   plain string.
