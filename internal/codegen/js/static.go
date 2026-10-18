@@ -50,7 +50,7 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 		"tsx":         "^4.19.0",
 		"@types/node": "^22.0.0",
 		"@types/pg":   "^8.11.0",
-		"vitest":      "^4.1.10",
+		"vitest":      "^5.0.5",
 	}
 	if hasDB {
 		devDeps["drizzle-kit"] = "^0.31.10"
