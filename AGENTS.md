@@ -77,15 +77,19 @@ still emit an importable empty schema (`schema.ts` on Node, `Base` on Python).
 ### Developer tooling
 
 - `cmd/bp/main.go` — CLI dispatch, flag parsing, command orchestration, and
-  environment subprocesses.
+  environment subprocesses. `cmd/bp/paths.go` expands the multi-file and
+  directory arguments of `check`/`lint`/`fmt`; `cmd/bp/init.go` and
+  `cmd/bp/templates/` own `bp init` starter templates.
 - `internal/generate/` — Anthropic-backed `@>` discovery, prompt construction,
   and source-line replacement.
 - `internal/importer/` — conservative TypeScript structure recovery for
   `bp import`; it emits review scaffolds, never handler translations.
 - `internal/linter/` — style and best-practice rules.
 - `internal/docs/` — OpenAPI 3.1 generation.
-- `internal/lsp/` — diagnostics, hover, go-to-definition, context-aware
-  completion, and local-workspace symbols over LSP.
+- `internal/lsp/` — diagnostics (with quick-fix code actions), hover,
+  go-to-definition, find-references, open-document rename, formatting,
+  document outline, folding ranges, context-aware completion, and
+  local-workspace symbols over LSP.
 - `editors/vscode-blueprint/` — packaged VS Code stdio client and TextMate
   grammar; it starts configurable `bp lsp` and exposes a restart command.
 - `internal/agentctx/` — embedded `bp context` and `bp llms` guidance.
@@ -166,9 +170,14 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
   for network/timeout failures and HTTP 408/429/5xx, with a fresh timeout per
   attempt; other 4xx responses are not retried. Malformed configuration must
   fail before any files are returned.
-- Node endpoint `cache <duration>` metadata is currently emitted as a comment,
-  not as response caching. Endpoint `limit` is an in-process, per-instance rate
-  limiter rather than a distributed guarantee.
+- Node endpoint `cache <duration>` sets `Cache-Control: <scope>, max-age=N` on
+  2xx GET responses only; it is not a server-side response cache. The scope is
+  `private` when the endpoint or blueprint has `use`/`auth`/`limit` metadata or
+  the body reads header/cookie/session/auth state, `public` otherwise.
+  Malformed durations fail codegen; non-GET `cache` emits nothing and is
+  reported by the `cache-on-non-get` lint rule. Python rejects endpoint
+  `cache`. Endpoint `limit` is an in-process, per-instance rate limiter rather
+  than a distributed guarantee.
 - The Node target rejects file/MIME endpoint inputs, including file-containing
   named types, until route parsing and the generated SDK both support
   multipart/form-data. File/MIME types remain valid in functions, pipes, and
@@ -213,7 +222,11 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
 - LSP completion is based on the open document's recovery AST plus source
   context and has no resolve request. Workspace symbols scan only local `.bp`
   files, ignore common generated/vendor/VCS directories, and prefer unsaved
-  documents. Full-document sync ships; rename/references/code actions do not.
+  documents. Full-document sync ships. References and rename work on the open
+  document only (strict parse; rename refuses parse errors, invalid/reserved/
+  colliding/capturing names, and edits that add checker errors). Code actions
+  are quick fixes driven by diagnostic `data`; formatting returns nothing when
+  the printer output is unstable or would drop comments.
 - Node-authored `test {}` generation supports a narrower request surface than
   the grammar suggests. `bp test` preflights and rejects cleanup/shared setup,
   dynamic targets, custom or multipart/file requests, unsupported auth/timing
@@ -227,7 +240,10 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
   middleware module. Basic auth still expects a pre-encoded value. Do not add
   examples that promise broader behavior without adding generator coverage.
 - `emit` dispatches the in-process event/subscription bus. Source-less
-  `subscribe "event" { ... }` consumes that bus. `emit ... to(service)` and
+  `subscribe "event" { ... }` consumes that bus; subscribe handlers always run
+  on the emitting instance only. STREAM listeners fan out across instances
+  through Redis (`bp:stream:<event>`) when `REDIS_URL` is set, and stay local
+  without it. `emit ... to(service)` and
   `subscribe ... from(service)` are rejected until an external transport
   adapter exists. Use `enqueue "queue" { ... }` to produce a BullMQ job for a
   worker.

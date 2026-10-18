@@ -249,8 +249,7 @@ Effect's exhaustive scaffold gate rejects those model/endpoint surfaces too.
 `log` is translated to the stdlib `logging` module, not `print`: Python emits
 `src/lib/log.py` (one `logger`, configured once on import) and calls
 `logger.debug|info|warning|error`. Node's `console.*` levels map the same way.
-Unlike Node, an unknown `level(...)` is a codegen error on Python rather than a
-runtime crash.
+The checker rejects any other `level(...)` value (C051) on every target.
 
 ## Type mapping
 

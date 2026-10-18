@@ -38,7 +38,10 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   declared function and pipe arguments, known model writes, optional
   `fetch`/`query ... first` results, and truthy-guard narrowing. Remaining:
   deeper nested JSON/FK leaf typing, composite function-output recovery, and
-  broader expression/operator assignability. _(partially shipped 2026-07-14)_
+  broader expression assignability. Binary operators whose operands have
+  incompatible known types now fail with C050 (2026-10-18). Constraint values
+  are not type-checked yet, and two endpoints with the same method and path
+  are caught by `bp docs` but not by the checker. _(partially shipped 2026-07-14)_
 - [x] **Fail closed when a target cannot preserve semantics.** Effect rejects
   every unimplemented top-level AST kind. Python now uses an exhaustive
   declaration allowlist, rejects authored tests/fixtures, inline `fn logic`,
@@ -135,8 +138,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   `examples/*.bp` file. _(shipped v0.14.0)_
 
 - [x] `bp explain <code>` command — embeds `internal/diag/error-codes.md`, prints the
-  matching section, drift-tested against `docs/error-codes.md`. Coverage grown to 12
-  sites (C001–C012). _(shipped — see CHANGELOG)_
+  matching section, drift-tested against `docs/error-codes.md`. Every checker error
+  now carries a named code (C001–C051), and a catalog test requires each code's
+  first example to reproduce it. _(shipped — see CHANGELOG)_
 - [x] `internal/codegen/common` — extract pure-string helpers (`toCamelCase`, `toSnakeCase`,
   `toPascalCase`, `pluralize`, `extractResource`, `extractPathParams`, `isPathParam`) for
   reuse across the Node, Python, and future targets.
@@ -165,10 +169,12 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   SSE subscriptions unsubscribed on abort; STREAM guards run before the 200 is sent; dead-socket
   eviction + broadcast readyState guard; STREAM auth/limit/use meta enforced, WS bare-auth gets
   linter warning `unenforceable-ws-auth`. See CHANGELOG [Unreleased].)_
-- [~] **STREAM/WS remaining tail:** WS rooms now use Redis pub/sub for multi-instance
-  broadcast (shipped v0.14.0); STREAM endpoints still use process-local event subscriptions.
-  Remaining: backpressure on emit fan-out; STREAM/WS endpoints in all_features.bp; WS
-  path-param validation. _(partially shipped 2026-07-10)_
+- [~] **STREAM/WS remaining tail:** WS rooms use Redis pub/sub for multi-instance
+  broadcast (shipped v0.14.0). STREAM listeners fan out across instances through Redis
+  when `REDIS_URL` is set; subscribe handlers stay local. STREAM/WS `<-` path-param
+  inputs are validated, and all_features.bp covers both. Remaining: backpressure on
+  emit fan-out; STREAM/WS `cache` metadata is silently ignored; `use` middleware on
+  STREAM/WS leaves `c.get('auth')` untyped. _(partially shipped 2026-10-18)_
 
 ### Found in the 2026-06-16 deep review
 
@@ -318,7 +324,7 @@ Prep work (must precede the Python generator):
     - [x] `try`/`recover` -> Python `try:` / `except Exception as error:`
     - [x] `map items: save M { ... }` (bound and unbound) -> explicit for-loop
     - [x] `map items: update M { ... }` (unbound) -> for-loop with per-iteration FK alias
-    - [x] `log "msg"` -> `print(f"...")`
+    - [x] `log "msg"` -> `logger.<method>(f"...")` from `src/lib/log.py`
   - [ ] Phase 3d: the long tail still rejected with a specific message.
     - [x] `where(...)` comparison ops (`!=`, `<`, `>`, `<=`, `>=`), `in`,
       recursive `or`/`and`, text-search `where(q)`, and duration RHS values —
@@ -330,15 +336,19 @@ Prep work (must precede the Python generator):
       `sum(r.x for r in <coll>)`).
     - [x] Bare-expression step bindings of pure block literals
       (`|> filters = { ... }`) — shipped v0.14.0 (iteration-3 polish).
-    - [ ] `pipe` declarations (vs `fn`) under Python `impl python` mode
+    - [~] `pipe` declarations -> `src/pipes/<name>.py` for the inline subset
+      (guards, status-less `->`, block literal bindings, declared fn/pipe calls).
+      Data operations, `log`, `when`, `try`/`recover`, and env/header reads in
+      pipe bodies still reject. _(partially shipped 2026-10-18)_
     - [x] Partial-commit handling in `try`/`recover` — shipped 2026-07-09: multi-write
       try bodies wrap in `with db.begin_nested():` + per-mutation `db.flush()` + single
       `db.commit()` (same wrap predicate as JS Option A); `db.rollback()` leads every
       DB-touching recover branch; guards re-raise `HTTPException` past the generic except;
       `error.message` → `str(error)`. Also fixed the critical wrong-target `update`/`delete`
       binding resolution (nondeterministic wrong-row writes). See CHANGELOG [Unreleased].
-    - [ ] Structured `log` (`level(error)`, JSON output) — Phase 3c keeps deps
-      minimal with `print(f"...")`.
+    - [x] Structured `log` levels via stdlib `logging` (debug/info to stdout,
+      warn/error to stderr). Like Node, output is plain text; JSON lines and a
+      `LOG_LEVEL` switch are not implemented on either target. _(shipped 2026-10-18)_
   - [~] Phase 4: middleware, fn/pipe (Python `impl python` mode), `bp test`
     against testcontainers for real Postgres.
     - [x] `bp build --target python --gen-tests` emits a runnable pytest
@@ -363,9 +373,9 @@ Prep work (must precede the Python generator):
     incomplete handlers execute.
   - [ ] Phase 5b: full STREAM/WS body translation (Redis pub/sub
     backbone, `broadcast`/`join`/`leave`/`emit` builtins, `where(...)` filter
-    wiring), `pipe` declarations under `impl python`, `worker` + `schedule`
-    via APScheduler, `storage s3` → boto3, `payload.X` → `payload["X"]`
-    for fn returns typed `json`, and structured `log`.
+    wiring), the rest of the `pipe` body surface, `worker` + `schedule`
+    via APScheduler, `storage s3` → boto3, and `payload.X` → `payload["X"]`
+    for fn returns typed `json`.
 
 ## Later
 
@@ -375,8 +385,10 @@ Prep work (must precede the Python generator):
   search, and a packaged VS Code language client that starts `bp lsp` are
   shipped. Completion is intentionally syntax/source-context based (no resolve
   round-trip), workspace search scans local `.bp` files while ignoring common
-  generated/vendor directories, and rename remains future work. _(shipped
-  2026-07-14)_
+  generated/vendor directories. Find-references, open-document rename,
+  quick-fix code actions, formatting, document outline, and folding ranges
+  shipped 2026-10-18; cross-file rename and incremental sync remain future
+  work. _(shipped 2026-07-14)_
 - [x] Behavioral test generation beyond contract tests: Node-only
   `--gen-property-tests` emits deterministic fast-check suites, implies
   `--gen-tests`, resets PGlite per run when needed, and fails the whole build
