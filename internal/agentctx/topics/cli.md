@@ -6,11 +6,11 @@
 
 | Command | Purpose |
 |---|---|
-| `bp check <file.bp>` | Parse + semantic check. Exit 0 = valid. |
+| `bp check <file.bp\|dir> [more ...] [--json]` | Parse + semantic check. Exit 0 = valid. A directory is checked recursively (skips node_modules, generated, dist, .blueprint, dot-dirs and included fragments); several files exit with the most severe per-file code. |
 | `bp build <file.bp> [--out <dir>] [--target node\|python\|effect]` | Compile to a target project. Idempotent; Effect is experimental. |
-| `bp diff <file.bp> [--out <dir>] [--exit-code]` | Show pending changes. With `--exit-code`, exit 1 if anything differs — CI/idempotency gate. |
-| `bp fmt <file.bp> [--write] [--check]` | Format. Round-trip safe. |
-| `bp lint <file.bp>` | Stylistic lint. Includes `fetch-without-guard` (REST `fetch` read before `guard`), `unused-secret`/`unused-env`/`unused-function`, and `unpaginated-list` (info). |
+| `bp diff <file.bp> [--out <dir>] [--exit-code] [--apply [--force]]` | Show pending changes. With `--exit-code`, exit 1 if anything differs — CI/idempotency gate. `--apply --force` writes into a non-empty `--out` directory without a Blueprint manifest (same as `bp build --force`). |
+| `bp fmt <file.bp\|dir> [more ...] [--write] [--check]` | Format. Round-trip safe. Several files or a directory need `--write` or `--check`. |
+| `bp lint <file.bp\|dir> [more ...] [--json]` | Stylistic lint. `--json` emits issues with file, rule, severity, line, column, message, hint. Includes `fetch-without-guard` (REST `fetch` read before `guard`), `unused-secret`/`unused-env`/`unused-function`, and `unpaginated-list` (info). |
 | `bp docs <file.bp> [--out file.json]` | Emit OpenAPI 3.1 spec from declared inputs/outputs. |
 | `bp run <file.bp>` | Build + start the server (Node default). |
 | `bp dev <file.bp>` | Watch + rebuild on change. |

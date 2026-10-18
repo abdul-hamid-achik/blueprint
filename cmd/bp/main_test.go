@@ -3040,3 +3040,336 @@ func TestPropertyTestFlagAppearsInHelpAndCompletions(t *testing.T) {
 		}
 	}
 }
+
+// --- multi-file and directory mode (paths.go) ---
+
+// mfWriteFile writes content to path, creating parent directories.
+func mfWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// mfCopyFixture copies a repo-relative file to dst.
+func mfCopyFixture(t *testing.T, repoRel, dst string) {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join(getProjectRoot(), repoRel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mfWriteFile(t, dst, string(src))
+}
+
+// mfRunJSON runs bp and decodes its stdout as one JSON object.
+func mfRunJSON(t *testing.T, args ...string) (map[string]interface{}, int) {
+	t.Helper()
+	stdout, stderr, code := runBP(t, args...)
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &obj); err != nil {
+		t.Fatalf("bp %s: stdout is not one JSON document: %v\nstdout=%s\nstderr=%s", strings.Join(args, " "), err, stdout, stderr)
+	}
+	return obj, code
+}
+
+func TestCheckDirectoryExpandsAndSkips(t *testing.T) {
+	dir := t.TempDir()
+	mfCopyFixture(t, "examples/hello-world.bp", filepath.Join(dir, "a.bp"))
+	mfCopyFixture(t, "examples/hello-world.bp", filepath.Join(dir, "sub", "c.bp"))
+	mfCopyFixture(t, "examples/hello-world.bp", filepath.Join(dir, "notes.txt"))
+	// Broken content in every skipped directory: if any were checked the exit
+	// code would be 1.
+	broken := "blueprint hello {\n  bad syntax here\n"
+	for _, skipped := range []string{"node_modules", "generated", "dist", ".blueprint", ".hidden"} {
+		mfWriteFile(t, filepath.Join(dir, skipped, "broken.bp"), broken)
+	}
+
+	stdout, stderr, code := runBP(t, "check", dir)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	for _, want := range []string{filepath.Join(dir, "a.bp"), filepath.Join(dir, "sub", "c.bp")} {
+		if !strings.Contains(stdout, "OK: "+want) {
+			t.Errorf("expected %s to be checked, stdout=%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "broken.bp") {
+		t.Errorf("skipped directories must not be checked, stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "2 files checked, 0 failed") {
+		t.Errorf("expected multi-file summary on stderr, got %q", stderr)
+	}
+
+	// A dot-directory named explicitly as the root is still walked.
+	_, stderr, code = runBP(t, "check", filepath.Join(dir, ".hidden"))
+	if code != 1 || !strings.Contains(stderr, "1 files checked, 1 failed") {
+		t.Errorf("explicit .hidden root should be walked: exit=%d stderr=%q", code, stderr)
+	}
+
+	// Explicitly named files are always processed, even inside a skipped dir.
+	_, _, code = runBP(t, "check", filepath.Join(dir, "node_modules", "broken.bp"))
+	if code != 1 {
+		t.Errorf("explicit file in node_modules should be checked and fail, got exit %d", code)
+	}
+}
+
+func TestCheckDirectorySkipsIncludedFragments(t *testing.T) {
+	dir := t.TempDir()
+	mfCopyFixture(t, "testdata/valid/include_basic.bp", filepath.Join(dir, "main.bp"))
+	for _, frag := range []string{"includes/models.bp", "includes/endpoints/api.bp"} {
+		mfCopyFixture(t, filepath.Join("testdata/valid", frag), filepath.Join(dir, frag))
+	}
+
+	stdout, stderr, code := runBP(t, "check", dir)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "models.bp") || strings.Contains(stdout, "api.bp") {
+		t.Errorf("included fragments must be skipped, stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "1 files checked, 0 failed") {
+		t.Errorf("expected only main.bp to be checked, stderr=%q", stderr)
+	}
+}
+
+func TestCheckDirectoryIncludeCycleIsNotSilentlySkipped(t *testing.T) {
+	// Two files that include each other have no root, so neither is a
+	// fragment; both must be checked and the cycle reported, not skipped.
+	dir := t.TempDir()
+	mfWriteFile(t, filepath.Join(dir, "a.bp"), "include \"b.bp\"\n")
+	mfWriteFile(t, filepath.Join(dir, "b.bp"), "include \"a.bp\"\n")
+
+	_, stderr, code := runBP(t, "check", dir)
+	if code == 0 {
+		t.Fatalf("include cycle must not pass silently, stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "2 files checked, 2 failed") {
+		t.Errorf("both cycle members must be checked, stderr=%q", stderr)
+	}
+}
+
+func TestCheckMultipleFilesMixedExitCodeProcessesAll(t *testing.T) {
+	root := getProjectRoot()
+	valid := filepath.Join(root, "examples", "hello-world.bp")
+	invalid := filepath.Join(root, "testdata", "invalid", "missing_closing_brace.bp")
+
+	// The failing file comes first; the valid file after it must still run.
+	stdout, stderr, code := runBP(t, "check", invalid, valid)
+	if code != 1 {
+		t.Errorf("expected most severe exit 1, got %d", code)
+	}
+	if !strings.Contains(stdout, "OK: "+valid) {
+		t.Errorf("file after a failure must still be processed, stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "2 files checked, 1 failed") {
+		t.Errorf("expected summary, got %q", stderr)
+	}
+}
+
+func TestCheckMissingPathAndEmptyDirAreUsageErrors(t *testing.T) {
+	valid := filepath.Join(getProjectRoot(), "examples", "hello-world.bp")
+	missing := filepath.Join(t.TempDir(), "nope.bp")
+
+	stdout, stderr, code := runBP(t, "check", valid, missing)
+	if code != 2 {
+		t.Errorf("missing path in multi-file mode: expected exit 2, got %d", code)
+	}
+	if !strings.Contains(stderr, "no such file or directory: "+missing) {
+		t.Errorf("expected clear missing-path error, got %q", stderr)
+	}
+	if strings.Contains(stdout, "OK:") {
+		t.Errorf("usage errors must stop before any file is processed, stdout=%s", stdout)
+	}
+
+	empty := t.TempDir()
+	mfWriteFile(t, filepath.Join(empty, "readme.md"), "not bp")
+	_, stderr, code = runBP(t, "check", empty)
+	if code != 2 || !strings.Contains(stderr, "no .bp files found in directory") {
+		t.Errorf("empty directory: exit=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestCheckMultiFileJSONWrapsPerFileObjects(t *testing.T) {
+	dir := t.TempDir()
+	mfCopyFixture(t, "examples/hello-world.bp", filepath.Join(dir, "good.bp"))
+	mfWriteFile(t, filepath.Join(dir, "bad.bp"), "blueprint hello {\n  bad syntax here\n")
+
+	obj, code := mfRunJSON(t, "check", dir, "--json")
+	if code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if obj["success"] != false || obj["file_count"] != float64(2) || obj["failed_count"] != float64(1) {
+		t.Errorf("unexpected wrapper: %v", obj)
+	}
+	files, ok := obj["files"].([]interface{})
+	if !ok || len(files) != 2 {
+		t.Fatalf("expected 2 per-file objects, got %v", obj["files"])
+	}
+	bad := files[0].(map[string]interface{})
+	if !strings.HasSuffix(bad["filename"].(string), "bad.bp") || bad["success"] != false || bad["error_count"] == nil {
+		t.Errorf("per-file object for bad.bp malformed: %v", bad)
+	}
+	good := files[1].(map[string]interface{})
+	if !strings.HasSuffix(good["filename"].(string), "good.bp") || good["success"] != true {
+		t.Errorf("per-file object for good.bp malformed: %v", good)
+	}
+}
+
+func TestCheckSingleFileJSONShapeUnchanged(t *testing.T) {
+	valid := filepath.Join(getProjectRoot(), "examples", "hello-world.bp")
+	obj, code := mfRunJSON(t, "check", valid, "--json")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if len(obj) != 2 || obj["success"] != true || obj["filename"] != valid {
+		t.Errorf("single-file JSON shape changed: %v", obj)
+	}
+}
+
+func TestLintJSONSingleFile(t *testing.T) {
+	root := getProjectRoot()
+	clean, code := mfRunJSON(t, "lint", filepath.Join(root, "examples", "hello-world.bp"), "--json")
+	if code != 0 || clean["success"] != true || clean["issue_count"] != float64(0) {
+		t.Errorf("clean file: exit=%d obj=%v", code, clean)
+	}
+	if issues, ok := clean["issues"].([]interface{}); !ok || len(issues) != 0 {
+		t.Errorf("issues must be an empty array, got %v", clean["issues"])
+	}
+
+	// realtime-chat.bp has one known warning; warnings alone exit 0.
+	obj, code := mfRunJSON(t, "lint", filepath.Join(root, "examples", "realtime-chat.bp"), "--json")
+	if code != 0 {
+		t.Errorf("warnings only must exit 0, got %d", code)
+	}
+	// Info-level hints (e.g. unpaginated-list) are reported too; only the
+	// warnings are pinned here.
+	all, _ := obj["issues"].([]interface{})
+	var issues []interface{}
+	for _, raw := range all {
+		if raw.(map[string]interface{})["severity"] == "warning" {
+			issues = append(issues, raw)
+		}
+	}
+	if len(issues) != 1 {
+		t.Fatalf("expected one warning, got %v", obj["issues"])
+	}
+	issue := issues[0].(map[string]interface{})
+	for _, key := range []string{"file", "rule", "severity", "line", "column", "message", "hint"} {
+		if _, ok := issue[key]; !ok {
+			t.Errorf("lint issue missing %q: %v", key, issue)
+		}
+	}
+	if issue["rule"] != "unenforceable-ws-auth" || issue["severity"] != "warning" || obj["warning_count"] != float64(1) {
+		t.Errorf("unexpected issue: %v", issue)
+	}
+}
+
+func TestLintJSONMultiFileWrapper(t *testing.T) {
+	root := getProjectRoot()
+	obj, code := mfRunJSON(t, "lint", filepath.Join(root, "examples", "hello-world.bp"), filepath.Join(root, "examples", "realtime-chat.bp"), "--json")
+	if code != 0 {
+		t.Errorf("expected exit 0 (warnings only), got %d", code)
+	}
+	if obj["file_count"] != float64(2) || obj["failed_count"] != float64(0) || obj["success"] != true {
+		t.Errorf("unexpected wrapper: %v", obj)
+	}
+	if files, _ := obj["files"].([]interface{}); len(files) != 2 {
+		t.Fatalf("expected 2 per-file objects, got %v", obj["files"])
+	}
+}
+
+func TestFmtMultiFileRequiresWriteOrCheck(t *testing.T) {
+	root := getProjectRoot()
+	a := filepath.Join(root, "examples", "hello-world.bp")
+	b := filepath.Join(root, "examples", "realtime-chat.bp")
+	_, stderr, code := runBP(t, "fmt", a, b)
+	if code != 2 || !strings.Contains(stderr, "--write or --check") {
+		t.Errorf("multi-file fmt without flags: exit=%d stderr=%q", code, stderr)
+	}
+
+	dir := t.TempDir()
+	mfCopyFixture(t, "examples/hello-world.bp", filepath.Join(dir, "a.bp"))
+	_, stderr, code = runBP(t, "fmt", dir)
+	if code != 2 || !strings.Contains(stderr, "--write or --check") {
+		t.Errorf("directory fmt without flags: exit=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestFmtMultiFileCheckListsUnformatted(t *testing.T) {
+	dir := t.TempDir()
+	formatted, _, code := runBP(t, "fmt", filepath.Join(getProjectRoot(), "examples", "hello-world.bp"))
+	if code != 0 {
+		t.Fatalf("fmt failed: %d", code)
+	}
+	mfWriteFile(t, filepath.Join(dir, "ok.bp"), formatted)
+	mfWriteFile(t, filepath.Join(dir, "sub", "messy.bp"), formatted+"\n\n\n")
+
+	stdout, stderr, code := runBP(t, "fmt", dir, "--check")
+	if code != 1 {
+		t.Errorf("expected exit 1 for unformatted file, got %d", code)
+	}
+	if !strings.Contains(stdout, filepath.Join(dir, "sub", "messy.bp")) {
+		t.Errorf("--check must list each unformatted path, stdout=%q", stdout)
+	}
+	if strings.Contains(stdout, "ok.bp") {
+		t.Errorf("formatted file must not be listed, stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, "2 files checked, 1 failed") {
+		t.Errorf("expected summary, got %q", stderr)
+	}
+}
+
+func TestDiffForceRequiresApply(t *testing.T) {
+	_, stderr, code := runBP(t, "diff", filepath.Join(getProjectRoot(), "examples", "hello-world.bp"), "--force")
+	if code != 2 || !strings.Contains(stderr, "--force only applies with --apply") {
+		t.Errorf("exit=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestDiffApplyForceOverwritesForeignOutDir(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(getProjectRoot(), "examples", "hello-world.bp")
+	out := filepath.Join(dir, "foreign")
+	mfWriteFile(t, filepath.Join(out, "package.json"), `{"name":"someone-else"}`)
+
+	if _, _, code := runBP(t, "diff", src, "--out", out, "--apply", "--no-color"); code != 2 {
+		t.Errorf("apply into foreign dir without --force: expected exit 2, got %d", code)
+	}
+	if _, stderr, code := runBP(t, "diff", src, "--out", out, "--apply", "--force", "--no-color"); code != 0 {
+		t.Fatalf("apply with --force: expected exit 0, got %d stderr=%s", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(out, ".blueprint", "manifest.json")); err != nil {
+		t.Errorf("--force apply should have written the build manifest: %v", err)
+	}
+}
+
+func TestMultiFileFlagsAppearInHelpAndCompletions(t *testing.T) {
+	stdout, stderr, code := runBP(t, "lint", "--help")
+	if code != 0 || !strings.Contains(stderr+stdout, "--json") {
+		t.Errorf("lint --help must document --json: exit=%d out=%q err=%q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runBP(t, "diff", "--help")
+	if code != 0 || !strings.Contains(stderr+stdout, "--force") {
+		t.Errorf("diff --help must document --force: exit=%d out=%q err=%q", code, stdout, stderr)
+	}
+	// Flags are completed by bash (--force) and fish (-l force); zsh completes
+	// command names only.
+	flagsByShell := map[string][]string{
+		"bash": {"--force", "--json"},
+		"fish": {"-l force", "-l json"},
+	}
+	for shell, flags := range flagsByShell {
+		out, stderr, code := runBP(t, "completion", shell)
+		if code != 0 {
+			t.Fatalf("completion %s failed: %d; stderr=%s", shell, code, stderr)
+		}
+		for _, flag := range flags {
+			if !strings.Contains(out, flag) {
+				t.Errorf("%s completion must mention %q", shell, flag)
+			}
+		}
+	}
+}

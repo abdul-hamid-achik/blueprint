@@ -16,7 +16,7 @@ command's usage and exits `0`.
 Validate a `.bp` file for syntax and semantic errors.
 
 ```bash
-bp check <file.bp> [--json]
+bp check <file.bp|dir> [more ...] [--json]
 ```
 
 **Flags:**
@@ -24,6 +24,9 @@ bp check <file.bp> [--json]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--json` | off | Output a machine-readable JSON result (for CI) instead of formatted text |
+
+Several paths, or a directory, switch to multi-file mode. See
+[Multiple files and directories](#multiple-files-and-directories) below.
 
 **What it checks:**
 - Lexer errors (invalid tokens, malformed literals)
@@ -51,6 +54,50 @@ bp check my-service.bp --json
 - `0` — no errors
 - `1` — one or more parse/semantic errors
 - `2` — the file could not be read
+
+---
+
+## Multiple files and directories
+
+`bp check`, `bp lint` and `bp fmt` accept more than one path, and any path may
+be a directory:
+
+- A directory expands recursively to its `*.bp` files, in sorted order. The
+  walk skips `node_modules`, `generated`, `dist`, `.blueprint`, and any
+  directory whose name starts with `.`. The directory argument itself is never
+  skipped, so `bp check .` works.
+- Include fragments are not standalone. A directory-discovered file that another
+  file in the same invocation `include`s is skipped. A file you name explicitly
+  is always processed, even when it is also included elsewhere.
+- Include fragments skipped by the directory walk are not formatted or checked
+  by `bp fmt --check`. Name a fragment explicitly to include it.
+- Duplicate paths are dropped, keeping the first occurrence.
+- Every file is processed. One failure does not stop the others. The exit code
+  is the most severe per-file code (the numerically largest from the table in
+  [Exit Codes](#exit-codes)).
+- A one-line summary goes to stderr, for example `3 files checked, 1 failed`.
+  A single regular file prints no summary and keeps its original output.
+- A path that does not exist, or a directory with no `.bp` files, is a usage
+  error. It exits `2` before any file is processed. A single missing file keeps
+  its original file-read error, which also exits `2`.
+
+**JSON for multiple files** (`--json`) is one document that wraps the
+single-file objects:
+
+```json
+{
+  "success": false,
+  "file_count": 3,
+  "failed_count": 1,
+  "files": [
+    { "filename": "api/users.bp", "success": true },
+    { "filename": "api/orders.bp", "success": false, "error_count": 1, "errors": [ ... ] }
+  ]
+}
+```
+
+Each entry in `files` has the same shape as the single-file `--json` output
+for that file, plus a `filename` key when the single-file object lacks one.
 
 ---
 
@@ -483,7 +530,7 @@ Format a `.bp` file or an include fragment that intentionally omits the root
 comments.
 
 ```bash
-bp fmt <file.bp> [--write] [--check]
+bp fmt <file.bp|dir> [more ...] [--write] [--check]
 ```
 
 **Flags:**
@@ -492,6 +539,11 @@ bp fmt <file.bp> [--write] [--check]
 |------|---------|-------------|
 | `--write` | false | Write formatted output back to the file |
 | `--check` | false | Check if file is already formatted; exit 1 if not (for CI) |
+
+Formatting several files, or a directory, requires `--write` or `--check`.
+Without either, the command is a usage error (exit `2`). With `--check`, each
+unformatted path is printed to stdout. See
+[Multiple files and directories](#multiple-files-and-directories).
 
 **Example:**
 
@@ -504,6 +556,12 @@ bp fmt my-service.bp --write
 
 # CI check (exits 1 if not formatted)
 bp fmt my-service.bp --check
+
+# Format every .bp file under api/ in place
+bp fmt api --write
+
+# CI check across a project (lists each unformatted file)
+bp fmt api services --check
 ```
 
 **Formatting rules:**
@@ -520,8 +578,46 @@ bp fmt my-service.bp --check
 Lint a `.bp` file for best practice violations.
 
 ```bash
-bp lint <file.bp>
+bp lint <file.bp|dir> [more ...] [--json]
 ```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | off | Output issues as JSON (for CI) instead of formatted text |
+
+Several paths, or a directory, switch to multi-file mode. See
+[Multiple files and directories](#multiple-files-and-directories).
+
+**JSON output** (single file):
+
+```json
+{
+  "success": true,
+  "filename": "my-service.bp",
+  "issue_count": 1,
+  "error_count": 0,
+  "warning_count": 1,
+  "issues": [
+    {
+      "file": "my-service.bp",
+      "rule": "intent-on-endpoints",
+      "severity": "warning",
+      "line": 45,
+      "column": 1,
+      "message": "Endpoint POST /api/items is missing an @ intent description",
+      "hint": "Add `@ \"describe what this endpoint does\"` before `POST /api/items`"
+    }
+  ]
+}
+```
+
+`severity` is `error`, `warning` or `info`. Parse, include and semantic
+failures appear as issues with `rule` set to `parse`, `include` or `semantic`
+(`severity` `error`). `line` and `column` are `0` when unknown. `success` is
+`false` when there is any error-severity issue. Multiple files use the wrapper
+described in [Multiple files and directories](#multiple-files-and-directories).
 
 **Rules:**
 
@@ -697,7 +793,7 @@ line-level unified diff per modified file (`---`/`+++`/`@@` hunks), plus
 new and deleted file summaries.
 
 ```bash
-bp diff <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply] [--exit-code] [--no-color]
+bp diff <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply [--force]] [--exit-code] [--no-color]
 ```
 
 The codegen manifest (`.blueprint/manifest.json`) is suppressed from output — its
@@ -717,6 +813,7 @@ Shells out to `diff -u` for the unified patch.
 | `--gen-tests` | off | Compare as if `bp build --gen-tests` were used (Node/Python only; Effect rejects the flag) |
 | `--gen-property-tests` | off | Node only. Compare output including deterministic property and implied contract suites; rejects unsupported routes just like `bp build` |
 | `--apply` | off | After showing the diff, actually write the changes (equivalent to running `bp build` afterwards) |
+| `--force` | off | Only with `--apply`. Same meaning as `bp build --force`: write into a non-empty `--out` directory that has no Blueprint manifest. Without `--apply` it is a usage error (exit `2`) |
 | `--exit-code` | off | Exit `1` if there are any changes — useful in CI / pre-commit hooks |
 | `--no-color` | off | Disable ANSI color in diff output |
 
@@ -731,6 +828,9 @@ bp diff my-service.bp --exit-code
 
 # Review then apply in one step.
 bp diff my-service.bp --apply
+
+# Apply into a directory bp did not create (overwrites that directory's files).
+bp diff my-service.bp --out ./existing-dir --apply --force
 ```
 
 ---
@@ -1021,7 +1121,7 @@ code without parsing command-specific output:
 |------|---------|
 | `0` | Success |
 | `1` | Validation error — parse/semantic errors from `bp check`/`bp build`/etc., lint errors, `bp fmt --check` on an unformatted file, a failed test run, an undocumented `bp explain <code>` |
-| `2` | Environment or file error — the input file couldn't be read, an unknown/malformed `--target` or flag, a required external tool is missing (`docker`, `uv`), an output-directory safety check failed (see `--force` on `bp build`) |
+| `2` | Environment or file error — the input file couldn't be read, an unknown/malformed `--target` or flag, a path argument of `bp check`/`bp lint`/`bp fmt` that doesn't exist or is a directory with no `.bp` files, `bp fmt` on several files without `--write`/`--check`, `bp diff --force` without `--apply`, a required external tool is missing (`docker`, `uv`), an output-directory safety check failed (see `--force` on `bp build`) |
 | `4` | Codegen error — the AST parsed and checked cleanly, but the target generator itself failed (e.g. an unsupported construct for `--target python`/`--target effect`) |
 
 `--help`/`-h` on any command always exits `0` after printing usage.

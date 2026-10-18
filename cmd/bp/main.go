@@ -214,21 +214,32 @@ func main() {
 	switch os.Args[1] {
 	case "check":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("check", "check <file.bp> [--json]",
-				"Validate a .bp file for syntax and semantic errors.",
+			printCommandHelp("check", "check <file.bp|dir> [more ...] [--json]",
+				"Validate .bp files for syntax and semantic errors. A directory is checked\nrecursively; several paths are checked in turn. See docs/cli-reference.md.",
 				[][2]string{
 					{"--json", "Output in JSON format (for CI)"},
 				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp check <file.bp> [--json]")
+			fmt.Fprintln(os.Stderr, "Usage: bp check <file.bp|dir> [more ...] [--json]")
 			os.Exit(1)
 		}
-		parsed, err := parseArgs(os.Args[3:], flagSpec{"--json": false})
+		parsed, err := parseArgs(os.Args[2:], flagSpec{"--json": false})
 		exitOnArgError(err)
-		exitOnArgError(rejectPositional(parsed.positional))
-		os.Exit(cmdCheck(os.Args[2], parsed.set["--json"]))
+		if len(parsed.positional) == 0 {
+			fmt.Fprintln(os.Stderr, "Usage: bp check <file.bp|dir> [more ...] [--json]")
+			os.Exit(1)
+		}
+		files, multi, err := resolveBPArgs(parsed.positional)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			os.Exit(2)
+		}
+		if !multi {
+			os.Exit(cmdCheck(files[0], parsed.set["--json"]))
+		}
+		os.Exit(runBPFiles(files, parsed.set["--json"], "checked", checkFile))
 	case "build":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("build", "build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--force]",
@@ -306,8 +317,8 @@ func main() {
 		os.Exit(cmdBuild(os.Args[2], outDir, targetNode, parsed.set["--react-query"], true, false))
 	case "fmt":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("fmt", "fmt <file.bp> [--write] [--check]",
-				"Format a .bp file or include fragment while preserving # comments. Prints formatted output to stdout by default.",
+			printCommandHelp("fmt", "fmt <file.bp|dir> [more ...] [--write] [--check]",
+				"Format a .bp file or include fragment while preserving # comments. Prints formatted output to stdout by default.\nSeveral files or a directory require --write or --check.",
 				[][2]string{
 					{"--write", "Write formatted output back to the file"},
 					{"--check", "Check if file is formatted; exit 1 if not (for CI)"},
@@ -315,28 +326,63 @@ func main() {
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp fmt <file.bp> [--write] [--check]")
+			fmt.Fprintln(os.Stderr, "Usage: bp fmt <file.bp|dir> [more ...] [--write] [--check]")
 			os.Exit(1)
 		}
-		parsed, err := parseArgs(os.Args[3:], flagSpec{"--write": false, "--check": false})
+		parsed, err := parseArgs(os.Args[2:], flagSpec{"--write": false, "--check": false})
 		exitOnArgError(err)
-		exitOnArgError(rejectPositional(parsed.positional))
-		os.Exit(cmdFmt(os.Args[2], parsed.set["--write"], parsed.set["--check"]))
+		if len(parsed.positional) == 0 {
+			fmt.Fprintln(os.Stderr, "Usage: bp fmt <file.bp|dir> [more ...] [--write] [--check]")
+			os.Exit(1)
+		}
+		files, multi, err := resolveBPArgs(parsed.positional)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			os.Exit(2)
+		}
+		write, check := parsed.set["--write"], parsed.set["--check"]
+		if !multi {
+			os.Exit(cmdFmt(files[0], write, check))
+		}
+		if !write && !check {
+			fmt.Fprintln(os.Stderr, "Error: formatting multiple files (or a directory) requires --write or --check")
+			os.Exit(2)
+		}
+		verb := "checked"
+		if write {
+			verb = "formatted"
+		}
+		os.Exit(runBPFiles(files, false, verb, func(file string, _ bool, _, _ io.Writer) int {
+			return cmdFmt(file, write, check)
+		}))
 	case "lint":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("lint", "lint <file.bp>",
-				"Lint a .bp file for best practice violations.",
-				nil)
+			printCommandHelp("lint", "lint <file.bp|dir> [more ...] [--json]",
+				"Lint .bp files for best practice violations. A directory is linted\nrecursively; several paths are linted in turn. See docs/cli-reference.md.",
+				[][2]string{
+					{"--json", "Output issues as JSON (for CI)"},
+				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp lint <file.bp>")
+			fmt.Fprintln(os.Stderr, "Usage: bp lint <file.bp|dir> [more ...] [--json]")
 			os.Exit(1)
 		}
-		parsed, err := parseArgs(os.Args[3:], flagSpec{})
+		parsed, err := parseArgs(os.Args[2:], flagSpec{"--json": false})
 		exitOnArgError(err)
-		exitOnArgError(rejectPositional(parsed.positional))
-		os.Exit(cmdLint(os.Args[2]))
+		if len(parsed.positional) == 0 {
+			fmt.Fprintln(os.Stderr, "Usage: bp lint <file.bp|dir> [more ...] [--json]")
+			os.Exit(1)
+		}
+		files, multi, err := resolveBPArgs(parsed.positional)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			os.Exit(2)
+		}
+		if !multi {
+			os.Exit(cmdLint(files[0], parsed.set["--json"]))
+		}
+		os.Exit(runBPFiles(files, parsed.set["--json"], "linted", lintFile))
 	case "docs":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("docs", "docs <file.bp> [--out <file.json>]",
@@ -527,7 +573,7 @@ func main() {
 		os.Exit(cmdEject(os.Args[2]))
 	case "diff":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("diff", "diff <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply] [--exit-code] [--no-color]",
+			printCommandHelp("diff", "diff <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply [--force]] [--exit-code] [--no-color]",
 				"Show what changes bp build would make, without overwriting.",
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
@@ -537,22 +583,27 @@ func main() {
 					{"--gen-tests", "Compare the auto-generated test harness (node/python only; effect rejects)"},
 					{"--gen-property-tests", "Compare output including deterministic Node endpoint properties (implies --gen-tests)"},
 					{"--apply", "Write the changes (equivalent to bp build) after showing the diff"},
+					{"--force", "With --apply: overwrite a non-empty --out directory even if it has no Blueprint manifest"},
 					{"--exit-code", "Exit 1 if there are any changes (for CI)"},
 					{"--no-color", "Disable ANSI color in diff output"},
 				})
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply] [--exit-code] [--no-color]")
+			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply [--force]] [--exit-code] [--no-color]")
 			os.Exit(1)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{
 			"--out": true, "--target": true, "--react-query": false,
 			"--frontend-only": false, "--gen-tests": false, "--gen-property-tests": false, "--apply": false,
-			"--exit-code": false, "--no-color": false,
+			"--force": false, "--exit-code": false, "--no-color": false,
 		})
 		exitOnArgError(err)
 		exitOnArgError(rejectPositional(parsed.positional))
+		if parsed.set["--force"] && !parsed.set["--apply"] {
+			fmt.Fprintln(os.Stderr, "Error: --force only applies with --apply")
+			os.Exit(2)
+		}
 		outDir := "generated"
 		if v, ok := parsed.values["--out"]; ok {
 			outDir = v
@@ -562,7 +613,7 @@ func main() {
 			target = v
 		}
 		os.Exit(cmdDiffWithPropertyTests(os.Args[2], outDir, target, parsed.set["--react-query"], parsed.set["--frontend-only"],
-			parsed.set["--gen-tests"], parsed.set["--gen-property-tests"], parsed.set["--apply"], parsed.set["--exit-code"], parsed.set["--no-color"]))
+			parsed.set["--gen-tests"], parsed.set["--gen-property-tests"], parsed.set["--apply"], parsed.set["--force"], parsed.set["--exit-code"], parsed.set["--no-color"]))
 	case "deploy":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("deploy", "deploy <file.bp> [--out <dir>] [--tag <tag>] [--target <name>] [--no-run]",
@@ -701,12 +752,19 @@ func main() {
 }
 
 func cmdCheck(filename string, jsonOutput bool) int {
+	return checkFile(filename, jsonOutput, os.Stdout, os.Stderr)
+}
+
+// checkFile is cmdCheck with its output streams injected. Multi-file mode
+// (paths.go) uses it to capture each file's --json object. Text diagnostics go
+// to stderr; the OK line and JSON documents go to stdout.
+func checkFile(filename string, jsonOutput bool, stdout, stderr io.Writer) int {
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		if jsonOutput {
-			printJSONError("read_error", err.Error())
+			printJSONErrorTo(stdout, "read_error", err.Error())
 		} else {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			fmt.Fprintf(stderr, "Error: %s\n", err)
 		}
 		return 2
 	}
@@ -715,12 +773,12 @@ func cmdCheck(filename string, jsonOutput bool) int {
 
 	if len(parseErrors) > 0 {
 		if jsonOutput {
-			printJSONCheckResult(filename, false, parseErrors, nil)
+			printJSONCheckResultTo(stdout, filename, false, parseErrors, nil)
 		} else {
 			for _, e := range parseErrors {
-				fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
+				fmt.Fprintln(stderr, parser.FormatError(e, src))
 			}
-			fmt.Fprintf(os.Stderr, "\n%d syntax error(s) found\n", len(parseErrors))
+			fmt.Fprintf(stderr, "\n%d syntax error(s) found\n", len(parseErrors))
 		}
 		return 1
 	}
@@ -728,10 +786,10 @@ func cmdCheck(filename string, jsonOutput bool) int {
 	// Resolve include statements — merge blocks from included files
 	if errs := resolveIncludes(file, filename); len(errs) > 0 {
 		if jsonOutput {
-			printJSONError("include_error", errs[0])
+			printJSONErrorTo(stdout, "include_error", errs[0])
 		} else {
 			for _, e := range errs {
-				fmt.Fprintln(os.Stderr, e)
+				fmt.Fprintln(stderr, e)
 			}
 		}
 		return 1
@@ -742,20 +800,20 @@ func cmdCheck(filename string, jsonOutput bool) int {
 
 	if len(checkErrors) > 0 {
 		if jsonOutput {
-			printJSONCheckResult(filename, false, nil, checkErrors)
+			printJSONCheckResultTo(stdout, filename, false, nil, checkErrors)
 		} else {
 			for _, e := range checkErrors {
-				fmt.Fprintln(os.Stderr, checker.FormatCheckError(e, src))
+				fmt.Fprintln(stderr, checker.FormatCheckError(e, src))
 			}
-			fmt.Fprintf(os.Stderr, "\n%d semantic error(s) found\n", len(checkErrors))
+			fmt.Fprintf(stderr, "\n%d semantic error(s) found\n", len(checkErrors))
 		}
 		return 1
 	}
 
 	if jsonOutput {
-		printJSONCheckResult(filename, true, nil, nil)
+		printJSONCheckResultTo(stdout, filename, true, nil, nil)
 	} else {
-		fmt.Printf("OK: %s\n", filename)
+		fmt.Fprintf(stdout, "OK: %s\n", filename)
 	}
 	return 0
 }
@@ -1041,51 +1099,91 @@ func cmdFmt(filename string, write, check bool) int {
 	return 0
 }
 
-func cmdLint(filename string) int {
+func cmdLint(filename string, jsonOutput bool) int {
+	return lintFile(filename, jsonOutput, os.Stdout, os.Stderr)
+}
+
+// lintFile is cmdLint with its output streams injected (see checkFile). The
+// exit code is 1 only when there is at least one error-level issue or a
+// parse/include/semantic failure; warnings alone exit 0.
+func lintFile(filename string, jsonOutput bool, stdout, stderr io.Writer) int {
 	src, err := os.ReadFile(filename)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		if jsonOutput {
+			printJSONErrorTo(stdout, "read_error", err.Error())
+		} else {
+			fmt.Fprintf(stderr, "Error: %s\n", err)
+		}
 		return 2
 	}
 
 	file, parseErrors := parser.ParseFile(filename, src)
 	if len(parseErrors) > 0 {
-		for _, e := range parseErrors {
-			fmt.Fprintln(os.Stderr, parser.FormatError(e, src))
+		if jsonOutput {
+			result := lintJSONResult{Filename: filename, Issues: []lintJSONIssue{}}
+			for _, e := range parseErrors {
+				result.Issues = append(result.Issues, lintJSONIssue{File: e.Loc.File, Rule: "parse", Severity: "error", Line: e.Loc.Line, Column: e.Loc.Col, Message: e.Message, Hint: e.Hint})
+			}
+			return printLintJSON(stdout, result)
 		}
-		fmt.Fprintf(os.Stderr, "\n%d syntax error(s) found\n", len(parseErrors))
+		for _, e := range parseErrors {
+			fmt.Fprintln(stderr, parser.FormatError(e, src))
+		}
+		fmt.Fprintf(stderr, "\n%d syntax error(s) found\n", len(parseErrors))
 		return 1
 	}
 
 	if errs := resolveIncludes(file, filename); len(errs) > 0 {
+		if jsonOutput {
+			result := lintJSONResult{Filename: filename, Issues: []lintJSONIssue{}}
+			for _, e := range errs {
+				result.Issues = append(result.Issues, lintJSONIssue{File: filename, Rule: "include", Severity: "error", Message: e})
+			}
+			return printLintJSON(stdout, result)
+		}
 		for _, e := range errs {
-			fmt.Fprintln(os.Stderr, e)
+			fmt.Fprintln(stderr, e)
 		}
 		return 1
 	}
 
 	checkErrors := checker.Check(file)
 	if len(checkErrors) > 0 {
-		for _, e := range checkErrors {
-			fmt.Fprintln(os.Stderr, checker.FormatCheckError(e, src))
+		if jsonOutput {
+			result := lintJSONResult{Filename: filename, Issues: []lintJSONIssue{}}
+			for _, e := range checkErrors {
+				result.Issues = append(result.Issues, lintJSONIssue{File: e.Loc.File, Rule: "semantic", Severity: "error", Line: e.Loc.Line, Column: e.Loc.Col, Message: e.Message, Hint: e.Hint})
+			}
+			return printLintJSON(stdout, result)
 		}
-		fmt.Fprintf(os.Stderr, "\n%d semantic error(s) found\n", len(checkErrors))
+		for _, e := range checkErrors {
+			fmt.Fprintln(stderr, checker.FormatCheckError(e, src))
+		}
+		fmt.Fprintf(stderr, "\n%d semantic error(s) found\n", len(checkErrors))
 		return 1
 	}
 
 	issues := linter.Lint(file)
 
+	if jsonOutput {
+		result := lintJSONResult{Filename: filename, Issues: []lintJSONIssue{}}
+		for _, issue := range issues {
+			result.Issues = append(result.Issues, lintJSONIssue{File: issue.File, Rule: issue.Rule, Severity: issue.Level, Line: issue.Line, Column: issue.Col, Message: issue.Message, Hint: issue.Hint})
+		}
+		return printLintJSON(stdout, result)
+	}
+
 	if len(issues) == 0 {
-		fmt.Printf("OK: %s — no lint issues\n", filename)
+		fmt.Fprintf(stdout, "OK: %s — no lint issues\n", filename)
 		return 0
 	}
 
 	errorCount := 0
 	warningCount := 0
 	for _, issue := range issues {
-		fmt.Println(issue.String())
+		fmt.Fprintln(stdout, issue.String())
 		if issue.Hint != "" {
-			fmt.Printf("  hint: %s\n", issue.Hint)
+			fmt.Fprintf(stdout, "  hint: %s\n", issue.Hint)
 		}
 		switch issue.Level {
 		case "error":
@@ -1095,7 +1193,7 @@ func cmdLint(filename string) int {
 		}
 	}
 
-	fmt.Printf("\n%d issue(s): %d error(s), %d warning(s)\n", len(issues), errorCount, warningCount)
+	fmt.Fprintf(stdout, "\n%d issue(s): %d error(s), %d warning(s)\n", len(issues), errorCount, warningCount)
 
 	if errorCount > 0 {
 		return 1
@@ -1721,10 +1819,13 @@ func isManifestPath(dir, path string) bool {
 }
 
 func cmdDiff(filename, outDir, target string, reactQuery, frontendOnly, genTests, apply, exitOnDiff, noColor bool) int {
-	return cmdDiffWithPropertyTests(filename, outDir, target, reactQuery, frontendOnly, genTests, false, apply, exitOnDiff, noColor)
+	return cmdDiffWithPropertyTests(filename, outDir, target, reactQuery, frontendOnly, genTests, false, apply, false, exitOnDiff, noColor)
 }
 
-func cmdDiffWithPropertyTests(filename, outDir, target string, reactQuery, frontendOnly, genTests, propertyTests, apply, exitOnDiff, noColor bool) int {
+// cmdDiffWithPropertyTests shows the diff and, with apply, runs the build. force
+// is passed through to that build with the same meaning as `bp build --force`
+// (see checkOutDirSafety). It has no effect without apply.
+func cmdDiffWithPropertyTests(filename, outDir, target string, reactQuery, frontendOnly, genTests, propertyTests, apply, force, exitOnDiff, noColor bool) int {
 	canonical, err := resolveTarget(target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
@@ -1888,7 +1989,7 @@ func cmdDiffWithPropertyTests(filename, outDir, target string, reactQuery, front
 	if apply {
 		fmt.Println()
 		fmt.Println("Applying changes...")
-		if code := cmdBuildWithPropertyOptions(filename, outDir, target, reactQuery, frontendOnly, false, genTests, propertyTests, false); code != 0 {
+		if code := cmdBuildWithPropertyOptions(filename, outDir, target, reactQuery, frontendOnly, false, genTests, propertyTests, force); code != 0 {
 			return code
 		}
 		return 0
@@ -2167,7 +2268,7 @@ type cliCommand struct {
 }
 
 var cliCommands = []cliCommand{
-	{name: "check", desc: "Validate syntax and semantics", takesBpFile: true},
+	{name: "check", desc: "Validate syntax and semantics (files or directories)", takesBpFile: true},
 	{name: "build", desc: "Compile .bp to JavaScript/TypeScript", takesBpFile: true},
 	{name: "frontend", desc: "Generate standalone frontend SDK package", takesBpFile: true},
 	{name: "diff", desc: "Show changes without overwriting", takesBpFile: true},
@@ -2177,8 +2278,8 @@ var cliCommands = []cliCommand{
 	{name: "migrate", desc: "Run target migration tooling", takesBpFile: true},
 	{name: "generate", desc: "Resolve @> slots via LLM", takesBpFile: true},
 	{name: "docs", desc: "Generate OpenAPI 3.1 JSON", takesBpFile: true},
-	{name: "fmt", desc: "Format a .bp file", takesBpFile: true},
-	{name: "lint", desc: "Lint for best practices", takesBpFile: true},
+	{name: "fmt", desc: "Format .bp files (files or directories)", takesBpFile: true},
+	{name: "lint", desc: "Lint for best practices (files or directories)", takesBpFile: true},
 	{name: "stats", desc: "Show code statistics", takesBpFile: true},
 	{name: "deploy", desc: "Build and run Docker container", takesBpFile: true},
 	{name: "init", desc: "Scaffold a new project"},
@@ -2397,7 +2498,7 @@ func printUsage() {
 	fmt.Println("Usage: bp <command> [arguments]")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  check      <file.bp>                       Validate syntax and semantics")
+	fmt.Println("  check      <file.bp|dir>... [--json]       Validate syntax and semantics")
 	fmt.Println("  build      <file.bp> [--out dir]           Compile .bp to JavaScript/TypeScript")
 	fmt.Println("  frontend   <file.bp> [--out dir]           Generate the standalone frontend SDK package")
 	fmt.Println("  frontend   publish <file.bp>               Build and dry-run the frontend SDK publish flow")
@@ -2408,8 +2509,8 @@ func printUsage() {
 	fmt.Println("  migrate    <file.bp> [generate|push|…]     Build and run drizzle-kit (node) or alembic (--target python)")
 	fmt.Println("  generate   <file.bp> [--write]             Resolve @> slots via LLM (needs ANTHROPIC_API_KEY)")
 	fmt.Println("  docs       <file.bp> [--out file.json]     Generate OpenAPI 3.1 JSON spec")
-	fmt.Println("  fmt        <file.bp> [--write]             Format a .bp file")
-	fmt.Println("  lint       <file.bp>                       Lint a .bp file for best practices")
+	fmt.Println("  fmt        <file.bp|dir>... [--write]      Format .bp files (several need --write or --check)")
+	fmt.Println("  lint       <file.bp|dir>... [--json]       Lint .bp files for best practices")
 	fmt.Println("  init       [name] [--template <name>]      Scaffold a new Blueprint project (--list-templates)")
 	fmt.Println("  import     [path] --from ts                Scaffold a rewrite; handler bodies become loud TODO/501 stubs")
 	fmt.Println("  eject      <dir>                           Remove Blueprint markers from generated code")
@@ -2543,6 +2644,10 @@ func min3(a, b, c int) int {
 // JSON output helpers
 
 func printJSONError(errorType, message string) {
+	printJSONErrorTo(os.Stdout, errorType, message)
+}
+
+func printJSONErrorTo(w io.Writer, errorType, message string) {
 	output := map[string]interface{}{
 		"success": false,
 		"error": map[string]string{
@@ -2550,10 +2655,14 @@ func printJSONError(errorType, message string) {
 			"message": message,
 		},
 	}
-	printJSON(output)
+	printJSONTo(w, output)
 }
 
 func printJSONCheckResult(filename string, valid bool, parseErrors []parser.ParseError, checkErrors []checker.CheckError) {
+	printJSONCheckResultTo(os.Stdout, filename, valid, parseErrors, checkErrors)
+}
+
+func printJSONCheckResultTo(w io.Writer, filename string, valid bool, parseErrors []parser.ParseError, checkErrors []checker.CheckError) {
 	output := map[string]interface{}{
 		"success":  valid,
 		"filename": filename,
@@ -2594,11 +2703,15 @@ func printJSONCheckResult(filename string, valid bool, parseErrors []parser.Pars
 		output["error_count"] = len(errors)
 	}
 
-	printJSON(output)
+	printJSONTo(w, output)
 }
 
 func printJSON(v interface{}) {
-	encoder := json.NewEncoder(os.Stdout)
+	printJSONTo(os.Stdout, v)
+}
+
+func printJSONTo(w io.Writer, v interface{}) {
+	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(v); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to encode JSON output: %v\n", err)

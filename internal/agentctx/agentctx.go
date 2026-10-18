@@ -284,11 +284,11 @@ func blueprintMeta(version string) BlueprintMeta {
 // see the same list. New commands added in main.go should append here.
 func commandRegistry() []CommandInfo {
 	return []CommandInfo{
-		{"check", "bp check <file.bp> [--json]", "Parse + semantic check."},
+		{"check", "bp check <file.bp|dir>... [--json]", "Parse + semantic check. A directory is checked recursively; several files exit with the most severe per-file code."},
 		{"build", "bp build <file.bp> [--out <dir>] [--target node|python|effect] [--gen-tests] [--gen-property-tests]", "Compile to a target project; tests are Node/Python, properties are Node-only, and unsupported target flags fail closed (idempotent)."},
-		{"diff", "bp diff <file.bp> [--out <dir>] [--gen-property-tests] [--exit-code] [--apply]", "Show pending changes; --exit-code is the CI idempotency gate."},
-		{"fmt", "bp fmt <file.bp> [--write] [--check]", "Format a .bp file (round-trip safe)."},
-		{"lint", "bp lint <file.bp>", "Stylistic lint."},
+		{"diff", "bp diff <file.bp> [--out <dir>] [--gen-property-tests] [--exit-code] [--apply [--force]]", "Show pending changes; --exit-code is the CI idempotency gate."},
+		{"fmt", "bp fmt <file.bp|dir>... [--write|--check]", "Format .bp files (round-trip safe). Several files or a directory need --write or --check."},
+		{"lint", "bp lint <file.bp|dir>... [--json]", "Stylistic lint. --json emits issues with file, rule, severity, line, column, message, hint."},
 		{"docs", "bp docs <file.bp> [--out <file.json>]", "Emit OpenAPI 3.1 from declared inputs/outputs."},
 		{"run", "bp run <file.bp> [--out <dir>]", "Build + start the server."},
 		{"dev", "bp dev <file.bp> [--out <dir>]", "Watch + rebuild + restart on change."},

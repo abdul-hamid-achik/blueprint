@@ -386,11 +386,11 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
 
 | Command | What it does |
 |---------|--------------|
-| `bp check <file> [--json]` | Validate syntax and semantics |
+| `bp check <file\|dir> [more ...] [--json]` | Validate syntax and semantics; a directory is checked recursively |
 | `bp build <file> [--target node\|python\|effect] [--out <dir>] [--gen-tests] [--gen-property-tests]` | Generate a target project; tests support Node/Python, while properties, `--react-query`, and `--frontend-only` are Node-only |
 | `bp frontend <file>` | Generate only the standalone frontend SDK package |
 | `bp frontend publish <file>` | Build and dry-run the frontend package publish flow |
-| `bp diff <file> [--target ...] [--apply] [--exit-code]` | Preview generated changes or use them as a CI gate |
+| `bp diff <file> [--target ...] [--apply [--force]] [--exit-code]` | Preview generated changes or use them as a CI gate |
 | `bp run <file>` / `bp dev <file>` | Build and start the Node service, once or in watch mode |
 | `bp test <file> [--target node\|python] [--gen-property-tests]` | Run PGlite-backed Vitest or Docker/testcontainers-backed pytest; properties are Node-only |
 | `bp migrate <file> [generate\|push\|studio\|check] [--target node\|python]` | Run Drizzle Kit or Alembic; Python does not provide `studio` |
@@ -398,7 +398,7 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
 | `bp generate <file> [--write]` | Resolve quoted `@>` slots to Blueprint statements; `--write` edits the `.bp` file |
 | `bp init [name] [--template <name>]` / `bp init --list-templates` | Scaffold a starter project (`default`, `minimal`, `crud`, `auth`, `worker`) |
 | `bp import [path] --from ts` | Scaffold `.bp` structure from static TypeScript facts; all handler bodies become TODO/501 stubs |
-| `bp fmt <file>` / `bp lint <file>` | Format source or lint best practices |
+| `bp fmt <file\|dir> [--write\|--check]` / `bp lint <file\|dir> [--json]` | Format source (several files need `--write` or `--check`) or lint best practices |
 | `bp docs <file>` | Generate an OpenAPI 3.1 document |
 | `bp stats <file>` / `bp doctor` | Inspect a Blueprint or the local toolchain environment |
 | `bp explain <code>` | Explain a structured diagnostic code |
