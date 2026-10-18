@@ -4,6 +4,65 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added (2026-10-18 tooling and completion pass)
+
+- **The language server gained find-references, rename, quick fixes,
+  formatting, outline, and folding.** References and rename resolve symbols
+  through a scope-aware index that mirrors checker scoping (models, enums,
+  types, `fn`, `pipe`, middleware, external services, endpoint-local bindings,
+  and interpolation roots). They work within the open document, and renaming a
+  path-parameter input also renames its `:param` segment. Rename refuses
+  invalid, reserved, colliding, or capturing names and any edit that adds a
+  checker error. Did-you-mean diagnostics carry a quick-fix code action.
+  Formatting uses the `bp fmt` printer and returns no edit when the output is
+  unstable or would drop comments.
+- **`bp init` starter templates.** `bp init [name] --template
+  default|minimal|crud|auth|worker` (and `--list-templates`) scaffolds a
+  `.bp` file plus `.gitignore` and `README.md`, never overwriting existing
+  files. Project names are normalized and validated before anything is
+  written.
+- **`bp check`, `bp lint`, and `bp fmt` accept several files and
+  directories.** Directories expand recursively to `*.bp` files (skipping
+  `node_modules`, `generated`, `dist`, and dot directories, plus fragments that
+  another file in the run includes), every file is processed, and `--json`
+  wraps the per-file results. `bp lint --json` is new,
+  and `bp diff --apply --force` writes into a non-empty directory without a
+  manifest.
+- **Six lint rules:** `unused-secret`, `unused-env`, `unused-function`,
+  `fetch-without-guard`, `cache-on-non-get` (warnings), and `unpaginated-list`
+  (info).
+- **Every checker error carries a structured code (C001–C051).** C016–C049
+  name the previously uncoded checker errors, C050 reports binary operators
+  whose operands have incompatible known types, and C051 rejects an unknown
+  `log ... level(...)` instead of letting it crash the generated service. A
+  catalog test requires each code's first documented example to reproduce it.
+- **Node endpoint `cache <duration>` sets a real `Cache-Control` header** on
+  2xx GET responses: `private` when the endpoint or blueprint has `use`,
+  `auth`, or `limit` metadata or the body reads header, cookie, session, or
+  auth state, and `public` otherwise. Malformed durations fail codegen.
+- **STREAM events fan out across instances through Redis** when `REDIS_URL` is
+  set (`bp:stream:<event>` channels, origin-deduplicated). Subscribe handlers
+  still run only on the emitting instance.
+- **STREAM and WS endpoints validate `<-` path-parameter inputs** before the
+  stream or upgrade starts. An input must name a `:param` segment and use a
+  primitive or inline enum type (C022).
+- **Python translates `pipe` declarations** to `src/pipes/<name>.py` for the
+  inline subset (guards, status-less `->`, block literal bindings, and declared
+  `fn`/`pipe` calls), and **`log` uses stdlib `logging`** through
+  `src/lib/log.py` (debug/info to stdout, warn/error to stderr).
+
+### Fixed (2026-10-18 tooling and completion pass)
+
+- **`bp docs` output passes Redocly with no errors**, and STREAM/WS path
+  parameters now carry the schema of their declared `<-` input instead of a
+  plain string.
+- **WS rooms compile without a cache or queue `REDIS_URL`.** The WS Redis
+  backbone read `env.REDIS_URL` from an env module that did not declare it,
+  and `package.json` omitted the `redis` dependency.
+- **The language server no longer reports errors on files that open with a
+  file-level `@` intent**, which included every example. Hover and definition
+  also work from the full AST on those files.
+
 ### Added (2026-07-14 audit and polish pass)
 
 - **A deliberately conservative `bp import` scaffolder** can recover static
