@@ -87,10 +87,13 @@ jobs:
           for dir in /tmp/hello /tmp/todo /tmp/auth /tmp/ecommerce /tmp/chat /tmp/full; do
             echo "=== Validating TypeScript in $dir ==="
             cd "$dir"
-            # `--no-save` keeps package.json bp-generated; otherwise the
-            # next step's `bp diff --exit-code` flags package.json as
-            # modified (npm would have appended these to devDependencies).
-            npm install --no-save typescript @types/node @types/pg
+            # typescript and the @types packages are already generated
+            # devDependencies, so a plain install covers them. Naming them
+            # with `--no-save` crashes npm 10.9.9 (Node 22.23.3) with
+            # "Cannot read properties of null (reading 'edgesOut')".
+            # `--no-package-lock` keeps the output dir bp-generated for the
+            # next step's `bp diff --exit-code`.
+            npm install --no-package-lock
             npx tsc --noEmit --skipLibCheck
           done
 
