@@ -172,6 +172,9 @@ func TestGen_PropertyTests_RejectImpossibleFormattedStringDomains(t *testing.T) 
 	}{
 		{name: "email", format: "email", max: "5", want: "minimum length is 6"},
 		{name: "url", format: "url", max: "10", want: "minimum length is 11"},
+		{name: "uuid", format: "uuid", max: "10", want: "length 36-36"},
+		{name: "ip", format: "ip", max: "6", want: "length 7-15"},
+		{name: "date", format: "date", max: "9", want: "length 10-10"},
 	}
 
 	for _, tc := range tests {
@@ -494,5 +497,34 @@ func TestGen_PropertyTests_RejectFrontendOnly(t *testing.T) {
 	files, err := New().WithFrontendOnly(true).WithPropertyTests(true).Files(file)
 	if err == nil || !strings.Contains(err.Error(), "runnable Node service") {
 		t.Fatalf("expected frontend-only property rejection, got files=%d err=%v", len(files), err)
+	}
+}
+
+func TestGen_FormatConstraintsAreEnforcedAndGenerated(t *testing.T) {
+	src := `blueprint "formats" {
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+
+POST /api/checks {
+  <- ref   string  required  format(uuid)
+  <- addr  string  required  format(ip)
+  <- day   string  required  format(date)
+  -> 200 { ref: ref, addr: addr, day: day }
+}
+`
+	outDir := buildWithPropertyTests(t, src)
+	schemas := readGen(t, outDir, "src/validation/schemas.ts")
+	for _, want := range []string{"ref: z.string().uuid()", "addr: z.string().ip()", "day: z.string().date()"} {
+		if !strings.Contains(schemas, want) {
+			t.Errorf("validation schema missing %q, got:\n%s", want, schemas)
+		}
+	}
+	property := readGen(t, outDir, "test/generated/checks.property.test.ts")
+	for _, want := range []string{"ref: fc.uuid()", "addr: fc.ipV4()", "day: fc.date({", ".toISOString().slice(0, 10)"} {
+		if !strings.Contains(property, want) {
+			t.Errorf("property test missing %q, got:\n%s", want, property)
+		}
 	}
 }

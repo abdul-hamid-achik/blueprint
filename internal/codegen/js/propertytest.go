@@ -676,11 +676,33 @@ func propertyStringArbitrary(constraints []*ast.Constraint_) (string, error) {
 		}
 	}
 	var base string
+	// fixedLength formats always produce values of one length range; the
+	// declared min/max must leave room for it.
+	fixedLength := func(name string, shortest, longest int) error {
+		if max < shortest || min > longest {
+			return fmt.Errorf("%s length constraints exclude all generated %s values (length %d-%d)", name, name, shortest, longest)
+		}
+		return nil
+	}
 	switch format {
-	case "", "uuid", "ip", "date":
-		// Node's constraintsToZod currently enforces email/url only. Mirror the
-		// executable schema instead of promising a stricter generator contract.
+	case "":
 		base = fmt.Sprintf("fc.string({ minLength: %d, maxLength: %d })", min, max)
+	case "uuid":
+		if err := fixedLength("uuid", 36, 36); err != nil {
+			return "", err
+		}
+		return "fc.uuid()", nil
+	case "ip":
+		// Zod's .ip() accepts IPv4 and IPv6; IPv4 keeps lengths predictable.
+		if err := fixedLength("ip", 7, 15); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("fc.ipV4().filter((value) => value.length >= %d && value.length <= %d)", min, max), nil
+	case "date":
+		if err := fixedLength("date", 10, 10); err != nil {
+			return "", err
+		}
+		return "fc.date({ min: new Date('1970-01-01T00:00:00.000Z'), max: new Date('2099-12-31T00:00:00.000Z'), noInvalidDate: true }).map((value) => value.toISOString().slice(0, 10))", nil
 	case "email":
 		// fast-check's shortest email is a@a.aa: one local-part
 		// character plus its shortest generated dotted domain.

@@ -338,6 +338,28 @@ POST /api/items {
 	}
 }
 
+func TestGenerateOpenAPI_StringFormats(t *testing.T) {
+	spec := parseAndGenOpenAPI(t, openAPIHeader+`
+POST /api/checks {
+  <- ref   string  required  format(uuid)
+  <- addr  string  required  format(ip)
+  <- day   string  required  format(date)
+  -> 200 "ok"
+}
+`)
+	body := openAPIOperation(t, spec, "/api/checks", "post")["requestBody"].(map[string]any)
+	props := body["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)["properties"].(map[string]any)
+	if got := props["ref"].(map[string]any)["format"]; got != "uuid" {
+		t.Errorf("ref format = %v, want uuid", got)
+	}
+	if got := props["day"].(map[string]any)["format"]; got != "date" {
+		t.Errorf("day format = %v, want date", got)
+	}
+	if got, _ := props["addr"].(map[string]any)["anyOf"].([]any); len(got) != 2 {
+		t.Errorf("addr = %v, want anyOf ipv4/ipv6", props["addr"])
+	}
+}
+
 func TestGenerateOpenAPI_NoRequestBodyWhenOnlyPathInputs(t *testing.T) {
 	spec := parseAndGenOpenAPI(t, openAPIHeader+`
 POST /api/items/:id/publish {

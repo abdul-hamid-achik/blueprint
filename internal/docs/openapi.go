@@ -1029,6 +1029,15 @@ func primitiveToSchema(name string, constraints []*ast.Constraint_) map[string]a
 					return map[string]any{"type": "string", "format": "email"}
 				case "url", "uri":
 					return map[string]any{"type": "string", "format": "uri"}
+				case "uuid":
+					return map[string]any{"type": "string", "format": "uuid"}
+				case "date":
+					return map[string]any{"type": "string", "format": "date"}
+				case "ip":
+					return map[string]any{"type": "string", "anyOf": []any{
+						map[string]any{"format": "ipv4"},
+						map[string]any{"format": "ipv6"},
+					}}
 				}
 			}
 		}

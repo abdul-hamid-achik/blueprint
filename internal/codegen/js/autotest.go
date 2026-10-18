@@ -560,6 +560,10 @@ func stringSample(constraints []*ast.Constraint_) string {
 				return "https://example.com"
 			case "uuid":
 				return zeroUUID
+			case "ip":
+				return "127.0.0.1"
+			case "date":
+				return "2026-01-01"
 			}
 		}
 	}

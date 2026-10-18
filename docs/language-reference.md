@@ -363,7 +363,7 @@ emits an importable empty schema/Base so migration tooling remains valid.
 | `ref(model)` | Foreign key | `.references(() => model.id)` |
 | `min(value)` | Min value or length | Zod `.min()` |
 | `max(value)` | Max value or length | Zod `.max()` |
-| `format(kind)` | Format validation | Zod `.email()`, `.url()`, etc. |
+| `format(kind)` | Format validation on `string` (`email`, `url`, `uuid`, `ip`, `date`) | Zod `.email()`, `.url()`, `.uuid()`, `.ip()`, `.date()` |
 
 ### Computed Fields
 

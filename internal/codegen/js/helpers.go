@@ -782,10 +782,17 @@ func constraintsToZod(constraints []*ast.Constraint_) string {
 		case "max":
 			validation = append(validation, fmt.Sprintf(".max(%s)", exprToJS(c.Value)))
 		case "format":
-			if s := exprToString(c.Value); s == "email" {
+			switch exprToString(c.Value) {
+			case "email":
 				validation = append(validation, ".email()")
-			} else if s == "url" {
+			case "url":
 				validation = append(validation, ".url()")
+			case "uuid":
+				validation = append(validation, ".uuid()")
+			case "ip":
+				validation = append(validation, ".ip()")
+			case "date":
+				validation = append(validation, ".date()")
 			}
 		case "default":
 			val := exprToJS(c.Value)
