@@ -621,6 +621,98 @@ STREAM /events/:record_id {
 	expectNoErrors(t, errs)
 }
 
+func TestRealtimeInputsMustBePathParameters(t *testing.T) {
+	errs := check(t, header+`
+WS /ws/rooms/:id {
+  <- token string
+  on_connect {
+    -> { id: id }
+  }
+}
+
+STREAM /events/:record_id {
+  <- other uuid
+  stream {
+    |> on event(updated) {
+      -> { id: record_id }
+    }
+  }
+}
+`)
+	expectErrorContaining(t, errs, `input "token" is not a path parameter of /ws/rooms/:id`)
+	expectErrorContaining(t, errs, `input "other" is not a path parameter of /events/:record_id`)
+}
+
+func TestRealtimePathInputsRejectNamedTypes(t *testing.T) {
+	errs := check(t, header+`
+model thing {
+  id uuid primary
+}
+
+WS /ws/rooms/:id {
+  <- id thing required
+  on_connect {
+    -> { id: id }
+  }
+}
+`)
+	expectErrorContaining(t, errs, `path parameter "id" of /ws/rooms/:id must be a primitive or inline enum type`)
+}
+
+func TestRealtimePathInputsAcceptPrimitiveTypes(t *testing.T) {
+	errs := check(t, header+`
+WS /ws/rooms/:id {
+  <- id uuid required
+  on_connect {
+    -> { id: id }
+  }
+}
+
+STREAM /events/:record_id {
+  <- record_id int min(1)
+  stream {
+    |> on event(updated) {
+      -> { id: record_id }
+    }
+  }
+}
+`)
+	expectNoErrors(t, errs)
+}
+
+func TestRealtimePathInputsRejectDuplicatesAndOptionalDefaults(t *testing.T) {
+	errs := check(t, header+`
+WS /ws/rooms/:id {
+  <- id uuid required
+  <- id uuid required
+  on_connect {
+    -> { id: id }
+  }
+}
+
+STREAM /events/:record_id {
+  <- record_id uuid optional
+  stream {
+    |> on event(updated) {
+      -> { id: record_id }
+    }
+  }
+}
+
+STREAM /events/:page {
+  <- page int default(1)
+  stream {
+    |> on event(updated) {
+      -> { id: page }
+    }
+  }
+}
+`)
+	expectErrorContaining(t, errs, `duplicate input "id"`)
+	expectErrorContaining(t, errs, `path parameter "record_id" of /events/:record_id cannot be optional`)
+	expectErrorContaining(t, errs, `path parameter "page" of /events/:page cannot have a default`)
+}
+
 func TestGlobalMiddlewareInjectionIsNotAnEndpointContext(t *testing.T) {
 	errs := check(t, `blueprint "test" {
   version "1.0"

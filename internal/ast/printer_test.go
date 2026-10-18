@@ -64,6 +64,30 @@ func TestPrint_IncludeFragmentWithoutBlueprint(t *testing.T) {
 	}
 }
 
+func TestPrint_WsPathInputsRoundTrip(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0"
+  runtime node
+}
+
+WS /ws/rooms/:id {
+  <- id uuid required
+
+  on_connect {
+    -> { type: "connected", id: id }
+  }
+}
+`
+	file := parseForPrint(t, src)
+	formatted := ast.Print(file)
+	if !strings.Contains(formatted, "WS /ws/rooms/:id {\n  <- id  uuid  required\n\n  on_connect {") {
+		t.Fatalf("WS path input not printed before on_connect:\n%s", formatted)
+	}
+	if second := ast.Print(parseForPrint(t, formatted)); second != formatted {
+		t.Fatalf("WS formatting is not idempotent\nfirst:\n%s\nsecond:\n%s", formatted, second)
+	}
+}
+
 // parseForPrint is a helper that parses src and fatals on errors.
 func parseForPrint(t *testing.T, src string) *ast.File {
 	t.Helper()

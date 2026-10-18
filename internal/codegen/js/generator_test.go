@@ -1158,6 +1158,8 @@ func TestGenerateAllFeatures(t *testing.T) {
 		"src/validation/schemas.ts",
 		"src/routes/watermark.ts",
 		"src/routes/jobs.ts",
+		"src/routes/jobs-stream.ts",
+		"src/routes/ws.ts",
 		"src/routes/usage.ts",
 		"src/functions/watermark.ts",
 		"src/impl/functions/internal/watermark.ts",

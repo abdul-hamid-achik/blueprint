@@ -593,7 +593,9 @@ Rename it, for example to `search_query`.
 ### C022 — invalid input declaration
 
 A `pipe` takes at most one `<-` input, and an input name can be declared only
-once in the same block.
+once in the same block. `STREAM` and `WS` inputs must name a `:param` segment of
+the path, use a primitive or inline enum type, and cannot be `optional` or have
+a `default(...)`, because a matched path segment is always present.
 
 ```bp
 blueprint "todo-api" {

@@ -135,6 +135,7 @@ func Walk(node Node, v Visitor) {
 		if !v.VisitWsEndpoint(n) {
 			return
 		}
+		walkArrowStmts(n.Stmts, v)
 		walkArrowStmts(n.OnConnect, v)
 		walkArrowStmts(n.OnMessage, v)
 		walkArrowStmts(n.OnDisconnect, v)

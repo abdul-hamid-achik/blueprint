@@ -990,6 +990,12 @@ func (p *Parser) parseWsEndpoint(intent *ast.Intent) *ast.WsEndpoint {
 		ep.Meta = append(ep.Meta, meta)
 	}
 
+	// <- inputs declare path parameters (e.g. `<- id uuid required` for
+	// `WS /ws/rooms/:id`); they are validated before the upgrade.
+	for p.check(lexer.TokenArrowIn) {
+		ep.Stmts = append(ep.Stmts, p.parseInputStmt())
+	}
+
 	if p.check(lexer.TokenOnConnect) {
 		p.advance()
 		p.expect(lexer.TokenLBrace)

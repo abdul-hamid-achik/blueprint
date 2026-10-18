@@ -892,6 +892,13 @@ func (p *printer) printWsEndpoint(n *WsEndpoint) string {
 		sb.WriteString(p.printEndpointMeta(meta))
 		sb.WriteString("\n")
 	}
+	if len(n.Meta) > 0 && len(n.Stmts) > 0 {
+		sb.WriteString("\n")
+	}
+	sb.WriteString(p.printArrowStmtsBlock(n.Stmts, "  "))
+	if len(n.Stmts) > 0 && (len(n.OnConnect) > 0 || len(n.OnMessage) > 0 || len(n.OnDisconnect) > 0) {
+		sb.WriteString("\n")
+	}
 	if len(n.OnConnect) > 0 {
 		sb.WriteString("  on_connect {\n")
 		sb.WriteString(p.printArrowStmtsBlock(n.OnConnect, "    "))

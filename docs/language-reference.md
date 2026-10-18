@@ -937,6 +937,12 @@ instance. Without `REDIS_URL`, or when Redis is unreachable, listeners receive
 only events emitted on their own instance, and one error is logged. Event
 payloads cross instances as JSON, so `Date` values arrive as strings.
 
+`<-` inputs on a STREAM must name a `:param` segment of the path, be a primitive
+or inline enum type, and not be `optional` or `default`. Each one is validated
+(e.g. `<- id uuid required`, `<- page int min(1)`) before the stream opens; an
+invalid value returns `400` with the `{ success: false, error }` body that REST
+body and query validation returns. Other `<-` inputs are rejected by `bp check`.
+
 In OpenAPI output: exposed as `GET` with `text/event-stream` content type.
 
 ---
@@ -969,6 +975,21 @@ WS /ws/chat {
 
   on_disconnect {
     |> log "Disconnected: {connection.id}"
+  }
+}
+```
+
+`<-` inputs on a WS must name a `:param` segment of the path. They are validated
+before the handshake with the same rules as STREAM inputs. An invalid value gets
+an HTTP `400` and the upgrade is refused; the JSON error body is only visible to
+non-upgrade requests, since the upgrade socket carries status alone.
+
+```bp
+WS /ws/rooms/:id {
+  <- id uuid required
+
+  on_connect {
+    -> { type: "connected", room: id }
   }
 }
 ```

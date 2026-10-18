@@ -196,6 +196,37 @@ GET /api/jobs/:id {
   }
 }
 
+@ "Stream progress updates for a job via Server-Sent Events"
+STREAM /api/jobs/:id/progress {
+  use require_auth
+  tags ["jobs", "streaming"]
+
+  <- id uuid required
+
+  |> job = fetch job(id)
+  |> guard job -> 404 "Job not found"
+
+  stream {
+    |> on timeout(5min) {
+      -> { id: job.id, status: job.status }
+    }
+  }
+}
+
+@ "Follow a job's status over a WebSocket connection"
+WS /ws/jobs/:id {
+  use require_auth
+  tags ["jobs", "streaming"]
+
+  <- id uuid required
+
+  on_connect {
+    |> job = fetch job(id)
+    |> guard job -> 404 "Job not found"
+    -> { type: "connected", id: job.id, status: job.status }
+  }
+}
+
 @ "List jobs for the authenticated user"
 GET /api/jobs {
   use require_auth

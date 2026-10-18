@@ -337,7 +337,7 @@ func checkEmptyEndpoints(f *ast.File) []Issue {
 				})
 			}
 		case *ast.WsEndpoint:
-			if len(n.OnConnect) == 0 && len(n.OnMessage) == 0 && len(n.OnDisconnect) == 0 {
+			if len(n.Stmts) == 0 && len(n.OnConnect) == 0 && len(n.OnMessage) == 0 && len(n.OnDisconnect) == 0 {
 				loc := n.Location()
 				issues = append(issues, Issue{
 					File:    loc.File,

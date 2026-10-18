@@ -331,6 +331,7 @@ type WsEndpoint struct {
 	Intent       *Intent
 	Path         string
 	Meta         []*EndpointMeta
+	Stmts        []ArrowStmt
 	OnConnect    []ArrowStmt
 	OnMessage    []ArrowStmt
 	OnDisconnect []ArrowStmt

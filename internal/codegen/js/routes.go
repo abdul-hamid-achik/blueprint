@@ -701,6 +701,35 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	}
 }
 
+// --- Realtime path-param validation (STREAM and WS) ---
+
+// realtimePathInputs returns the <- inputs of a STREAM or WS endpoint. The
+// checker guarantees each one names a :param segment of the endpoint path.
+func realtimePathInputs(stmts []ast.ArrowStmt) []*ast.InputStmt {
+	var inputs []*ast.InputStmt
+	for _, s := range stmts {
+		if inp, ok := s.(*ast.InputStmt); ok {
+			inputs = append(inputs, inp)
+		}
+	}
+	return inputs
+}
+
+// realtimePathParamCheck returns the Zod object that validates a STREAM or WS
+// endpoint's declared path inputs, and the object literal of the raw route
+// params it is applied to. Field schemas use the same mapping REST inputs use
+// (typeToZodCoerce + constraintsToZod), since path params arrive as strings.
+func (g *Generator) realtimePathParamCheck(inputs []*ast.InputStmt) (schema, raw string) {
+	fields := make([]string, 0, len(inputs))
+	values := make([]string, 0, len(inputs))
+	for _, inp := range inputs {
+		fields = append(fields, inp.Name+": "+g.typeToZodCoerce(inp.Type)+constraintsToZod(inp.Constraints))
+		values = append(values, fmt.Sprintf("%s: c.req.param('%s')", inp.Name, inp.Name))
+	}
+	return "z.object({ " + strings.Join(fields, ", ") + " })",
+		"{ " + strings.Join(values, ", ") + " }"
+}
+
 // --- Stream Endpoints ---
 
 // genStreamRoute generates a route file for a group of stream (SSE) endpoints sharing the same resource.
@@ -710,6 +739,12 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { Hono } from 'hono';\n")
 	b.WriteString("import { streamSSE } from 'hono/streaming';\n")
+	for _, ep := range endpoints {
+		if len(realtimePathInputs(ep.Stmts)) > 0 {
+			b.WriteString("import { z } from 'zod';\n")
+			break
+		}
+	}
 
 	// Collect imports from all endpoint bodies
 	ic := newImportCollector()
@@ -814,10 +849,26 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 		}
 		b.WriteString(", async (c) => {\n")
 
-		// Extract path params at the start of the handler
+		// Validate declared path inputs first (400 before the stream starts,
+		// with the same body zValidator returns for REST inputs), then extract
+		// path params. Undeclared params stay raw strings.
 		pathParams := extractPathParams(ep.Path)
+		pathInputs := realtimePathInputs(ep.Stmts)
+		declaredParams := map[string]bool{}
+		if len(pathInputs) > 0 {
+			schema, raw := g.realtimePathParamCheck(pathInputs)
+			fmt.Fprintf(&b, "  const _pathParams = %s.safeParse(%s);\n", schema, raw)
+			b.WriteString("  if (!_pathParams.success) return c.json(_pathParams, 400 as const);\n")
+			for _, inp := range pathInputs {
+				declaredParams[inp.Name] = true
+			}
+		}
 		for _, param := range pathParams {
-			fmt.Fprintf(&b, "  const %s = c.req.param('%s');\n", toCamelCase(param), param)
+			if declaredParams[param] {
+				fmt.Fprintf(&b, "  const %s = _pathParams.data.%s;\n", toCamelCase(param), param)
+			} else {
+				fmt.Fprintf(&b, "  const %s = c.req.param('%s');\n", toCamelCase(param), param)
+			}
 		}
 
 		// Emit rate-limit and webhook-auth checks, mirroring genRoute — these
@@ -991,6 +1042,12 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { Hono } from 'hono';\n")
 	b.WriteString("import type { UpgradeWebSocket, WSContext, WSMessageReceive } from 'hono/ws';\n")
+	for _, ep := range endpoints {
+		if len(realtimePathInputs(ep.Stmts)) > 0 {
+			b.WriteString("import { z } from 'zod';\n")
+			break
+		}
+	}
 
 	// Collect imports from all endpoint bodies
 	ic := newImportCollector()
@@ -1102,6 +1159,21 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 			}
 		}
 
+		// Declared path inputs are validated before the handshake: a failing
+		// middleware returns 400 and upgradeWebSocket's factory never runs.
+		pathInputs := realtimePathInputs(ep.Stmts)
+		declaredParams := map[string]bool{}
+		var pathSchema, pathRaw string
+		if len(pathInputs) > 0 {
+			pathSchema, pathRaw = g.realtimePathParamCheck(pathInputs)
+			for _, inp := range pathInputs {
+				declaredParams[inp.Name] = true
+			}
+			fmt.Fprintf(&b, ", async (c, next) => {\n  const _pathParams = %s.safeParse(%s);\n", pathSchema, pathRaw)
+			b.WriteString("  if (!_pathParams.success) return c.json(_pathParams, 400 as const);\n")
+			b.WriteString("  return next();\n}")
+		}
+
 		// Rate-limit and webhook-auth meta can't run inside upgradeWebSocket's
 		// event factory (it can only return WS event handlers, not an HTTP
 		// response), so — exactly like genRoute's checks — they run as a
@@ -1152,9 +1224,14 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 
 		b.WriteString(", upgradeWebSocket((c) => {\n")
 
-		// Extract path params into closure-scoped variables so all handlers can access them
+		// Extract path params into closure-scoped variables so all handlers can access them.
+		// Declared inputs were validated by the middleware above, so re-parse to get typed values.
 		for _, param := range pathParams {
-			fmt.Fprintf(&b, "  const %s = c.req.param('%s') || '';\n", toCamelCase(param), param)
+			if declaredParams[param] {
+				fmt.Fprintf(&b, "  const %s = %s.parse(%s).%s;\n", toCamelCase(param), pathSchema, pathRaw, param)
+			} else {
+				fmt.Fprintf(&b, "  const %s = c.req.param('%s') || '';\n", toCamelCase(param), param)
+			}
 		}
 
 		// Hoist variables from onConnect that are used across handlers.

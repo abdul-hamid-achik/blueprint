@@ -41,8 +41,8 @@ GET /api/todos {
 | `pipe X { logic { ... } }` | Reusable pipeline. |
 | `METHOD /path { meta + inputs + steps + outputs }` | HTTP route (GET/POST/PUT/PATCH/DELETE). |
 | `cache <duration>` (endpoint meta) | Node: GET only; sets `Cache-Control` on 2xx responses, `private` when the response may depend on the caller (any `use`/`auth`/`limit`, global `use`, or header/cookie/session/auth reads), else `public`. Other methods emit no header (lint `cache-on-non-get`). Python rejects it. |
-| `STREAM /path { ... }` | SSE endpoint on Node; currently rejected by Python codegen. |
-| `WS /path { on_connect { ... } on_message { ... } on_disconnect { ... } }` | WebSocket endpoint on Node; currently rejected by Python codegen. |
+| `STREAM /path { ... }` | SSE endpoint on Node; currently rejected by Python codegen. Declared `<-` inputs must name a `:param` in the path and are validated (400 before the stream opens). |
+| `WS /path { <- param ... on_connect { ... } on_message { ... } on_disconnect { ... } }` | WebSocket endpoint on Node; currently rejected by Python codegen. Path-param `<-` inputs are validated before the upgrade (400 refuses the handshake). |
 | `test name { ... }` | Authored Node/Vitest test; Python rejects authored test blocks. |
 
 ## Type system

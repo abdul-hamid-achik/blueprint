@@ -116,8 +116,9 @@ const (
 	CodeValueTypeMismatch = "C020"
 	// CodeReservedBuiltinName = a fn or pipe reuses a built-in operation name.
 	CodeReservedBuiltinName = "C021"
-	// CodeInvalidInputDecl = a pipe declares more than one <- input, or an
-	// input name is declared twice.
+	// CodeInvalidInputDecl = a pipe declares more than one <- input, an
+	// input name is declared twice, or a STREAM/WS input is not a valid path
+	// parameter (unknown :param, non-primitive type, optional, or default).
 	CodeInvalidInputDecl = "C022"
 	// CodeDuplicateEnumVariant = two variants of one enum share a name.
 	CodeDuplicateEnumVariant = "C023"
@@ -700,6 +701,7 @@ func (c *Checker) checkStreamEndpoint(n *ast.StreamEndpoint) {
 	c.checkArrowOrdering(n.Stmts, n.Loc, "stream endpoint")
 	c.checkTryRecoverNesting(n.Stmts, n.Loc)
 	c.checkPathNaming(n.Path, n.Loc)
+	c.checkRealtimeInputs(n.Path, n.Stmts)
 	for _, m := range n.Meta {
 		if m.Kind == "use" && m.Use != nil {
 			c.checkMiddlewareRef(m.Use.Name, m.Loc)
@@ -724,6 +726,7 @@ func (c *Checker) checkStreamEndpoint(n *ast.StreamEndpoint) {
 
 func (c *Checker) checkWsEndpoint(n *ast.WsEndpoint) {
 	c.checkPathNaming(n.Path, n.Loc)
+	c.checkRealtimeInputs(n.Path, n.Stmts)
 	for _, m := range n.Meta {
 		if m.Kind == "use" && m.Use != nil {
 			c.checkMiddlewareRef(m.Use.Name, m.Loc)
@@ -734,11 +737,52 @@ func (c *Checker) checkWsEndpoint(n *ast.WsEndpoint) {
 		c.checkEndpointAuth(m)
 	}
 	scope := c.newRealtimeEndpointScope(n.Path, n.Meta)
+	c.checkArrowStmtExprsInScope(n.Stmts, scope)
 	c.checkArrowStmtExprsInScope(n.OnConnect, scope)
 	messageScope := cloneArrowScope(scope)
 	bindArrowName(messageScope, "message", SymVariable, n.Loc)
 	c.checkArrowStmtExprsInScope(n.OnMessage, messageScope)
 	c.checkArrowStmtExprsInScope(n.OnDisconnect, cloneArrowScope(scope))
+}
+
+// checkRealtimeInputs requires STREAM and WS inputs to name a :param segment of
+// the path, with a primitive or inline enum type. Codegen validates only those
+// inputs (before the stream or upgrade starts); any other <- input would have
+// no value at runtime.
+func (c *Checker) checkRealtimeInputs(path string, stmts []ast.ArrowStmt) {
+	params := map[string]bool{}
+	for _, segment := range strings.Split(path, "/") {
+		if strings.HasPrefix(segment, ":") && len(segment) > 1 {
+			params[segment[1:]] = true
+		}
+	}
+	for _, stmt := range stmts {
+		input, ok := stmt.(*ast.InputStmt)
+		if !ok {
+			continue
+		}
+		if !params[input.Name] {
+			c.addErrorCode(input.Loc, CodeInvalidInputDecl, fmt.Sprintf("input %q is not a path parameter of %s", input.Name, path),
+				"STREAM and WS inputs must name a :param segment in the path, e.g. `<- id` for `/rooms/:id`")
+			continue
+		}
+		switch input.Type.(type) {
+		case nil, *ast.PrimitiveType, *ast.EnumInline:
+		default:
+			c.addErrorCode(input.Loc, CodeInvalidInputDecl, fmt.Sprintf("path parameter %q of %s must be a primitive or inline enum type", input.Name, path),
+				"Path parameters are validated from the URL string; use string, uuid, int, float, bool, timestamp, or an inline enum")
+		}
+		for _, constraint := range input.Constraints {
+			switch constraint.Kind {
+			case "optional":
+				c.addErrorCode(constraint.Loc, CodeInvalidInputDecl, fmt.Sprintf("path parameter %q of %s cannot be optional", input.Name, path),
+					"A matched path segment is always present; drop `optional`")
+			case "default":
+				c.addErrorCode(constraint.Loc, CodeInvalidInputDecl, fmt.Sprintf("path parameter %q of %s cannot have a default", input.Name, path),
+					"A matched path segment is always present; drop `default(...)`")
+			}
+		}
+	}
 }
 
 // --- Duplicate Endpoint ---
