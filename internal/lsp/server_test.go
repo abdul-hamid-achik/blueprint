@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -79,6 +81,32 @@ model user {
 	diags := computeDiagnostics("file:///tmp/ok.bp", src)
 	if len(diags) != 0 {
 		t.Fatalf("expected 0 diagnostics, got %d: %+v", len(diags), diags)
+	}
+}
+
+// Every file `bp check` accepts must be clean in the editor too, including
+// root files that open with a file-level intent before the blueprint block.
+func TestComputeDiagnostics_CheckedFilesHaveNoDiagnostics(t *testing.T) {
+	var files []string
+	for _, pattern := range []string{"../../examples/*.bp", "../../testdata/valid/*.bp"} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, matches...)
+	}
+	if len(files) == 0 {
+		t.Fatal("no example or fixture files found")
+	}
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diags := computeDiagnostics("file:///"+filepath.Base(f), string(src)); len(diags) > 0 {
+			t.Errorf("%s: %d diagnostics, first at %d:%d: %s", f, len(diags),
+				diags[0].Range.Start.Line+1, diags[0].Range.Start.Character+1, diags[0].Message)
+		}
 	}
 }
 

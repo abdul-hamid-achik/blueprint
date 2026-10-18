@@ -2123,3 +2123,43 @@ func TestParseAllFeaturesFixture(t *testing.T) {
 		t.Fatal("expected at least 1 top-level block beyond blueprint")
 	}
 }
+
+// ParsePartialFile accepts the file-level intent ParseFile allows before the
+// blueprint block. An intent with no blueprint block after it still belongs to
+// the first top-level block.
+func TestParsePartialFile_LeadingIntent(t *testing.T) {
+	file, errs := ParsePartialFile("root.bp", []byte(`@ "Root service"
+blueprint "svc" {
+  version "1.0.0"
+}
+
+model item {
+  id uuid primary
+}
+`))
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if file.Blueprint == nil || file.Blueprint.Intent == nil || file.Blueprint.Intent.Text != "Root service" {
+		t.Fatalf("blueprint intent not attached: %+v", file.Blueprint)
+	}
+	if len(file.Blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(file.Blocks))
+	}
+
+	fragment, errs := ParsePartialFile("fragment.bp", []byte(`@ "An item"
+model item {
+  id uuid primary
+}
+`))
+	if len(errs) > 0 {
+		t.Fatalf("unexpected fragment errors: %v", errs)
+	}
+	if fragment.Blueprint != nil || len(fragment.Blocks) != 1 {
+		t.Fatalf("fragment parsed as %+v", fragment)
+	}
+	model, ok := fragment.Blocks[0].(*ast.Model)
+	if !ok || model.Intent == nil || model.Intent.Text != "An item" {
+		t.Fatalf("fragment intent not attached to the model: %+v", fragment.Blocks[0])
+	}
+}

@@ -103,7 +103,12 @@ func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
 	f := &ast.File{Loc: p.peek().Loc, Comments: comments, SourceTokens: tokens}
 
 	// If included file starts with a blueprint block, parse and attach it
-	// but don't require it (unlike ParseFile).
+	// but don't require it (unlike ParseFile). A root file may open with a
+	// file-level intent before that block, as ParseFile allows; without a
+	// following blueprint block the intent belongs to the first top-level
+	// block, so rewind.
+	start := p.pos
+	intent := p.maybeParseIntent()
 	if p.check(lexer.TokenBlueprint) {
 		func() {
 			defer func() {
@@ -116,8 +121,10 @@ func ParsePartialFile(filename string, src []byte) (*ast.File, []ParseError) {
 					p.recoverToNextBlock()
 				}
 			}()
-			f.Blueprint = p.parseBlueprintBlock(nil)
+			f.Blueprint = p.parseBlueprintBlock(intent)
 		}()
+	} else {
+		p.pos = start
 	}
 
 	for !p.atEnd() {
