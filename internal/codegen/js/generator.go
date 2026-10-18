@@ -104,6 +104,9 @@ func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
 	if err := validateExternalConfigurations(file); err != nil {
 		return nil, err
 	}
+	if err := validateEndpointCacheMetadata(file); err != nil {
+		return nil, err
+	}
 	if err := rejectWithLegacyQueryArgs(file); err != nil {
 		return nil, err
 	}
@@ -710,6 +713,11 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// src/lib/cache.ts (if cache)
 	if hasCache {
 		files = append(files, g.genCache())
+	}
+
+	// src/lib/http-cache.ts (if any GET endpoint declares `cache`)
+	if hasHTTPCacheEndpoints(endpoints, bp) {
+		files = append(files, g.genHTTPCache())
 	}
 
 	// src/types.ts

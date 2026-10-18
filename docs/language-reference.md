@@ -830,9 +830,26 @@ POST /api/watermark {
 | `use` | `use middleware_name` | Applies a declared custom middleware |
 | `auth` | `auth api_key` | Metadata only for generic strategies; webhook HMAC is the exception below |
 | `limit` | `limit 60/min` | Enforced by an in-process, per-instance IP/path counter |
-| `cache` | `cache 5min` | Parsed and emitted as a comment; responses are not cached yet |
+| `cache` | `cache 5min` | GET only: sets `Cache-Control` on 2xx responses (see below); ignored on other methods |
 | `tags` | `tags ["a", "b"]` | Included in generated OpenAPI metadata |
 | `timeout` | `timeout 30s` | Parsed, but REST handler cancellation is not generated yet |
+
+`cache <duration>` takes a duration literal with a unit (`5s`, `5min`, `1h`,
+`1d`). It must be positive and a whole number of seconds; a bare number such as
+`cache 5`, a zero value, or a sub-second value such as `500ms` fails codegen
+with no files written. On the Node target, a GET endpoint with `cache` returns
+`Cache-Control: <scope>, max-age=N` on 2xx responses only. Error responses and
+handlers that already set `Cache-Control` are left alone. The scope is:
+
+- `private` when the endpoint has any `use`, `auth`, or `limit` metadata, when
+  the blueprint declares any global `use`, or when the body reads `header`,
+  `headers`, `cookie`, `cookies`, `session`, or `auth`. Shared caches must not
+  store these responses.
+- `public` otherwise.
+
+A non-GET endpoint with `cache` emits no header. The build still succeeds, and
+the `cache-on-non-get` lint warning reports it. Python rejects endpoint `cache`
+metadata today.
 
 ### Auth Strategies
 

@@ -365,6 +365,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	needsWebhookAuth := false
 	needsZodPathParam := false
 	needsRateLimit := false
+	needsHTTPCache := false
 
 	// Check if any endpoint in this route file uses data operations (local check).
 	// This supplements the global hasDB flag so that routes with data ops always
@@ -394,6 +395,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 					}
 				}
 			}
+		}
+		if endpointCacheMiddleware(ep, g.file.Blueprint) != "" {
+			needsHTTPCache = true
 		}
 		// Check for middleware, auth, and rate limit
 		for _, meta := range ep.Meta {
@@ -442,6 +446,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	for _, mwName := range sortedKeys2(middlewareNames) {
 		fmt.Fprintf(&b, "import { %s } from '../middleware/%s.js';\n",
 			toCamelCase(mwName), toKebabCase(mwName))
+	}
+	if needsHTTPCache {
+		b.WriteString("import { httpCache } from '../lib/http-cache.js';\n")
 	}
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
 	if len(enqueueQueues) > 0 {
@@ -553,6 +560,12 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		// Build handler: routeVar.method('path', ...middleware, zValidator, async (c) => { ... })
 		fmt.Fprintf(&b, "%s.%s('%s'", routeVar, method, ep.Path)
 
+		// Cache-Control for GET endpoints with `cache` runs first so it wraps
+		// every other middleware and handler.
+		if cacheMW := endpointCacheMiddleware(ep, g.file.Blueprint); cacheMW != "" {
+			fmt.Fprintf(&b, ", %s", cacheMW)
+		}
+
 		// Add middleware
 		for _, meta := range ep.Meta {
 			if meta.Kind == "use" && meta.Use != nil {
@@ -602,7 +615,11 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 				fmt.Fprintf(&b, "    _rateLimitStore.set(_rateKey, { count: 1, resetAt: _now + %d });\n", rateWindowMS)
 				b.WriteString("  }\n")
 			case "cache":
-				fmt.Fprintf(&b, "  // cache: %s\n", exprToJS(meta.Value))
+				if ep.Method != "GET" {
+					fmt.Fprintf(&b, "  // cache %s ignored: Cache-Control is only set on GET endpoints\n", exprToString(meta.Value))
+				} else {
+					fmt.Fprintf(&b, "  // cache: %s (Cache-Control set by httpCache middleware)\n", exprToString(meta.Value))
+				}
 			case "auth":
 				if secretKey := webhookAuthSecretKey(meta.Value); secretKey != "" {
 					b.WriteString("  const _payload = await c.req.text();\n")

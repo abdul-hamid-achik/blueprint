@@ -238,8 +238,12 @@ Review these behaviors before scaling beyond one process:
   not generate generic credential verification on Node. Use explicit,
   tested middleware. Generated webhook HMAC verification is the implemented
   exception.
-- Endpoint `cache <duration>` is currently metadata only; it does not cache
-  responses.
+- Endpoint `cache <duration>` on the Node target sets `Cache-Control` on GET 2xx
+  responses only. Responses that may depend on the caller use `private`, so
+  shared caches do not store them. Endpoints without `use`, `auth`, or `limit`
+  metadata, with no global `use`, and whose bodies do not read caller-scoped
+  inputs use `public`. Behind a CDN, verify the header with a request from two
+  different callers before relying on it.
 - Endpoint rate limits use an in-process map. Every replica has its own counter,
   and the generated code trusts `X-Forwarded-For`. Use a trusted proxy plus a
   gateway or distributed limiter for production enforcement.

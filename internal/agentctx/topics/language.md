@@ -40,6 +40,7 @@ GET /api/todos {
 | `fn X(<-input ...) -> output { logic { ... } } [impl ...]` | Pure or impure function. `impl` can be `node`/`python`/`exec`/`http`. |
 | `pipe X { logic { ... } }` | Reusable pipeline. |
 | `METHOD /path { meta + inputs + steps + outputs }` | HTTP route (GET/POST/PUT/PATCH/DELETE). |
+| `cache <duration>` (endpoint meta) | Node: GET only; sets `Cache-Control` on 2xx responses, `private` when the response may depend on the caller (any `use`/`auth`/`limit`, global `use`, or header/cookie/session/auth reads), else `public`. Other methods emit no header (lint `cache-on-non-get`). Python rejects it. |
 | `STREAM /path { ... }` | SSE endpoint on Node; currently rejected by Python codegen. |
 | `WS /path { on_connect { ... } on_message { ... } on_disconnect { ... } }` | WebSocket endpoint on Node; currently rejected by Python codegen. |
 | `test name { ... }` | Authored Node/Vitest test; Python rejects authored test blocks. |

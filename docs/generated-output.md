@@ -48,6 +48,7 @@ generated/
     │   ├── storage.ts
     │   ├── state.ts
     │   ├── cache.ts           # conditional: cache redis
+    │   ├── http-cache.ts      # conditional: GET endpoints with `cache`
     │   └── events.ts          # conditional: STREAM / WS / subscribe
     ├── routes/
     │   └── <resource>.ts

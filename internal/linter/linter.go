@@ -31,6 +31,7 @@ func Lint(f *ast.File) []Issue {
 	issues = append(issues, checkWherePredicateSelfEqual(f)...)
 	issues = append(issues, checkUnusedInput(f)...)
 	issues = append(issues, checkUnenforceableWsAuth(f)...)
+	issues = append(issues, checkCacheOnNonGet(f)...)
 	return issues
 }
 
