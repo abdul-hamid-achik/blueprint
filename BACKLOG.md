@@ -169,7 +169,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   SSE subscriptions unsubscribed on abort; STREAM guards run before the 200 is sent; dead-socket
   eviction + broadcast readyState guard; STREAM auth/limit/use meta enforced, WS bare-auth gets
   linter warning `unenforceable-ws-auth`. See CHANGELOG [Unreleased].)_
-- [x] **Enforced endpoint auth on Node (REST, STREAM, WS).** `auth bearer|jwt|api_key|basic using(secret.NAME)` is verified before the handler (401 `{"error":"Unauthorized"}`); jwt is HS256 only; STREAM/WS accept `?token=`/`?api_key=`; `unenforced-auth` lint added; C053 added. Python is not covered yet. _(shipped 2026-10-18)_
+- [x] **Enforced endpoint auth on Node (REST, STREAM, WS).** `auth bearer|jwt|api_key|basic using(secret.NAME)` is verified before the handler (401 `{"error":"Unauthorized"}`); jwt is HS256 only; STREAM/WS accept `?token=`/`?api_key=`; `unenforced-auth` lint added; C053 added. Python REST is covered by the Python target entry. _(shipped 2026-10-18)_
 - [x] **STREAM/WS remaining tail:** WS rooms use Redis pub/sub for multi-instance
   broadcast (shipped v0.14.0). STREAM listeners fan out across instances through Redis
   when `REDIS_URL` is set; subscribe handlers stay local. STREAM/WS `<-` path-param
@@ -357,9 +357,14 @@ Prep work (must precede the Python generator):
       (`Literal`), `type` (Pydantic, `src/models/types.py`) and `alias` (`Annotated`) declarations,
       alias-typed scalar model fields, and endpoint `tags`, `cache`, and `limit` metadata
       (`src/lib/http_cache.py`, `src/lib/rate_limit.py`). _(shipped 2026-10-18)_
+    - [x] Enforced endpoint auth on Python REST: `auth bearer|jwt|api_key|basic using(secret.NAME)`
+      is verified by `src/lib/auth.py` as a route dependency (401 `{"error":"Unauthorized"}`,
+      HS256-only jwt with strict base64url and exp/nbf checks, constant-time compare). Generated
+      `--gen-tests` suites send credentials and assert 401 without them. _(shipped 2026-10-18)_
     - [ ] Still rejected on Python: struct `enum` declarations (variants with bodies),
       `type`-typed model fields and `json<T>` model fields over a declared type, primary keys
-      typed by an alias, endpoint `auth` and `timeout` metadata, and blueprint-level `use`.
+      typed by an alias, endpoint `timeout` metadata, `auth webhook_sig` (Node-only HMAC check),
+      bare `auth` lines, and blueprint-level `use`.
   - [~] Phase 4: middleware, fn/pipe (Python `impl python` mode), `bp test`
     against testcontainers for real Postgres.
     - [x] `bp build --target python --gen-tests` emits a runnable pytest

@@ -905,7 +905,7 @@ POST /api/watermark {
 | Key | Syntax | Node runtime behavior |
 |-----|--------|-----------------------|
 | `use` | `use middleware_name` | Applies a declared custom middleware |
-| `auth` | `auth jwt using(secret.JWT_SECRET)` | Enforced for `bearer`, `jwt`, `api_key`, and `basic` with `using(secret.NAME)`, and for `webhook_sig`; metadata only otherwise (see Auth Strategies) |
+| `auth` | `auth jwt using(secret.JWT_SECRET)` | Enforced for `bearer`, `jwt`, `api_key`, and `basic` with `using(secret.NAME)`, and for `webhook_sig`; metadata only otherwise (see Auth Strategies). On Python, only the four strategies with `using(secret.NAME)` are accepted |
 | `limit` | `limit 60/min` | Enforced by an in-process, per-instance IP/path counter |
 | `cache` | `cache 5min` | GET only: sets `Cache-Control` on 2xx responses (see below); ignored on other methods |
 | `tags` | `tags ["a", "b"]` | Included in generated OpenAPI metadata |
@@ -934,8 +934,9 @@ response, so a guard's 4xx or any other error response carries none. `limit` is
 enforced by `src/lib/rate_limit.py` with the same client-and-path key and fixed
 window as Node, and an over-limit request answers `429` with
 `{"error": "Rate limit exceeded"}`. `tags` become the route's FastAPI tags, which
-show in the generated OpenAPI. `auth` and `timeout` metadata still fail the
-Python build.
+show in the generated OpenAPI. `timeout` metadata, `auth webhook_sig`, and bare
+`auth` lines still fail the Python build; `auth bearer|jwt|api_key|basic using(secret.NAME)`
+is enforced (see Auth Strategies).
 
 ### Auth Strategies
 
@@ -969,6 +970,15 @@ declare it that way, unless the endpoint or the blueprint has a `use` middleware
 For sessions, and for checks the strategies above do not cover, declare and
 apply a middleware whose `before` block validates the credential and `inject`s
 the authenticated value. Do not rely on a bare `auth` line as a security boundary.
+
+On `--target python`, the four REST strategies with `using(secret.NAME)` are
+enforced by `src/lib/auth.py`, as a FastAPI route dependency that runs before
+`use` middleware and input validation. It answers with the same 401 body,
+challenges, and fail-closed secret handling as Node, and it has no query-string
+fallback. `auth webhook_sig` and bare `auth` lines fail the Python build. A
+request whose JSON body cannot be parsed at all gets `422` before the check,
+because FastAPI parses the body first, while a body that parses but fails
+validation gets `401`.
 
 ### Input Sources
 

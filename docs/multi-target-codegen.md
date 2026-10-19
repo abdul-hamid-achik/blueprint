@@ -246,7 +246,7 @@ reasons come from `unsupportedFeatures()` in
 - `schedule`, `worker`, `subscribe`, and `external` declarations
 - `env` declarations, and `env.X` reads outside endpoint and middleware bodies
 - `fn logic` bodies and `middleware after` bodies
-- endpoint `auth` and `timeout` metadata, and blueprint-level `use`
+- endpoint `timeout` metadata, `auth webhook_sig`, bare `auth` lines (only `auth bearer|jwt|api_key|basic using(secret.NAME)` is enforced), and blueprint-level `use`
 - authored `test` blocks and fixtures
 
 The Effect target stays a scaffold. It emits `GET /health` and typed `Config`,
