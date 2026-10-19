@@ -4157,6 +4157,105 @@ WS /ws/chat {
 	requireTypeScriptCompile(t, outDir)
 }
 
+// TestGenerateRealtimeMiddlewareVariablesAreTyped asserts that a STREAM and a WS
+// endpoint using a middleware that injects a model get the same typed Hono
+// Variables as REST route files, and that the typed `c` reaches the WS handlers.
+func TestGenerateRealtimeMiddlewareVariablesAreTyped(t *testing.T) {
+	src := `blueprint "rt-typed" {
+  version "1.0.0"
+  port    3000
+  runtime node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model user {
+  id    uuid   primary
+  email string required
+}
+
+middleware require_auth {
+  before {
+    |> guard header.Authorization -> 401 "Missing auth"
+    |> found = query user where(email == header.Authorization) first
+    |> guard found -> 401 "Unknown user"
+    |> inject found as auth
+  }
+}
+
+STREAM /api/presence {
+  use require_auth
+
+  stream {
+    |> on timeout(30s) {
+      -> { id: auth.id }
+    }
+  }
+}
+
+WS /ws/chat {
+  use require_auth
+
+  on_message {
+    -> { id: auth.id }
+  }
+}`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	if errs := checker.Check(file); len(errs) > 0 {
+		t.Fatalf("check errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	const wantVars = "{ Variables: { auth: { [K in keyof typeof schema.user.$inferSelect]: NonNullable<typeof schema.user.$inferSelect[K]> } } }"
+	stream, err := os.ReadFile(filepath.Join(outDir, "src/routes/presence.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stream), "new Hono<"+wantVars+">()") {
+		t.Errorf("STREAM route must type Hono Variables from the injected model; got:\n%s", stream)
+	}
+	if !strings.Contains(string(stream), "import * as schema from '../models/schema.js';") {
+		t.Errorf("STREAM route must import schema for the typed slot; got:\n%s", stream)
+	}
+	ws, err := os.ReadFile(filepath.Join(outDir, "src/routes/ws.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ws), "type RouteEnv = "+wantVars+";") {
+		t.Errorf("WS route must declare the typed env; got:\n%s", ws)
+	}
+	if !strings.Contains(string(ws), "new Hono<RouteEnv>()") {
+		t.Errorf("WS route app must use the typed env; got:\n%s", ws)
+	}
+	if !strings.Contains(string(ws), "upgradeWebSocket((c: Context<RouteEnv>) => {") {
+		t.Errorf("WS upgrade callback must receive the typed context its handlers read; got:\n%s", ws)
+	}
+	requireTypeScriptCompile(t, outDir)
+
+	// The slot is typed as the row, not any: a misspelled column must fail tsc.
+	const readID = "c.get('auth').id"
+	if !strings.Contains(string(stream), readID) {
+		t.Fatalf("STREAM route should read the injected field as %s; got:\n%s", readID, stream)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "src/routes/presence.ts"),
+		[]byte(strings.Replace(string(stream), readID, "c.get('auth').idd", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bun", "run", "build")
+	cmd.Dir = outDir
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Errorf("misspelled injected field auth.idd must fail type-checking; tsc output:\n%s", out)
+	}
+}
+
 func TestGenerateRestPathInputsAreValidated(t *testing.T) {
 	src := `blueprint "rest-path" {
   version "0.1.0"

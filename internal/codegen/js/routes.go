@@ -428,6 +428,13 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		})
 	}
 
+	// Hono Variables typing for middleware-injected context (see honoVariablesType).
+	var allMetas []*ast.EndpointMeta
+	for _, ep := range endpoints {
+		allMetas = append(allMetas, ep.Meta...)
+	}
+	envType, needsSchema := g.honoVariablesType(allMetas)
+
 	if needsZValidator {
 		b.WriteString("import { zValidator } from '@hono/zod-validator';\n")
 	}
@@ -442,6 +449,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		b.WriteString("import { db } from '../lib/db.js';\n")
 		b.WriteString("import * as schema from '../models/schema.js';\n")
 		b.WriteString("import { eq, and, or, lt, gt, lte, gte, ne, sql, desc, asc, inArray } from 'drizzle-orm';\n")
+	} else if needsSchema {
+		// Typed Variables reference schema.<model> even when no handler queries the DB.
+		b.WriteString("import * as schema from '../models/schema.js';\n")
 	}
 	// Import validation schemas
 	if len(schemaNames) > 0 {
@@ -487,57 +497,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	ic.writeImports(&b, g.hasStorage)
 	b.WriteString("\n")
 
-	// Collect context variables injected by middleware for Hono type parameter.
-	// We track both the var set and a camelCasedVar -> Blueprint model name map
-	// so the emitted `Hono<{ Variables: { ... } }>` types each slot to the
-	// underlying Drizzle row type instead of falling back to `any`.
-	allCtxVars := make(map[string]bool)
-	ctxVarModel := make(map[string]string)
-	for _, ep := range endpoints {
-		for _, meta := range ep.Meta {
-			if meta.Kind == "use" && meta.Use != nil {
-				if mw, ok := g.middlewares[meta.Use.Name]; ok {
-					for k := range extractInjectedVars(mw.Before) {
-						allCtxVars[toCamelCase(k)] = true
-					}
-					for k := range extractInjectedVars(mw.After) {
-						allCtxVars[toCamelCase(k)] = true
-					}
-					// extractInjectedModelMap returns model -> injected var name;
-					// invert to var -> model so we can look up by Hono slot.
-					for model, varName := range extractInjectedModelMap(mw.Before) {
-						ctxVarModel[toCamelCase(varName)] = model
-					}
-					for model, varName := range extractInjectedModelMap(mw.After) {
-						ctxVarModel[toCamelCase(varName)] = model
-					}
-				}
-			}
-		}
-	}
-
 	routeVar := toCamelCase(resource) + "Routes"
-	if len(allCtxVars) > 0 {
-		// Type the Hono app with Variables so c.get()/c.set() are type-safe.
-		// For middleware-injected vars whose source model is known we wrap
-		// the Drizzle row type with a mapped NonNullable so columns without
-		// `required` (just `default(...)`) don't show as `T | null` and
-		// break downstream handler code that's already gated by a middleware
-		// `guard` — Blueprint's contract is "if it got injected, it's usable".
-		// Tracked-but-nullable-aware schemas can be added later; for now this
-		// matches the de-facto runtime behavior the previous `: any` shipped.
-		varKeys := sortedKeys2(allCtxVars)
-		var fields []string
-		for _, k := range varKeys {
-			typeStr := "any"
-			if model, ok := ctxVarModel[k]; ok {
-				rowT := "typeof schema." + toCamelCase(model) + ".$inferSelect"
-				typeStr = fmt.Sprintf("{ [K in keyof %s]: NonNullable<%s[K]> }", rowT, rowT)
-			}
-			fields = append(fields, k+": "+typeStr)
-		}
-		fmt.Fprintf(&b, "export const %s = new Hono<{ Variables: { %s } }>();\n\n",
-			routeVar, strings.Join(fields, "; "))
+	if envType != "" {
+		fmt.Fprintf(&b, "export const %s = new Hono<%s>();\n\n", routeVar, envType)
 	} else {
 		fmt.Fprintf(&b, "export const %s = new Hono();\n\n", routeVar)
 	}
@@ -815,8 +777,16 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 			}
 		}
 	}
+	// Typed Variables for middleware-injected context (see honoVariablesType).
+	var allMetas []*ast.EndpointMeta
+	for _, ep := range endpoints {
+		allMetas = append(allMetas, ep.Meta...)
+	}
+	envType, needsSchema := g.honoVariablesType(allMetas)
 	if needsDB {
 		writeDataImports(&b)
+	} else if needsSchema {
+		b.WriteString("import * as schema from '../models/schema.js';\n")
 	}
 
 	// Collect middleware, webhook-auth, and rate-limit meta the same way genRoute
@@ -871,7 +841,11 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 	b.WriteString("\n")
 
 	routeVar := toCamelCase(fileKey) + "Routes"
-	fmt.Fprintf(&b, "export const %s = new Hono();\n\n", routeVar)
+	if envType != "" {
+		fmt.Fprintf(&b, "export const %s = new Hono<%s>();\n\n", routeVar, envType)
+	} else {
+		fmt.Fprintf(&b, "export const %s = new Hono();\n\n", routeVar)
+	}
 
 	// Module-level rate limit store (shared across all handlers in this file)
 	if needsRateLimit {
@@ -1086,7 +1060,19 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndpoint) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
-	b.WriteString("import { Hono } from 'hono';\n")
+	// Typed Variables for middleware-injected context (see honoVariablesType).
+	// The env is applied to both the Hono app and the upgradeWebSocket context,
+	// because handlers read c.get(...) from the upgrade callback's `c`.
+	var allMetas []*ast.EndpointMeta
+	for _, ep := range endpoints {
+		allMetas = append(allMetas, ep.Meta...)
+	}
+	envType, needsSchema := g.honoVariablesType(allMetas)
+	if envType != "" {
+		b.WriteString("import { Hono, type Context } from 'hono';\n")
+	} else {
+		b.WriteString("import { Hono } from 'hono';\n")
+	}
 	b.WriteString("import type { UpgradeWebSocket, WSContext, WSMessageReceive } from 'hono/ws';\n")
 	for _, ep := range endpoints {
 		if len(realtimePathInputs(ep.Stmts)) > 0 {
@@ -1113,6 +1099,8 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	}
 	if needsDB {
 		writeDataImports(&b)
+	} else if needsSchema {
+		b.WriteString("import * as schema from '../models/schema.js';\n")
 	}
 
 	// Collect middleware, webhook-auth, and rate-limit meta the same way genRoute
@@ -1157,9 +1145,16 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 
 	// Use a factory function so index.ts can pass the Node.js upgradeWebSocket at runtime
 	routeVar := toCamelCase(fileKey) + "Routes"
+	if envType != "" {
+		fmt.Fprintf(&b, "type RouteEnv = %s;\n\n", envType)
+	}
 	fmt.Fprintf(&b, "export function create%sRoutes(upgradeWebSocket: UpgradeWebSocket) {\n",
 		toPascalCase(fileKey))
-	fmt.Fprintf(&b, "  const %s = new Hono();\n\n", routeVar)
+	if envType != "" {
+		fmt.Fprintf(&b, "  const %s = new Hono<RouteEnv>();\n\n", routeVar)
+	} else {
+		fmt.Fprintf(&b, "  const %s = new Hono();\n\n", routeVar)
+	}
 
 	// Room management: Map<roomId, Set<WebSocket>> for local connections,
 	// plus Redis pub/sub for multi-instance broadcast.
@@ -1272,7 +1267,11 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 			b.WriteString("}")
 		}
 
-		b.WriteString(", upgradeWebSocket((c) => {\n")
+		if envType != "" {
+			b.WriteString(", upgradeWebSocket((c: Context<RouteEnv>) => {\n")
+		} else {
+			b.WriteString(", upgradeWebSocket((c) => {\n")
+		}
 
 		// Extract path params into closure-scoped variables so all handlers can access them.
 		// Declared inputs were validated by the middleware above, so re-parse to get typed values.

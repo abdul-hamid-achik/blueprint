@@ -970,6 +970,60 @@ func extractInjectedModelMap(stmts []ast.ArrowStmt) map[string]string {
 	return result
 }
 
+// honoVariablesType returns the `{ Variables: { ... } }` env literal that types
+// c.get()/c.set() for every context variable the given middleware injects, or ""
+// when none is injected. A variable whose source model is known is typed as the
+// model's Drizzle row (NonNullable per column); others fall back to any.
+// needsSchema reports whether the literal references `schema.<model>`, so the
+// caller must import ../models/schema.js. Metas are scanned in order, so the
+// output is deterministic. Shared by REST, STREAM and WS route generators.
+func (g *Generator) honoVariablesType(metas []*ast.EndpointMeta) (envType string, needsSchema bool) {
+	allCtxVars := make(map[string]bool)
+	ctxVarModel := make(map[string]string)
+	for _, meta := range metas {
+		if meta.Kind != "use" || meta.Use == nil {
+			continue
+		}
+		mw, ok := g.middlewares[meta.Use.Name]
+		if !ok {
+			continue
+		}
+		for k := range extractInjectedVars(mw.Before) {
+			allCtxVars[toCamelCase(k)] = true
+		}
+		for k := range extractInjectedVars(mw.After) {
+			allCtxVars[toCamelCase(k)] = true
+		}
+		// extractInjectedModelMap returns model -> injected var name;
+		// invert to var -> model so we can look up by Hono slot.
+		for model, varName := range extractInjectedModelMap(mw.Before) {
+			ctxVarModel[toCamelCase(varName)] = model
+		}
+		for model, varName := range extractInjectedModelMap(mw.After) {
+			ctxVarModel[toCamelCase(varName)] = model
+		}
+	}
+	if len(allCtxVars) == 0 {
+		return "", false
+	}
+	// For injected vars whose source model is known we wrap the Drizzle row type
+	// with a mapped NonNullable so columns without `required` (just `default(...)`)
+	// don't show as `T | null` and break downstream handler code that's already
+	// gated by a middleware `guard` — Blueprint's contract is "if it got injected,
+	// it's usable". Tracked-but-nullable-aware schemas can be added later.
+	var fields []string
+	for _, k := range sortedKeys2(allCtxVars) {
+		typeStr := "any"
+		if model, ok := ctxVarModel[k]; ok {
+			rowT := "typeof schema." + toCamelCase(model) + ".$inferSelect"
+			typeStr = fmt.Sprintf("{ [K in keyof %s]: NonNullable<%s[K]> }", rowT, rowT)
+			needsSchema = true
+		}
+		fields = append(fields, k+": "+typeStr)
+	}
+	return "{ Variables: { " + strings.Join(fields, "; ") + " } }", needsSchema
+}
+
 // findAutoFields returns the names of fields with the "auto" constraint for a model.
 // These fields (e.g., updated_at timestamp auto) should be set to new Date() on every update.
 func findAutoFields(ctx *emitCtx, modelName string) []string {

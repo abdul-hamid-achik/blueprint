@@ -885,7 +885,11 @@ present.
 
 On the Python target, GET/DELETE inputs become FastAPI `Query(...)` parameters,
 POST/PUT/PATCH inputs become embedded `Body(...)` parameters, and supported
-`min`/`max` constraints are preserved. Direct header references, including
+`min`/`max` constraints are preserved. Path inputs keep `min`/`max` as FastAPI
+`Path(...)` bounds, so an over-long segment answers `422` rather than Node's
+`400`. `format(email|url|uuid|ip|date)` is enforced on endpoint inputs and on
+model fields through the generated `src/lib/formats.py` (stdlib only; no
+`email-validator` dependency). A violating value answers `422`. Direct header references, including
 hyphenated names such as `header.X-API-Key`, become valid
 `Header(..., alias="X-API-Key")` parameters. An `env.FIELD` reference must be
 backed by a declared `secret FIELD` or by an infrastructure setting Blueprint
