@@ -885,6 +885,11 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		files = append(files, g.genWsRoute(res, fileKey, wes))
 	}
 
+	// src/lib/backpressure.ts — bounded SSE writes and WS fan-out sends
+	if len(streams) > 0 || len(ws) > 0 {
+		files = append(files, g.genBackpressureLib())
+	}
+
 	// src/subscriptions/<name>.ts + src/lib/events.ts
 	// Generate the shared event registry for subscribers, STREAM event handlers,
 	// or an in-process emit from any generated context (routes, functions,

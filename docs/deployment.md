@@ -139,6 +139,11 @@ cache, schedule, and multi-instance realtime features may also require
 `DATABASE_URL` or `REDIS_URL`; inspect the generated `.env.example` for the
 exact build.
 
+Realtime backpressure also reads two optional tuning variables:
+`BP_SSE_MAX_PENDING` (queued events per STREAM client, default `256`) and
+`BP_WS_MAX_BUFFERED_BYTES` (unsent bytes per WebSocket, default `1048576`). They
+are not declared in `.env.example`. Set them only when the defaults do not fit.
+
 Do not commit production values or bake them into the image. The generated
 `.gitignore` excludes `.env`, but Docker sends its build context independently.
 Add a `.dockerignore` to the generated build context or maintain one in your

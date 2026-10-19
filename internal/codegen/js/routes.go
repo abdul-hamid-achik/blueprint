@@ -747,6 +747,7 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("import { Hono } from 'hono';\n")
 	b.WriteString("import { streamSSE } from 'hono/streaming';\n")
+	b.WriteString("import { createSseWriter } from '../lib/backpressure.js';\n")
 	for _, ep := range endpoints {
 		if len(realtimePathInputs(ep.Stmts)) > 0 {
 			b.WriteString("import { z } from 'zod';\n")
@@ -983,6 +984,11 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 		}
 
 		b.WriteString("  return streamSSE(c, async (stream) => {\n")
+		// Every write for this client goes through one bounded queue: writes
+		// never run concurrently, and a client that falls more than
+		// BP_SSE_MAX_PENDING events behind is dropped (see src/lib/backpressure.ts).
+		fmt.Fprintf(&b, "    const _sse = createSseWriter(stream, %q);\n", ep.Path)
+		b.WriteString("    stream.onAbort(() => _sse.close());\n")
 
 		// Emit each handler block as an event subscription or timeout
 		for i, h := range ep.Handlers {
@@ -992,7 +998,7 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 				sseData := extractOutputValue(h.Body, &ctx)
 				fmt.Fprintf(&b, "    // on timeout: %s\n", h.Timeout)
 				fmt.Fprintf(&b, "    const _interval%d = setInterval(async () => {\n", i)
-				fmt.Fprintf(&b, "      await stream.writeSSE({ event: 'ping', data: JSON.stringify(%s) });\n", sseData)
+				fmt.Fprintf(&b, "      _sse.send({ event: 'ping', data: JSON.stringify(%s) });\n", sseData)
 				fmt.Fprintf(&b, "    }, %s);\n", ms)
 				fmt.Fprintf(&b, "    stream.onAbort(() => clearInterval(_interval%d));\n", i)
 			} else if h.EventName != "" {
@@ -1025,11 +1031,11 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 					fmt.Fprintf(&b, "      if (%s) {\n", cond)
 					// Get the output value from the handler body for writeSSE data
 					sseData := extractOutputValue(h.Body, &handlerCtx)
-					fmt.Fprintf(&b, "        await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData)
+					fmt.Fprintf(&b, "        _sse.send({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData)
 					b.WriteString("      }\n")
 				} else {
 					sseData := extractOutputValue(h.Body, &handlerCtx)
-					fmt.Fprintf(&b, "      await stream.writeSSE({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData)
+					fmt.Fprintf(&b, "      _sse.send({ event: '%s', data: JSON.stringify(%s) });\n", h.EventName, sseData)
 				}
 				b.WriteString("    };\n")
 				fmt.Fprintf(&b, "    onStream('%s', %s);\n", h.EventName, handlerVar)
@@ -1074,6 +1080,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		b.WriteString("import { Hono } from 'hono';\n")
 	}
 	b.WriteString("import type { UpgradeWebSocket, WSContext, WSMessageReceive } from 'hono/ws';\n")
+	b.WriteString("import { wsFanOutSend } from '../lib/backpressure.js';\n")
 	for _, ep := range endpoints {
 		if len(realtimePathInputs(ep.Stmts)) > 0 {
 			b.WriteString("import { z } from 'zod';\n")
@@ -1178,6 +1185,16 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	b.WriteString("      })().catch((e: any) => { console.error('Redis pub/sub init failed:', e); });\n")
 	b.WriteString("    }\n")
 	b.WriteString("    return _redisInit ?? Promise.resolve();\n")
+	b.WriteString("  }\n\n")
+
+	// Every room delivery (local broadcast, Redis subscriber callback) goes
+	// through _fanOut, which applies the slow-consumer limit to each socket.
+	b.WriteString("  // Remove a socket from every room; used on disconnect and when it is a slow consumer.\n")
+	b.WriteString("  function _evictSocket(_w: any) {\n")
+	b.WriteString("    for (const [k, s] of _rooms) { s.delete(_w); if (s.size === 0) { _rooms.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }\n")
+	b.WriteString("  }\n")
+	b.WriteString("  function _fanOut(roomId: string, data: string) {\n")
+	b.WriteString("    for (const _w of [...(_rooms.get(roomId) ?? [])]) wsFanOutSend(_w, data, roomId, _evictSocket);\n")
 	b.WriteString("  }\n\n")
 
 	// Module-level rate limit store (shared across all handlers in this file)

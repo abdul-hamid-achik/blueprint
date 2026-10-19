@@ -49,7 +49,8 @@ generated/
     │   ├── state.ts
     │   ├── cache.ts           # conditional: cache redis
     │   ├── http-cache.ts      # conditional: GET endpoints with `cache`
-    │   └── events.ts          # conditional: subscribe, emit, or STREAM `on event(...)`
+    │   ├── events.ts          # conditional: subscribe, emit, or STREAM `on event(...)`
+    │   └── backpressure.ts    # conditional: STREAM or WS endpoints
     ├── routes/
     │   └── <resource>.ts
     ├── functions/
@@ -589,6 +590,17 @@ carries the STREAM fan-out. With `REDIS_URL` set, each `emit` is published to
 `REDIS_URL`, listeners receive only events from their own instance. See
 [Deployment](./deployment.md#multi-instance-and-security-caveats) for the
 multi-replica caveats.
+
+### `src/lib/backpressure.ts` (conditional: STREAM or WS endpoints)
+
+Bounded-delivery helpers for realtime routes. `createSseWriter` gives each STREAM
+connection a serialized write queue and drops a client that stays more than
+`BP_SSE_MAX_PENDING` events behind (default 256) for 5 seconds, or reaches 16 times
+that many. `wsFanOutSend` sends a room
+message to one WS socket and closes a socket whose unsent buffer exceeds
+`BP_WS_MAX_BUFFERED_BYTES` (default 1048576) with code 1013. Both limits are read
+from the environment once at startup. The file has no imports and adds no
+dependencies.
 
 ### `test/generated/<resource>.test.ts` (opt-in via `--gen-tests`)
 

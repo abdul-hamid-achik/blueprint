@@ -169,13 +169,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   SSE subscriptions unsubscribed on abort; STREAM guards run before the 200 is sent; dead-socket
   eviction + broadcast readyState guard; STREAM auth/limit/use meta enforced, WS bare-auth gets
   linter warning `unenforceable-ws-auth`. See CHANGELOG [Unreleased].)_
-- [~] **STREAM/WS remaining tail:** WS rooms use Redis pub/sub for multi-instance
+- [x] **STREAM/WS remaining tail:** WS rooms use Redis pub/sub for multi-instance
   broadcast (shipped v0.14.0). STREAM listeners fan out across instances through Redis
   when `REDIS_URL` is set; subscribe handlers stay local. STREAM/WS `<-` path-param
   inputs are validated, and all_features.bp covers both. `use` middleware
-  variables are typed on STREAM/WS like REST. Remaining: backpressure on emit
-  fan-out.
-  (STREAM/WS `cache` metadata has no effect; the `cache-on-non-get` lint reports it.) _(partially shipped 2026-10-18)_
+  variables are typed on STREAM/WS like REST. Backpressure on STREAM and WS fan-out
+  shipped 2026-10-18 (`BP_SSE_MAX_PENDING`, `BP_WS_MAX_BUFFERED_BYTES`).
+  (STREAM/WS `cache` metadata has no effect; the `cache-on-non-get` lint reports it.) _(shipped 2026-10-18)_
 
 ### Found in the 2026-06-16 deep review
 

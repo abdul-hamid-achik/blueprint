@@ -166,6 +166,8 @@ STREAM /rooms/:id/events {
 
 `:param` inputs on STREAM and WS are validated before the stream or upgrade starts (400 refuses the handshake). Python rejects both kinds of endpoint.
 
+Slow clients are bounded: a STREAM client that stays more than `BP_SSE_MAX_PENDING` (default 256) events behind for 5 s (or reaches 16× that) is dropped, and a WS socket with more than `BP_WS_MAX_BUFFERED_BYTES` (default 1 MiB) unsent is closed with code 1013.
+
 ## See also
 
 - `bp context cli` — commands and flags

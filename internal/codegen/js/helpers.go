@@ -290,7 +290,7 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			// member joins, so broadcasts from other instances are forwarded.
 			if len(v.Args) >= 1 {
 				arg := resolveWsRoomArg(v.Args[0], ctx)
-				return fmt.Sprintf("(async () => { const _set = (_rooms.get(%s) ?? _rooms.set(%s, new Set()).get(%s))!; const _first = _set.size === 0; _set.add(ws); if (_first) { await _ensureRedis(); if (_redisSub?.isOpen) { _redisSub.subscribe(`room:${%s}`, (_msg: string) => { for (const _w of _rooms.get(%s) ?? []) { if (_w.readyState === 1) _w.send(_msg); } }); } } })()", arg, arg, arg, arg, arg)
+				return fmt.Sprintf("(async () => { const _set = (_rooms.get(%s) ?? _rooms.set(%s, new Set()).get(%s))!; const _first = _set.size === 0; _set.add(ws); if (_first) { await _ensureRedis(); if (_redisSub?.isOpen) { _redisSub.subscribe(`room:${%s}`, (_msg: string) => _fanOut(%s, _msg)); } } })()", arg, arg, arg, arg, arg)
 			}
 			return "/* join room: missing argument */"
 		case "leave":
@@ -311,11 +311,11 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			if len(v.Args) >= 2 {
 				arg := resolveWsRoomArg(v.Args[0], ctx)
 				data := exprToJSWithCtx(v.Args[1], ctx)
-				return fmt.Sprintf("(async () => { await _ensureRedis(); const _d = JSON.stringify(%s); if (_redisPub?.isOpen) { _redisPub.publish(`room:${%s}`, _d); } else { for (const _ws of _rooms.get(%s) ?? []) { if (_ws.readyState === 1) _ws.send(_d); } } })()", data, arg, arg)
+				return fmt.Sprintf("(async () => { await _ensureRedis(); const _d = JSON.stringify(%s); if (_redisPub?.isOpen) { _redisPub.publish(`room:${%s}`, _d); } else { _fanOut(%s, _d); } })()", data, arg, arg)
 			}
 			if len(v.Args) >= 1 {
 				arg := resolveWsRoomArg(v.Args[0], ctx)
-				return fmt.Sprintf("(async () => { await _ensureRedis(); if (_redisPub?.isOpen) { _redisPub.publish(`room:${%s}`, '{}'); } else { for (const _ws of _rooms.get(%s) ?? []) { if (_ws.readyState === 1) _ws.send('{}'); } } })()", arg, arg)
+				return fmt.Sprintf("(async () => { await _ensureRedis(); if (_redisPub?.isOpen) { _redisPub.publish(`room:${%s}`, '{}'); } else { _fanOut(%s, '{}'); } })()", arg, arg)
 			}
 			return "/* broadcast: missing arguments */"
 		case "emit":

@@ -1034,6 +1034,15 @@ instance. Without `REDIS_URL`, or when Redis is unreachable, listeners receive
 only events emitted on their own instance, and one error is logged. Event
 payloads cross instances as JSON, so `Date` values arrive as strings.
 
+Each connected client has a bounded write queue. Writes for one client never run
+concurrently, and `emit` never waits for a slow reader. When a client stays more
+than `BP_SSE_MAX_PENDING` events (default 256) behind for 5 seconds, or reaches 16
+times that many pending events, the server stops delivering to it: it aborts that
+stream, removes its listeners, and logs one `slow consumer` warning with the
+endpoint path. A burst emitted in one tick does not drop a client that keeps up.
+Other clients are unaffected. The limit is read from the environment once at
+startup; a missing, non-numeric, or non-positive value falls back to 256.
+
 `<-` inputs on a STREAM must name a `:param` segment of the path, be a primitive
 or inline enum type, and not be `optional` or `default`. Each one is validated
 (e.g. `<- id uuid required` for `/api/jobs/:id/progress`) before the stream
@@ -1085,6 +1094,13 @@ WS /ws/chat {
 before the handshake with the same rules as STREAM inputs. An invalid value gets
 an HTTP `400` and the upgrade is refused; the JSON error body is only visible to
 non-upgrade requests, since the upgrade socket carries status alone.
+
+Room broadcasts check each socket before sending. A socket that is not open is
+skipped. A socket whose unsent buffer exceeds `BP_WS_MAX_BUFFERED_BYTES` (default
+1 MiB) is a slow consumer: the server removes it from all of its rooms, closes it
+with code 1013 and reason `slow consumer`, and logs one warning. Replies sent
+directly to the current socket are not limited by this check. The limit is read
+once at startup; an invalid or non-positive value falls back to the default.
 
 ```bp
 WS /ws/rooms/:id {

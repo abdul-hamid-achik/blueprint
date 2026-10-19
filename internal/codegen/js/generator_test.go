@@ -1767,8 +1767,8 @@ STREAM /api/updates {
 	}
 
 	// Check event handlers are emitted
-	if !strings.Contains(routeStr, "stream.writeSSE") {
-		t.Error("stream route should emit stream.writeSSE calls")
+	if !strings.Contains(routeStr, "_sse.send(") || !strings.Contains(routeStr, "createSseWriter(stream,") {
+		t.Error("stream route should emit SSE writes through the bounded createSseWriter queue")
 	}
 
 	// Check index.ts imports the stream route

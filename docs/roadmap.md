@@ -91,7 +91,6 @@ review workflow that makes source changes easier to inspect before applying.
 
 ### Realtime
 
-- Backpressure on STREAM emit fan-out is not implemented yet.
 - `whisper` (delivery to a single connection) is not implemented. The checker
   rejects it, and the language reference says so.
 - WS `auth bearer`, `jwt`, `api_key`, and `basic` are not enforced by codegen.
