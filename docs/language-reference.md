@@ -1873,9 +1873,16 @@ upgrade_save(save_decl, value)             # run generated save migrations
 ### Storage
 
 ```bp
-upload(file, bucket)              # upload to S3/GCS → { url }
-download(url)                     # download file → file
+upload(body, bucket)              # upload to S3 → { url, key }
+download(url)                     # read an s3:// URL → bytes
 ```
+
+`upload` stores the body (a string or bytes) under a random UUID key with
+`application/octet-stream` and returns `{ url: "s3://<bucket>/<key>", key }`.
+`download` takes that URL and returns the object's bytes: a `Buffer` on Node.
+Put the bytes in a JSON response only through a derived value such as
+`bytes.length`; Node and Python serialize raw bytes differently. Node emits S3
+for any `storage` value; `gcs` and `local` have no implementation yet.
 
 **On the Python target**, `storage s3` is implemented with boto3
 (`src/lib/storage.py`). `upload` stores the body under a random UUID key and
