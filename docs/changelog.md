@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking for Python realtime clients:** the Python target camel-cases
+  object keys on the realtime paths, as Node does: `emit` payloads, STREAM
+  frames (`on event` and `on timeout`), and WS `broadcast` and `whisper`
+  payloads. `event.room_id`, a bare `where(room_id == id)`, and WS
+  `message.sent_by` read the `roomId` and `sentBy` keys. A Node and a Python
+  instance can now share one Redis, and their SSE and WS frames match. REST
+  responses and WS direct replies keep the `.bp` spelling on both targets. A
+  nested object in a STREAM frame drops its absent fields, as on Node.
+- Node carries model-field `min`/`max` into the model Zod schemas in
+  `src/types/schemas.ts`, as Python does in `src/models/pydantic.py`: `.min`
+  and `.max` for strings, numbers, and lists, and a key-count check for maps.
+  The generated frontend client checks responses against them when response
+  validation is on. Neither target checks saved rows against model bounds;
+  requests are checked against endpoint input constraints.
+
+### Fixed
+
+- `bp test` on a spec that generates no tests (for example, only STREAM or WS
+  endpoints) prints `No tests generated` and exits 0. Before, Vitest and
+  pytest failed on the empty suite, so `bp test` exited 1.
+
 ## [0.20.1] - 2026-10-19
 
 ### Security
