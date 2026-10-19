@@ -34,6 +34,7 @@ func TestPython_WebhookSigEmitsVerifierAndDataParam(t *testing.T) {
 		`request.headers.get("X-Webhook-Signature", "")`,
 		`HEX_RE = re.compile(r"(?:[0-9a-fA-F]{2})*")`,
 		"object_hook=WebhookPayload",
+		"def __getattr__(self, name: str) -> Any:",
 		`raise InvalidWebhook(400, "Invalid payload")`,
 		`return JSONResponse({"error": exc.message}, status_code=exc.status_code)`,
 	} {

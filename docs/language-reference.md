@@ -435,8 +435,9 @@ inputs and model fields.
 On Python, `min` and `max` on model fields become pydantic `Field` bounds in
 `src/models/pydantic.py`: `min_length`/`max_length` for `string`, `text`, lists,
 and maps, and `ge`/`le` for `int`, `float`, and `money`. Node applies `min` and
-`max` to endpoint inputs and aliases; its generated model schemas and tables do
-not carry inline model-field bounds, so the two targets differ for model fields.
+`max` to endpoint inputs, `type` fields, and aliases, but not to model fields:
+its generated model schemas (server and frontend) and Drizzle tables carry no
+inline model-field bounds. The two targets differ for model fields.
 
 ### Computed Fields
 
@@ -1008,9 +1009,13 @@ validation gets `401`.
 
 `auth webhook_sig using(secret.NAME)` is verified by `src/lib/webhook.py` on
 Python REST endpoints, with the same `401` and `400` bodies as Node. The check
-runs as a parameter dependency before body validation, so an unsigned request
-gets `401` even when its body is malformed. Bare `auth webhook_sig` fails the
-Python build.
+runs before input validation, so an unsigned request gets `401` even when its
+body is malformed. The exception is an endpoint with a `<-` body input, when the
+request is sent as `application/json`: FastAPI parses that body before the check,
+so an unparseable JSON body gets `422` first. Node's body validator also runs
+before the signature check. The verified payload is bound to `data`: read fields as `data.field` or
+`data["field"]`. A key named like a dict method, such as `items`, must be read
+as `data["items"]`. Bare `auth webhook_sig` fails the Python build.
 
 ### Input Sources
 

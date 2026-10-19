@@ -92,12 +92,17 @@ async def invalid_webhook_handler(request: Request, exc: InvalidWebhook) -> JSON
 
 
 class WebhookPayload(dict):
-    """Parsed webhook JSON. Keys also read as attributes, so data.event.type works as on Node."""
+    """Parsed webhook JSON. Keys also read as attributes, so data.event.type works as on Node.
 
-    def __getattribute__(self, name: str) -> Any:
-        if not name.startswith("_") and dict.__contains__(self, name):
-            return dict.__getitem__(self, name)
-        return object.__getattribute__(self, name)
+    Dict methods win over keys of the same name (data.items is the method), so a
+    key such as "items" is read as data["items"]. Serialization stays intact.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
 
 
 def _reject_constant(name: str) -> None:
