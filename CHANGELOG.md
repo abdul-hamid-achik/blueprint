@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `bp mcp` starts a stdio Model Context Protocol server for MCP-capable agents.
+  It exposes the tools `check`, `lint`, `format`, `explain`, `context`, `build`,
+  and `diff`; `check` and `lint` return the same JSON as `bp check --json` and
+  `bp lint --json`, and `format` never writes. Resources cover every
+  `bp context` topic and `bp llms`. It speaks MCP revision 2026-07-28 and the
+  initialize-based 2025-11-25, 2025-06-18, 2025-03-26, and 2024-11-05
+  revisions. `build` is the only tool that writes files, and it never passes
+  `--force`, so the manifest safety check still applies.
+
 ### Changed
 
 - Usage errors now exit `2`, as the exit-code table documents. Before, `bp`

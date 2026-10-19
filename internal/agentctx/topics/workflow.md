@@ -16,6 +16,8 @@ The `.bp` file is the source of truth. The generated project is output: `bp buil
 
 Use `bp check` (with several files or a directory when useful) after every edit. Run steps 4 to 7 before you report a change as done.
 
+If your client supports MCP, `bp mcp` exposes check, lint, format, explain, context, build, and diff as tools, so this loop can run without shell access. The tools mirror the commands above and resolve paths against the directory the server was started in.
+
 Idempotency is a contract: `bp diff --exit-code` right after a fresh `bp build` must report no changes. Drift there is a codegen bug (ordering, map iteration, timestamps), not a user error; report it.
 
 For a multi-file project, pass the directory: `bp check services/`, `bp lint --json services/`, `bp fmt --check services/`.

@@ -1029,6 +1029,22 @@ document takes precedence over its on-disk copy.
 
 ---
 
+## `bp mcp`
+
+Run a stdio Model Context Protocol server for MCP-capable agents.
+
+```bash
+bp mcp
+```
+
+The server exposes `check`, `lint`, `format`, `explain`, `context`, `build`,
+and `diff` as tools, and the `bp context` topics and `bp llms` as resources.
+It takes no arguments; `bp mcp --help` prints usage and exits `0`, and any
+extra argument exits `2`. See [MCP Server](./mcp.md) for client setup, the tool
+table, and protocol notes.
+
+---
+
 ## `bp explain`
 
 Print the documentation for a structured Blueprint error code.

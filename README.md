@@ -33,6 +33,8 @@ can also produce a FastAPI + SQLAlchemy project.
 - **Language server.** `bp lsp` provides diagnostics with quick fixes, hover,
   go-to-definition, find-references, open-document rename, completion,
   formatting, document outline, folding ranges, and workspace symbols.
+- **MCP server.** `bp mcp` exposes check, lint, format, explain, context, build,
+  and diff as tools to MCP-capable agents, so they need no shell access.
 - **Validated inputs.** On the Node target, REST path parameters are checked
   against their declared type and constraints and answer `400` on failure.
   `format(email|url|uuid|ip|date)` is enforced on the Node and Python targets.
@@ -426,6 +428,7 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
 | `bp explain <code>` | Explain a structured diagnostic code |
 | `bp context [topic]` / `bp llms` | Print embedded agent-facing language and CLI guidance |
 | `bp completion <shell>` / `bp lsp` | Generate shell completion or start the language server |
+| `bp mcp` | Start the stdio Model Context Protocol server for agents |
 | `bp eject <dir>` | Remove Blueprint ownership markers and manifest |
 | `bp version` / `bp help` | Show version or command help |
 

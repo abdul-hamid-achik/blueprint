@@ -114,6 +114,7 @@ export default defineConfig({
           { text: 'Testing Guide', link: '/testing-guide' },
           { text: 'Deployment', link: '/deployment' },
           { text: 'LLM Generation', link: '/llm-generation' },
+          { text: 'MCP Server', link: '/mcp' },
           { text: 'FAQ', link: '/faq' },
         ],
       },

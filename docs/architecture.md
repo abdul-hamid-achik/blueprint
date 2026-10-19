@@ -25,7 +25,7 @@ Each pass is a separate package under `internal/`. They communicate through shar
 ```
 cmd/bp/             CLI entry point (check, build, frontend, diff, run, dev, test,
                     migrate, generate, import, docs, fmt, lint, init, eject, deploy,
-                    completion, stats, explain, context, llms, doctor, lsp, version)
+                    completion, stats, explain, context, llms, doctor, lsp, mcp, version)
 internal/
   lexer/            Tokenizer (~100 token kinds)
   parser/           Recursive-descent parser with Pratt expressions
@@ -44,6 +44,7 @@ internal/
   generate/         LLM code generation (@> slots via Anthropic API)
   importer/         Conservative static TypeScript-to-.bp scaffolding
   lsp/              LSP diagnostics, hover, definition, completion, workspace symbols, formatting, document outline, folding
+  mcp/              stdio Model Context Protocol server behind `bp mcp`
   agentctx/         Agent-facing context surface (bp context / bp llms)
   registry/         Package registry groundwork (no add/search/publish CLI yet)
 packages/
@@ -602,6 +603,7 @@ The CLI entry point. Parses `os.Args` and dispatches to the appropriate pipeline
 | `bp llms` | print the complete agent/LLM guide |
 | `bp doctor` | check environment dependencies |
 | `bp lsp` | start the Language Server Protocol server |
+| `bp mcp` | start the stdio Model Context Protocol server (tools and resources for agents) |
 | `bp completion` | generate a shell completion script |
 | `bp version` | print version string |
 

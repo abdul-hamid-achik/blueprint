@@ -96,6 +96,8 @@ still emit an importable empty schema (`schema.ts` on Node, `Base` on Python).
   local-workspace symbols over LSP.
 - `editors/vscode-blueprint/` — packaged VS Code stdio client and TextMate
   grammar; it starts configurable `bp lsp` and exposes a restart command.
+- `internal/mcp/` — stdio Model Context Protocol server behind `bp mcp`
+  (tools and resources over the compiler; protocol revisions in the package).
 - `internal/agentctx/` — embedded `bp context` and `bp llms` guidance.
 - `internal/registry/` — registry groundwork; package install/search/publish CLI
   commands do not ship yet.
