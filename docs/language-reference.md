@@ -1530,6 +1530,13 @@ target runs them in each process, so use one process per schedule set. Both
 targets use the process-local timezone. The scheduler does not start under
 pytest.
 
+**On the Node target** (`--target node`), each schedule is a BullMQ 6 job
+scheduler on the `__bp_scheduler` Redis queue, whose id and job name are the
+schedule name. Startup upserts one scheduler per declared schedule and removes
+any scheduler whose name is no longer declared, so deleting or renaming a
+schedule stops its old runs. A failing run is retried with 3 attempts and
+exponential backoff from 1s.
+
 ---
 
 ## 18. `external`

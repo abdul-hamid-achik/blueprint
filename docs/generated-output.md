@@ -115,7 +115,7 @@ generated/
 | File storage | `@aws-sdk/client-s3` | S3 and compatible APIs |
 | Migrations | Drizzle Kit | Pairs with Drizzle ORM |
 | Redis | `redis` | Cache and multi-instance event transport |
-| Queue / schedules | BullMQ | Redis-backed workers and repeatable jobs |
+| Queue / schedules | BullMQ | Redis-backed workers and job schedulers |
 
 The generated code has **no Blueprint runtime dependency**. Everything uses standard, widely-adopted libraries.
 
@@ -504,9 +504,9 @@ worker; unsupported producer contexts fail before output is written.
 
 ### `src/schedules/<name>.ts`
 
-Schedule handlers and their cron expressions. `src/index.ts` registers
-repeatable BullMQ jobs and a scheduler consumer that dispatches to these
-functions.
+Schedule handlers and their cron expressions. `src/index.ts` upserts one BullMQ
+job scheduler per schedule, removes schedulers for schedules no longer
+declared, and runs a scheduler consumer that dispatches to these functions.
 
 ```typescript
 import { db } from '../lib/db.js';

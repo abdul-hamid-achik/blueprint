@@ -25,6 +25,16 @@ All notable changes to this project will be documented in this file.
   `1.minutes.ago`, so on a Postgres whose session `TimeZone` is not UTC the
   comparison was off by the offset (a schedule that expires rows older than a
   minute expired none). Regenerate migrations after upgrading.
+- Node target: generated projects depend on `bullmq` `^6.3.0` and `ioredis`
+  `^5.11.1`. BullMQ 6 loads ioredis for `connection: { url }`, and ioredis is
+  an optional peer, so it is listed explicitly.
+- Node target: `schedule` declarations register BullMQ job schedulers instead
+  of the removed v5 `repeat` option. Each scheduler id and job name is the
+  schedule name. At startup the app upserts one scheduler per declared
+  schedule and removes schedulers whose name is no longer declared, so a
+  deleted or renamed schedule stops firing. Redis written by a v5 app can hold
+  legacy repeatable keys that BullMQ 6 refuses to read; flush the queue Redis
+  before the first v6 start.
 
 ## [0.21.0] - 2026-10-19
 
