@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **Breaking:** `auth webhook_sig` on a `GET`, STREAM, or WS endpoint is
+  checker error `C056` on both targets. The signature covers the request
+  body, which is empty there: a `GET` answered `400` for every correctly
+  signed request, and on Node STREAM and WS every valid request carried the
+  same signature, which anyone who saw one request could replay. Receive
+  webhooks on `POST`, `PUT`, or `PATCH`; on `GET`, STREAM, and WS use `auth
+  jwt`, `bearer`, or `api_key` with `using(secret.NAME)`. This replaces the
+  `webhook-sig-without-body` lint warning added in 0.21.0, which is removed.
+
 ## [0.21.0] - 2026-10-19
 
 ### Added

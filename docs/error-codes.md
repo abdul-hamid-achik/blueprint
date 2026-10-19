@@ -26,7 +26,7 @@ Codes are namespaced by the pass that emits them:
 |--------|------|-------|
 | `L###` | Lexer | Token-level errors. `L001` documented below. |
 | `P###` | Parser | Syntax errors. `P001`-`P002` documented below; broader coverage in progress. |
-| `C###` | Checker | Semantic errors. `C001`–`C055` documented below. |
+| `C###` | Checker | Semantic errors. `C001`–`C056` documented below. |
 | `R###` | Resolver | Reserved. Resolver does not currently emit user-facing errors. |
 | `G###` | Codegen | Reserved. |
 
@@ -1392,6 +1392,51 @@ Read the payload as `claims.<field>` and leave the input out:
 GET /api/me {
   auth jwt using(secret.JWT_SECRET)
   -> { sub: claims.sub }
+}
+```
+
+---
+
+### C056 — auth webhook_sig on an endpoint without a body
+
+`auth webhook_sig` verifies an HMAC of the raw request body. A `GET`, STREAM,
+or WS request has no body, so the signature covers an empty string. A `GET`
+would then answer `400` for every correctly signed request, because an empty
+body is not JSON. On STREAM and WS, every valid request would carry the same
+signature, and anyone who sees one request could replay it. Receive webhooks
+on `POST`, `PUT`, or `PATCH`. On `GET`, STREAM, and WS, use `auth jwt`,
+`bearer`, or `api_key` with `using(secret.NAME)`.
+
+```bp
+blueprint "api" {
+  version "1.0.0"
+  runtime node
+}
+
+secret HOOK_KEY required
+
+STREAM /api/live {
+  auth webhook_sig using(secret.HOOK_KEY)   # C056: no body to sign
+
+  stream {
+    |> on timeout(5s) {
+      -> { type: "ping" }
+    }
+  }
+}
+```
+
+Use a token instead:
+
+```bp
+STREAM /api/live {
+  auth jwt using(secret.JWT_SECRET)
+
+  stream {
+    |> on timeout(5s) {
+      -> { type: "ping" }
+    }
+  }
 }
 ```
 

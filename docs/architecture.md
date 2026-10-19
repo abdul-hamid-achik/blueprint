@@ -468,7 +468,6 @@ issues := linter.Lint(file)
 | `unenforceable-ws-auth` | warning | WS `auth` with no `using(secret.NAME)` (other than `webhook_sig`), which codegen does not check |
 | `unenforced-auth` | warning | REST or STREAM `auth` with no `using(secret.NAME)` (other than `webhook_sig`), with no `use` middleware on the endpoint or the blueprint |
 | `optional-auth-secret` | warning | `auth ... using(secret.NAME)` on any endpoint where `NAME` is declared `optional`: 401 for every request while it is unset or empty, or a key committed in the `.bp` source when it has a default |
-| `webhook-sig-without-body` | warning | `auth webhook_sig` on `GET`, STREAM, or WS, where the signed body is empty: a `GET` always answers `400`, and a STREAM or WS signature is one replayable value |
 | `unused-input` | warning | An endpoint input that the body never references |
 | `where-predicate-self-equal` | warning | A `where` predicate such as `x == x` where no input or binding named `x` is in scope |
 

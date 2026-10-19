@@ -963,7 +963,7 @@ is enforced (see Auth Strategies).
 | `auth jwt using(secret.NAME)` | Enforced: `Authorization: Bearer <jwt>`; HS256 only, signed with the secret; `exp` and `nbf` are checked |
 | `auth api_key using(secret.NAME)` | Enforced: the `X-API-Key` header must equal the secret value |
 | `auth basic using(secret.NAME)` | Enforced: `Authorization: Basic <base64(user:password)>`; the secret holds `user:password` |
-| `auth webhook_sig using(secret.KEY)` | Enforced with HMAC-SHA256 (hex) over the raw body, against `X-Webhook-Signature`. An unset or empty secret fails closed. A bad, non-hex, or missing signature, or one made with an empty key, answers `401` with `{ "error": "Invalid signature" }`. A verified body that is not JSON answers `400` with `{ "error": "Invalid payload" }`. The parsed body is bound to `data`. Python enforces the same contract in `src/lib/webhook.py`. The signature covers the body, so use it on endpoints that receive one; on `GET`, STREAM, and WS the body is empty, and `bp lint` warns (`webhook-sig-without-body`) |
+| `auth webhook_sig using(secret.KEY)` | Enforced with HMAC-SHA256 (hex) over the raw body, against `X-Webhook-Signature`. An unset or empty secret fails closed. A bad, non-hex, or missing signature, or one made with an empty key, answers `401` with `{ "error": "Invalid signature" }`. A verified body that is not JSON answers `400` with `{ "error": "Invalid payload" }`. The parsed body is bound to `data`. Python enforces the same contract in `src/lib/webhook.py`. The signature covers the body, so it is accepted only on `POST`, `PUT`, `PATCH`, and `DELETE`; on `GET`, STREAM, and WS it is error `C056` |
 | `auth bearer`, `auth jwt`, `auth api_key`, `auth basic`, `auth session` (no `using`) | Parsed metadata; does not verify anything by itself |
 
 An enforced check runs before the handler, before `use` middleware and input
@@ -1198,7 +1198,7 @@ keep-alive`. Differences:
   when the call returns. Two events whose calls finish out of order send their
   frames out of order, on both targets.
 
-Not supported on Python yet: `cache`, `auth webhook_sig`, a bare `header` or `env`
+Not supported on Python yet: `cache`, a bare `header` or `env`
 name or a read deeper than one field (`header.X.y`), and handler output that is
 not an object literal. `bp build` names the reason. WS endpoints are translated on
 Python; section 15 lists their notes.
@@ -1406,12 +1406,11 @@ with these differences:
   `|> when message.body == "close": close`.
 - A handler calls a declared `fn` on its worker thread, as a REST body does.
 
-Still rejected on Python, with a reason from `bp build`: `auth webhook_sig`, a bare
-`header` or `env` name or a read deeper than one field, `.length` on a value that
-is not a message field, a step outside the translated set, and a handler output
-that is not an object literal. `auth webhook_sig` on WS is not translated because
-Node computes the HMAC over the handshake's request body, which is empty, so the
-signature is one fixed value a client can replay, not a check of the message. The
+Still rejected on Python, with a reason from `bp build`: a bare `header` or `env`
+name or a read deeper than one field, `.length` on a value that is not a message
+field, a step outside the translated set, and a handler output that is not an
+object literal. (`auth webhook_sig` on WS and STREAM is error `C056` on both
+targets: the handshake has no body to sign.) The
 translated set is the realtime built-ins (`join`, `leave`, `broadcast`, `whisper`,
 `close`), `emit`, `inject`, `log`, the data operations (`save`, `fetch`, `query`,
 `update`, `delete`), `when`, `guard`, `try`/`recover`, and declared `fn` calls.

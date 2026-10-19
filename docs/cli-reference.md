@@ -649,7 +649,6 @@ described in [Multiple files and directories](#multiple-files-and-directories).
 | `unenforceable-ws-auth` | warning | A WS `auth` line with no `using(secret.NAME)` (other than `webhook_sig`). Codegen does not check it. Add `using(secret.NAME)` to enforce bearer, jwt, api_key, or basic |
 | `unenforced-auth` | warning | A REST or STREAM `auth` line with no `using(secret.NAME)` (other than `webhook_sig`), on an endpoint with no `use` middleware and no blueprint-level `use`. Codegen does not check it. Add `using(secret.NAME)` or a `use` middleware that verifies the credential |
 | `optional-auth-secret` | warning | An `auth <strategy> using(secret.NAME)` line on a REST, STREAM, or WS endpoint whose secret is declared `optional`. Generated auth fails closed, so while the secret is unset or empty every request answers 401; with a non-empty `default(...)` the key is in the `.bp` source. Declare the secret `required` |
-| `webhook-sig-without-body` | warning | `auth webhook_sig` on a `GET`, STREAM, or WS endpoint. The signature covers the request body, which is empty there. A `GET` then answers `400` for every correctly signed request, because an empty body is not JSON. On STREAM and WS (Node) every valid request carries the same signature, so anyone who sees one can replay it. Use `POST` for webhooks, or `jwt`, `bearer`, or `api_key` with `using(secret.NAME)` |
 | `unpaginated-list` | info | A `GET` endpoint returns every row of a `query` with no `paginate(...)` or `first` |
 
 **Example:**

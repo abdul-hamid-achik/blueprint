@@ -35,7 +35,6 @@ func Lint(f *ast.File) []Issue {
 	issues = append(issues, checkUnenforceableWsAuth(f)...)
 	issues = append(issues, checkUnenforcedAuth(f)...)
 	issues = append(issues, checkOptionalAuthSecret(f)...)
-	issues = append(issues, checkWebhookSigWithoutBody(f)...)
 	issues = append(issues, checkCacheOnNonGet(f)...)
 	issues = append(issues, checkUnusedSecretsAndEnvs(f)...)
 	issues = append(issues, checkUnusedFunctions(f)...)
@@ -490,53 +489,6 @@ func checkOptionalAuthSecret(f *ast.File) []Issue {
 		switch b := block.(type) {
 		case *ast.Endpoint:
 			check(b.Method, b.Path, b.Meta)
-		case *ast.StreamEndpoint:
-			check("STREAM", b.Path, b.Meta)
-		case *ast.WsEndpoint:
-			check("WS", b.Path, b.Meta)
-		}
-	}
-
-	return issues
-}
-
-// checkWebhookSigWithoutBody flags `auth webhook_sig` where the request has no
-// body to sign. The generated check is an HMAC of the raw body, so on a GET the
-// only valid signature is the HMAC of an empty body, and the endpoint then
-// answers 400 because an empty body is not JSON. On STREAM and WS (Node) the
-// check passes with that same fixed value: every valid request carries one
-// signature, so anyone who sees a request can replay it.
-func checkWebhookSigWithoutBody(f *ast.File) []Issue {
-	var issues []Issue
-	check := func(method, path string, meta []*ast.EndpointMeta) {
-		for _, m := range meta {
-			if m.Kind != "auth" || !isWebhookSigAuth(m.Value) {
-				continue
-			}
-			issue := Issue{
-				File:  m.Loc.File,
-				Line:  m.Loc.Line,
-				Col:   m.Loc.Col,
-				Level: "warning",
-				Rule:  "webhook-sig-without-body",
-			}
-			if method == "GET" {
-				issue.Message = fmt.Sprintf("auth webhook_sig on GET %s signs a request body, but a GET request has none; a valid signature is the HMAC of an empty body, and the endpoint then answers 400 because an empty body is not JSON", path)
-				issue.Hint = "receive webhooks on POST, or use `auth api_key using(secret.NAME)` on a GET"
-			} else {
-				issue.Message = fmt.Sprintf("auth webhook_sig on %s %s signs an empty request body, so every valid request carries the same signature and anyone who sees one can replay it", method, path)
-				issue.Hint = "use `auth jwt using(secret.NAME)`, `bearer`, or `api_key` instead; the Python target rejects webhook_sig here"
-			}
-			issues = append(issues, issue)
-		}
-	}
-
-	for _, block := range f.Blocks {
-		switch b := block.(type) {
-		case *ast.Endpoint:
-			if b.Method == "GET" {
-				check(b.Method, b.Path, b.Meta)
-			}
 		case *ast.StreamEndpoint:
 			check("STREAM", b.Path, b.Meta)
 		case *ast.WsEndpoint:

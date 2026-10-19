@@ -256,8 +256,8 @@ reasons come from `unsupportedFeatures()` in
 
 - struct `enum` declarations (variants with bodies, such as `Plan[x].field` lookups)
 - model fields typed by a `type` declaration, primary keys typed by an alias, and `json<T>` model fields over a declared type
-- WS endpoints that use `use` middleware with configuration (`use name { ... }`) or an undeclared middleware, `auth webhook_sig`, a bare `header` or `env` name or a read deeper than one field, a step outside the translated set, or a handler output that is not an object literal
-- STREAM endpoints that use `use` middleware with configuration or an undeclared middleware, `cache`, `auth webhook_sig`, a bare `header` or `env` name or a read deeper than one field in a handler, a statement before the stream block other than an input, a step, a guard, or `try`/`recover`, or handler output that is not an object literal
+- WS endpoints that use `use` middleware with configuration (`use name { ... }`) or an undeclared middleware, a bare `header` or `env` name or a read deeper than one field, a step outside the translated set, or a handler output that is not an object literal
+- STREAM endpoints that use `use` middleware with configuration or an undeclared middleware, `cache`, a bare `header` or `env` name or a read deeper than one field in a handler, a statement before the stream block other than an input, a step, a guard, or `try`/`recover`, or handler output that is not an object literal
 - `emit ... to(service)` (no Python transport)
 - `worker`, `subscribe`, and `external` declarations
 - `storage` backends other than `s3`, `delete_s3_object`, and endpoint `file` inputs (Node rejects `file` inputs too)

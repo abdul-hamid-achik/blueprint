@@ -219,6 +219,11 @@ const (
 	// name, or middleware injection named claims on an auth jwt endpoint, which
 	// reserves claims for the verified token payload.
 	CodeReservedClaims = "C055"
+	// CodeWebhookSigWithoutBody = auth webhook_sig on a GET, STREAM, or WS
+	// endpoint. The signature covers the request body, which is empty there, so
+	// a GET answers 400 for every signed request and a STREAM or WS signature is
+	// one fixed value that anyone who sees it can replay.
+	CodeWebhookSigWithoutBody = "C056"
 )
 
 // enforcedAuthStrategies are the auth strategies that accept using(secret.NAME)
@@ -723,6 +728,9 @@ func (c *Checker) checkEndpoint(n *ast.Endpoint) {
 		}
 		c.checkEndpointAuth(m)
 	}
+	if n.Method == "GET" {
+		c.checkWebhookSigWithoutBody("GET", n.Path, n.Meta)
+	}
 	c.checkReservedClaims(n, n.Path, n.Meta, n.Stmts, nil)
 	c.checkArrowStmtExprsInScope(n.Stmts, c.newEndpointScope(n, n.Meta))
 }
@@ -743,6 +751,7 @@ func (c *Checker) checkStreamEndpoint(n *ast.StreamEndpoint) {
 		}
 		c.checkEndpointAuth(m)
 	}
+	c.checkWebhookSigWithoutBody("STREAM", n.Path, n.Meta)
 	c.checkReservedClaims(n, n.Path, n.Meta, n.Stmts, n.Handlers)
 	scope := c.newRealtimeEndpointScope(n, n.Path, n.Meta)
 	c.checkArrowStmtExprsInScope(n.Stmts, scope)
@@ -769,6 +778,7 @@ func (c *Checker) checkWsEndpoint(n *ast.WsEndpoint) {
 		}
 		c.checkEndpointAuth(m)
 	}
+	c.checkWebhookSigWithoutBody("WS", n.Path, n.Meta)
 	var wsStmts []ast.ArrowStmt
 	wsStmts = append(wsStmts, n.Stmts...)
 	wsStmts = append(wsStmts, n.OnConnect...)
@@ -2673,6 +2683,30 @@ func (c *Checker) checkEndpointAuth(meta *ast.EndpointMeta) {
 		c.addErrorCode(meta.Loc, CodeUnknownStateSaveSecret,
 			fmt.Sprintf("auth webhook_sig references unknown secret %q", secretName),
 			"Declare it with: secret "+secretName+" required",
+		)
+	}
+}
+
+// checkWebhookSigWithoutBody rejects auth webhook_sig where the request has no
+// body to sign (C056): GET, STREAM, and WS.
+func (c *Checker) checkWebhookSigWithoutBody(method, path string, meta []*ast.EndpointMeta) {
+	for _, m := range meta {
+		if m == nil || m.Kind != "auth" || m.Value == nil {
+			continue
+		}
+		name := ""
+		switch v := m.Value.(type) {
+		case *ast.FnCall:
+			name = v.Name
+		case *ast.Ident:
+			name = v.Name
+		}
+		if name != "webhook_sig" {
+			continue
+		}
+		c.addErrorCode(m.Loc, CodeWebhookSigWithoutBody,
+			fmt.Sprintf("auth webhook_sig on %s %s: the signature covers the request body, which is empty there", method, path),
+			"Receive webhooks on POST, PUT, or PATCH. On GET, STREAM, and WS use auth jwt, bearer, or api_key with using(secret.NAME)",
 		)
 	}
 }
