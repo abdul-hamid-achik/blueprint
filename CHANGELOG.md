@@ -36,6 +36,12 @@ All notable changes to this project will be documented in this file.
   legacy repeatable keys that BullMQ 6 refuses to read; flush the queue Redis
   before the first v6 start.
 
+### Fixed
+
+- Node: a worker read each input under its `.bp` name (`_bpData.job_id`), but
+  `enqueue` sends camelCase keys (`{ jobId }`, as `emit` does), so every
+  worker input arrived `undefined`. Workers now read the camelCase key.
+
 ## [0.21.0] - 2026-10-19
 
 ### Added
