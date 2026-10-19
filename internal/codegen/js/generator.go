@@ -896,6 +896,10 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	if len(streams) > 0 || len(ws) > 0 {
 		files = append(files, g.genBackpressureLib())
 	}
+	// src/lib/ws-connections.ts — the connection registry behind whisper
+	if len(ws) > 0 && fileHasCall(g.file, "whisper") {
+		files = append(files, g.genWsConnectionsLib())
+	}
 
 	// src/subscriptions/<name>.ts + src/lib/events.ts
 	// Generate the shared event registry for subscribers, STREAM event handlers,

@@ -124,16 +124,17 @@ function bufferedBytes(ws: WsSocket): number {
   return typeof amount === 'number' ? amount : 0;
 }
 
-// wsFanOutSend delivers one room message to one socket; every room fan-out send
-// goes through it. Sockets that are not OPEN are skipped. A socket whose unsent
-// buffer exceeds BP_WS_MAX_BUFFERED_BYTES is a slow consumer: onEvict removes it
-// from its rooms, it is closed with 1013 ("slow consumer"), and one warning is
-// logged. Returns true when the message was sent.
-export function wsFanOutSend(ws: WsSocket, data: string, room: string, onEvict: (ws: WsSocket) => void): boolean {
+// wsFanOutSend delivers one WS message to one socket; every room fan-out and
+// whisper send goes through it. label names the destination in the warning (for
+// example "room <id>" or "connection <id>"). Sockets that are not OPEN are
+// skipped. A socket whose unsent buffer exceeds BP_WS_MAX_BUFFERED_BYTES is a
+// slow consumer: onEvict removes it, it is closed with 1013 ("slow consumer"), and
+// one warning is logged. Returns true when the message was sent.
+export function wsFanOutSend(ws: WsSocket, data: string, label: string, onEvict: (ws: WsSocket) => void): boolean {
   if (ws.readyState !== WS_OPEN) return false;
   const buffered = bufferedBytes(ws);
   if (buffered > BP_WS_MAX_BUFFERED_BYTES) {
-    console.warn('WS room ' + room + ': dropping slow consumer (reason: slow consumer; ' + buffered + ' bytes buffered)');
+    console.warn('WS ' + label + ': dropping slow consumer (reason: slow consumer; ' + buffered + ' bytes buffered)');
     onEvict(ws);
     ws.close(WS_TRY_AGAIN_LATER, 'slow consumer');
     return false;

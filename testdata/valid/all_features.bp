@@ -223,7 +223,10 @@ WS /ws/jobs/:id {
   on_connect {
     |> job = fetch job(id)
     |> guard job -> 404 "Job not found"
-    -> { type: "connected", id: job.id, status: job.status }
+    -> { type: "connected", id: job.id, status: job.status, connection: connection.id }
+  }
+  on_message {
+    |> whisper connection(message.to) { from: connection.id, job: job.id }
   }
 }
 

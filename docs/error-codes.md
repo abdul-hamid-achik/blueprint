@@ -26,7 +26,7 @@ Codes are namespaced by the pass that emits them:
 |--------|------|-------|
 | `L###` | Lexer | Token-level errors. `L001` documented below. |
 | `P###` | Parser | Syntax errors. `P001`-`P002` documented below; broader coverage in progress. |
-| `C###` | Checker | Semantic errors. `C001`–`C052` documented below. |
+| `C###` | Checker | Semantic errors. `C001`–`C053` documented below. |
 | `R###` | Resolver | Reserved. Resolver does not currently emit user-facing errors. |
 | `G###` | Codegen | Reserved. |
 
@@ -1329,6 +1329,39 @@ GET /api/tasks {
 Declare the secret with `secret JWT_SECRET required`. The message names the
 strategy, so `auth jwt requires using(secret.NAME)` means the argument is
 missing or malformed.
+
+### C054 — invalid WebSocket connection use
+
+The WS connection has one field, `id`, and `whisper` addresses one connection.
+This code fires when `connection` has any other field, when `whisper` targets
+something other than `connection(id)` (for example `room(name)`), or when a
+`whisper` has no data block. `connection` is reserved in WS endpoints, so a
+`:connection` path parameter or a step binding or `inject` alias named
+`connection` is C054 too. Use `broadcast room(name) { ... }` to send to a
+room.
+
+```bp
+blueprint "chat" {
+  version "1.0.0"
+  runtime node
+}
+
+WS /ws/chat {
+  on_message {
+    |> whisper room(message.room) { body: message.body }  # C054: target must be connection(id)
+  }
+}
+```
+
+Address one connection by its id, and use `connection.id` for the sender:
+
+```bp
+WS /ws/chat {
+  on_message {
+    |> whisper connection(message.to) { from: connection.id, body: message.body }
+  }
+}
+```
 
 ---
 

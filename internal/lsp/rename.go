@@ -27,14 +27,15 @@ const (
 // a block (env, header, data, message, error, item) or gives a built-in
 // meaning (close, first), beyond the lexer keywords.
 var renameReservedNames = map[string]bool{
-	"env":     true,
-	"header":  true,
-	"data":    true,
-	"message": true,
-	"error":   true,
-	"item":    true,
-	"close":   true,
-	"first":   true,
+	"env":        true,
+	"header":     true,
+	"data":       true,
+	"message":    true,
+	"error":      true,
+	"item":       true,
+	"close":      true,
+	"connection": true,
+	"first":      true,
 }
 
 // validateRenameName reports why name cannot be a symbol name, or nil.

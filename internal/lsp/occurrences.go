@@ -743,7 +743,8 @@ func (b *occurrenceBuilder) call(x *ast.FnCall) {
 			// The room/connection target is a FnCall. Its name is a model when
 			// one of that name is declared, as the checker resolves it.
 			if target, ok := a.(*ast.FnCall); ok {
-				if b.kindOf(target.Name) == "model" {
+				// whisper's connection(id) target is never a model reference.
+				if x.Name != "whisper" && b.kindOf(target.Name) == "model" {
 					if off, ok := b.nameAfter(x.Loc, target.Name); ok {
 						b.add(off, target.Name, "model:"+target.Name, false)
 					}

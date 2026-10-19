@@ -97,7 +97,12 @@ WS /ws/rooms/:id {
     |> join room(id)
     |> log "User {sender} joined room {room.name}" level(info)
     |> broadcast room(id) { type: "joined", sender: sender }
-    -> { type: "connected", room: room.name, sender: sender }
+    -> {
+      type: "connected",
+      room: room.name,
+      sender: sender,
+      id: connection.id,
+    }
   }
   on_message {
     |> guard message.body -> 400 "Empty message"
@@ -111,6 +116,9 @@ WS /ws/rooms/:id {
         body: message.body,
         created: now,
       }
+    }
+    |> when message.type == "dm" {
+      |> whisper connection(message.to) { type: "dm", sender: sender, body: message.body }
     }
   }
   on_disconnect {

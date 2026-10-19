@@ -124,6 +124,11 @@ func (g *Generator) collectImports(stmts []ast.ArrowStmt) *importCollector {
 			if isDataOp(v.Name) || isBuiltinFn(v.Name) {
 				return
 			}
+			// connection(id) is the symbolic target of whisper, not a call; the
+			// checker rejects any other use of it.
+			if v.Name == "connection" && !g.declaredFns[v.Name] && !g.declaredPipes[v.Name] {
+				return
+			}
 			// Skip model names — they appear as FnCall nodes inside data op
 			// patterns like fetch room(id) or as arguments to builtins like
 			// join(room(id)), but they are not real function calls.

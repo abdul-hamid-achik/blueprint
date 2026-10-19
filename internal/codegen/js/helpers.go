@@ -318,6 +318,17 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 				return fmt.Sprintf("(async () => { await _ensureRedis(); if (_redisPub?.isOpen) { _redisPub.publish(`room:${%s}`, '{}'); } else { _fanOut(%s, '{}'); } })()", arg, arg)
 			}
 			return "/* broadcast: missing arguments */"
+		case "whisper":
+			// WS built-in: whisper connection(id) { data } — send data (JSON) to
+			// the one connection whose connection.id is id. The checker allows
+			// whisper only in WS handlers; wsWhisper delivers locally or through
+			// the bp:ws:whisper Redis channel (src/lib/ws-connections.ts).
+			if len(v.Args) >= 2 {
+				to := resolveWsRoomArg(v.Args[0], ctx)
+				data := exprToJSWithCtx(v.Args[1], ctx)
+				return fmt.Sprintf("await wsWhisper(%s, JSON.stringify(%s))", to, data)
+			}
+			return "/* whisper: missing arguments */"
 		case "emit":
 			// emit event_name { data } — emit an event to the event system
 			if len(v.Args) >= 2 {
@@ -1666,7 +1677,7 @@ func isBuiltinFn(name string) bool {
 	switch name {
 	case "log", "clock", "sleep", "inject", "map", "pipe",
 		"where", "with", "order", "paginate", "limit", "offset",
-		"join", "leave", "broadcast", "emit", "enqueue", "on", "sum",
+		"join", "leave", "broadcast", "whisper", "emit", "enqueue", "on", "sum",
 		"publish", "archive", "rollback", "track", "upgrade_save", "transition":
 		return true
 	}

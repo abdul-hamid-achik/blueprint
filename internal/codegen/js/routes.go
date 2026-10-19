@@ -1111,6 +1111,12 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	}
 	b.WriteString("import type { UpgradeWebSocket, WSContext, WSMessageReceive } from 'hono/ws';\n")
 	b.WriteString("import { wsFanOutSend } from '../lib/backpressure.js';\n")
+	// whisper connection(id) needs the process-wide connection registry, which
+	// every WS route file shares (src/lib/ws-connections.ts).
+	usesWhisper := fileHasCall(g.file, "whisper")
+	if usesWhisper {
+		b.WriteString("import { registerWsConnection, unregisterWsSocket, wsWhisper } from '../lib/ws-connections.js';\n")
+	}
 	for _, ep := range endpoints {
 		if len(realtimePathInputs(ep.Stmts)) > 0 {
 			b.WriteString("import { z } from 'zod';\n")
@@ -1173,8 +1179,11 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	}
 
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
+	// Every WS connection gets its id from randomUUID (connection.id).
 	if needsWebhookAuth {
-		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
+		b.WriteString("import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';\n")
+	} else {
+		b.WriteString("import { randomUUID } from 'node:crypto';\n")
 	}
 	if needsWebhookAuth {
 		ic.needsEnv = true
@@ -1229,9 +1238,12 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	b.WriteString("  // Remove a socket from every room; used on disconnect and when it is a slow consumer.\n")
 	b.WriteString("  function _evictSocket(_w: any) {\n")
 	b.WriteString("    for (const [k, s] of _rooms) { s.delete(_w); if (s.size === 0) { _rooms.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }\n")
+	if usesWhisper {
+		b.WriteString("    unregisterWsSocket(_w);\n")
+	}
 	b.WriteString("  }\n")
 	b.WriteString("  function _fanOut(roomId: string, data: string) {\n")
-	b.WriteString("    for (const _w of [...(_rooms.get(roomId) ?? [])]) wsFanOutSend(_w, data, roomId, _evictSocket);\n")
+	b.WriteString("    for (const _w of [...(_rooms.get(roomId) ?? [])]) wsFanOutSend(_w, data, 'room ' + roomId, _evictSocket);\n")
 	b.WriteString("  }\n\n")
 
 	// Module-level rate limit store (shared across all handlers in this file)
@@ -1343,6 +1355,11 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 			}
 		}
 
+		// connection.id: a fresh id per socket, shared by onOpen, onMessage and
+		// onClose because this factory runs once per upgrade request.
+		b.WriteString("  const _connectionId = randomUUID();\n")
+		b.WriteString("  const connection = { id: _connectionId };\n\n")
+
 		// Hoist variables from onConnect that are used across handlers.
 		// Variables assigned in onConnect (step bindings + inject) need to be
 		// accessible in onMessage and onClose, so we declare them in the outer scope.
@@ -1418,6 +1435,9 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		// watching; Node's default unhandledRejection behavior is to crash
 		// the process, taking down every other connection with it.
 		b.WriteString("    async onOpen(evt: Event, ws: WSContext) {\n")
+		if usesWhisper {
+			b.WriteString("      registerWsConnection(_connectionId, ws);\n")
+		}
 		b.WriteString("      try {\n")
 		if len(ep.OnConnect) > 0 {
 			onConnectCtx := baseCtx
@@ -1466,6 +1486,9 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		// (a user `leave` only removes it from one room) so dead sockets and
 		// emptied-out room entries don't accumulate in _rooms forever.
 		b.WriteString("    async onClose(evt: CloseEvent, ws: WSContext) {\n")
+		if usesWhisper {
+			b.WriteString("      unregisterWsSocket(ws);\n")
+		}
 		b.WriteString("      for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) { _rooms.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }\n")
 		b.WriteString("      try {\n")
 		if len(ep.OnDisconnect) > 0 {

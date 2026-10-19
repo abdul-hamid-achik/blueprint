@@ -91,8 +91,6 @@ review workflow that makes source changes easier to inspect before applying.
 
 ### Realtime
 
-- `whisper` (delivery to a single connection) is not implemented. The checker
-  rejects it, and the language reference says so.
 - WS and REST `auth bearer`, `jwt`, `api_key`, and `basic` are enforced only
   with `using(secret.NAME)`; codegen checks the credential on REST, STREAM, and
   WS. Without `using`, the `unenforceable-ws-auth` and `unenforced-auth` lints

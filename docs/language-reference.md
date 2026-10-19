@@ -1162,6 +1162,7 @@ WS /ws/rooms/:id {
 join room(name)                            # join a pub/sub room
 leave room(name)                           # leave a room
 broadcast room(name) { data }              # send to all in room
+whisper connection(id) { data }            # send to one connection
 close                                      # close this connection
 ```
 
@@ -1185,8 +1186,42 @@ WS /ws/chat/:channel {
 }
 ```
 
-Sending to one specific connection (`whisper`) is not implemented. `bp check`
-rejects it as an unknown function (C006).
+Every WS connection gets an id when it opens: `connection.id`, a UUID string.
+`connection` is bound only inside `on_connect`, `on_message`, and
+`on_disconnect`, and its only field is `id`; `connection.user` is a C054 error,
+and `connection` anywhere else is C035. The name is reserved in WS endpoints, so
+a `:connection` path parameter or a step binding named `connection` is also
+C054. Send the id to another client, store it, or use it as the target of
+`whisper`:
+
+```bp
+WS /ws/chat {
+  on_connect {
+    -> { type: "connected", id: connection.id }
+  }
+
+  on_message {
+    |> when message.type == "dm" {
+      |> whisper connection(message.to) { type: "dm", from: connection.id, body: message.body }
+    }
+  }
+}
+```
+
+`whisper connection(id) { data }` sends the JSON-encoded `data` to the one
+connection whose `connection.id` is `id`. Like `close`, it is only valid inside
+WS handlers. The target must be `connection(...)` with one id argument, and the
+data block is required: `whisper room(name)` is C054, so use
+`broadcast room(name) { data }` for rooms. A whisper to an id that is not
+connected anywhere is a no-op, not an error.
+
+Delivery is per process. When the id is connected to the instance that runs the
+handler, the message is written directly to that socket. Otherwise, with
+`REDIS_URL` set, the instance publishes it on the `bp:ws:whisper` channel, every
+instance subscribes to that channel, and the instance that holds the connection
+delivers it. Without `REDIS_URL`, a whisper to a connection on another instance
+is dropped. Whisper sends use the same slow-consumer limit as room broadcasts;
+a slow target is closed with 1013 and removed from the registry.
 
 A WS endpoint can use `use` middleware too. The variables it injects are typed
 inside the handlers as they are on REST routes.

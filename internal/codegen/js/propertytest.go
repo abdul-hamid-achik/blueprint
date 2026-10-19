@@ -164,8 +164,8 @@ func (g *Generator) validatePropertyHermeticStmts(stmts []ast.ArrowStmt, fns map
 		case "clock":
 			found = fmt.Errorf("clock is wall-clock dependent; inject a deterministic time function before enabling properties")
 			return
-		case "join", "leave", "broadcast":
-			found = fmt.Errorf("realtime room call %q may connect to live Redis", call.Name)
+		case "join", "leave", "broadcast", "whisper":
+			found = fmt.Errorf("realtime call %q may connect to live Redis", call.Name)
 			return
 		case "on":
 			found = fmt.Errorf("event registration is process-global and would leak state across property runs")

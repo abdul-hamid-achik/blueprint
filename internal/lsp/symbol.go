@@ -64,7 +64,12 @@ var builtinKeywordDocs = map[string]string{
 	"guard":      "**guard** - Early return if condition fails\n\n```bp\n|> guard user.active -> 403 \"Forbidden\"\n```",
 	"when":       "**when** - Conditional execution\n\n```bp\n|> when plan == \"pro\": limit = 1000\n```",
 	"try":        "**try** - Error handling block\n\n```bp\n|> try {\n  |> risky_operation()\n} recover {\n  |> log error\n}\n```",
+	"connection": "**connection** - The WebSocket connection in a WS handler (on_connect, on_message, on_disconnect). Its only field is `id`.\n\n```bp\n-> { id: connection.id }\n```",
+	"whisper":    "**whisper** - Sends data to one WebSocket connection by id, across instances when REDIS_URL is set. Only in WS handlers.\n\n```bp\n|> whisper connection(message.to) { from: connection.id, body: message.body }\n```",
 }
+
+// connectionIDHover documents connection.id in WS handlers.
+const connectionIDHover = "**connection.id** - The id of this WebSocket connection, a UUID assigned when it opens. Pass it to `whisper connection(id) { data }` to send to this connection from another handler."
 
 // docIndex caches a parsed AST for an open document text. The Server keeps a
 // per-uri cache to avoid reparsing for every hover/definition request.
@@ -162,6 +167,10 @@ func findSymbolAt(idx *docIndex, line, char int) SymbolInfo {
 	if parent != "" {
 		// Confirm parent resolves to a model before classifying as field.
 		if _, ok := findModel(idx.file, parent); ok {
+			return SymbolInfo{Kind: SymbolField, Name: word, Parent: parent, Loc: loc}
+		}
+		// connection.id is the WS connection's id, not a model field.
+		if parent == "connection" && word == "id" {
 			return SymbolInfo{Kind: SymbolField, Name: word, Parent: parent, Loc: loc}
 		}
 	}

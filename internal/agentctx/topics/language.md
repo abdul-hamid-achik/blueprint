@@ -118,9 +118,10 @@ Endpoint bodies, middleware `before`/`after`, and fn logic are `|>` steps. Outpu
 | `emit "event" { data }` / `enqueue "queue" { data }` | Event / BullMQ job. With `REDIS_URL`, STREAM listeners on other instances receive emitted events; `subscribe` handlers stay local. |
 | `join room(id)` / `leave room(id)` / `broadcast room(id) { data }` | WS only. Need no `model room`. |
 | `close` | WS only: closes the connection and ends the handler. Anywhere else: C035. |
+| `whisper connection(id) { data }` | WS only: sends JSON `data` to the one connection whose `connection.id` is `id`. Target must be `connection(...)` (`whisper room(x)` is C054; use `broadcast`). Data block required. An id connected nowhere is a no-op. With `REDIS_URL`, delivered across instances on `bp:ws:whisper`. Anywhere else: C035. |
 | `call svc GET /path` / `sleep 5s` | External call / delay. |
 
-`whisper` is not implemented; the checker rejects it. There is no `return` step: end with `->` outputs.
+There is no `return` step: end with `->` outputs.
 
 ## REST endpoints
 
@@ -154,6 +155,16 @@ WS /ws/rooms/:id {
   }
 }
 
+@ "Direct message to one connection by its id"
+WS /ws/chat {
+  on_connect {
+    -> { type: "connected", id: connection.id }
+  }
+  on_message {
+    |> whisper connection(message.to) { from: connection.id, body: message.body }
+  }
+}
+
 @ "Live events for one room"
 STREAM /rooms/:id/events {
   <- id uuid required
@@ -166,6 +177,8 @@ STREAM /rooms/:id/events {
 ```
 
 `:param` inputs on STREAM and WS are validated before the stream or upgrade starts (400 refuses the handshake). Python rejects both kinds of endpoint.
+
+Each WS connection has `connection.id`, a UUID string, bound in `on_connect`, `on_message`, and `on_disconnect`. It is the only field of `connection`. Send to one connection with `whisper connection(id) { data }` (the example above); the id is how a client addresses a peer, so return it from `on_connect`.
 
 Slow clients are bounded: a STREAM client that stays more than `BP_SSE_MAX_PENDING` (default 256) events behind for 5 s (or reaches 16× that) is dropped, and a WS socket with more than `BP_WS_MAX_BUFFERED_BYTES` (default 1 MiB) unsent is closed with code 1013.
 

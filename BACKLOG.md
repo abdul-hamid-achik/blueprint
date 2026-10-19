@@ -177,6 +177,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   variables are typed on STREAM/WS like REST. Backpressure on STREAM and WS fan-out
   shipped 2026-10-18 (`BP_SSE_MAX_PENDING`, `BP_WS_MAX_BUFFERED_BYTES`).
   (STREAM/WS `cache` metadata has no effect; the `cache-on-non-get` lint reports it.) _(shipped 2026-10-18)_
+- [x] **WS `whisper connection(id) { data }` and `connection.id`.** Each WS connection has a UUID id; a per-process registry delivers to one connection, across instances via `bp:ws:whisper` when `REDIS_URL` is set. _(shipped 2026-10-18)_
 
 ### Found in the 2026-06-16 deep review
 

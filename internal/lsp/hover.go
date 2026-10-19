@@ -44,6 +44,9 @@ func computeHover(idx *docIndex, line, char int) string {
 		}
 
 	case SymbolField:
+		if sym.Parent == "connection" && sym.Name == "id" {
+			return connectionIDHover
+		}
 		if m, ok := findModel(idx.file, sym.Parent); ok {
 			if f, ok := findField(m, sym.Name); ok {
 				return fieldHover(sym.Parent, f)

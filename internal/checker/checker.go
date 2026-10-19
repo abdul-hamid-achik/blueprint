@@ -212,6 +212,9 @@ const (
 	// basic does not name a declared secret, or uses using(...) on a strategy
 	// that does not take a secret.
 	CodeAuthSecret = "C053"
+	// CodeInvalidWsTarget = a WS connection is used with a field other than id,
+	// or whisper names a target other than connection(id) or lacks its data.
+	CodeInvalidWsTarget = "C054"
 )
 
 // enforcedAuthStrategies are the auth strategies that accept using(secret.NAME)
@@ -763,6 +766,11 @@ func (c *Checker) checkWsEndpoint(n *ast.WsEndpoint) {
 	scope := c.newRealtimeEndpointScope(n.Path, n.Meta)
 	// `|> close` closes this connection; it means nothing outside a WS handler.
 	bindArrowName(scope, "close", SymVariable, n.Loc)
+	// `connection` names this socket in WS handlers; connection.id is its id and
+	// `whisper connection(id) { ... }` targets it. Bound only here, like close.
+	c.checkWsConnectionReserved(n)
+	bindArrowName(scope, "connection", SymVariable, n.Loc)
+	scope.symbols["connection"].Node = n
 	c.checkArrowStmtExprsInScope(n.Stmts, scope)
 	c.checkArrowStmtExprsInScope(n.OnConnect, scope)
 	messageScope := cloneArrowScope(scope)
@@ -1578,6 +1586,7 @@ func (c *Checker) checkLocalExpr(expr ast.Expr, scope *Scope) {
 		c.checkLocalCallArgs(item, scope)
 	case *ast.FieldAccess:
 		c.checkLocalExpr(item.Base, scope)
+		c.checkConnectionFieldAccess(item, scope)
 		c.checkKnownModelFieldAccess(item, scope)
 	case *ast.IndexAccess:
 		c.checkLocalExpr(item.Base, scope)
@@ -1703,6 +1712,13 @@ func (c *Checker) checkLocalIdent(ident *ast.Ident, scope *Scope) {
 		)
 		return
 	}
+	if ident.Name == "connection" {
+		c.addErrorCode(ident.Loc, CodeUnboundIdentifier,
+			`"connection" is only available in WS handlers`,
+			"Use connection.id in on_connect, on_message, or on_disconnect of a WS endpoint",
+		)
+		return
+	}
 	c.addErrorCode(ident.Loc, CodeUnboundIdentifier,
 		fmt.Sprintf("unbound identifier %q", ident.Name),
 		"Declare it with <-, bind it with |> name = ..., or fix the name",
@@ -1714,6 +1730,14 @@ func (c *Checker) checkLocalCallArgs(call *ast.FnCall, scope *Scope) {
 		return
 	}
 	c.checkCallableArgumentTypes(call, scope)
+	// whisper addresses one WS connection, so it exists only inside WS handlers
+	// (the same scope as connection and close). Codegen emits it only there.
+	if call.Name == "whisper" && !isWSConnectionBinding(scope) {
+		c.addErrorCode(call.Loc, CodeUnboundIdentifier,
+			`"whisper" is only available in WS handlers`,
+			"Use whisper connection(id) { data } in on_connect, on_message, or on_disconnect of a WS endpoint",
+		)
+	}
 	switch call.Name {
 	case "query", "fetch", "save", "update", "delete", "count", "seed", "import_bundle", "export_bundle":
 		c.checkDataOperationRefs(call, scope)
@@ -2224,6 +2248,100 @@ func (c *Checker) checkKnownModelFieldAccess(access *ast.FieldAccess, scope *Sco
 	)
 }
 
+// isWSConnectionBinding reports whether scope sees the `connection` binding of
+// an enclosing WS endpoint (bound by checkWsEndpoint, not a user binding).
+func isWSConnectionBinding(scope *Scope) bool {
+	if scope == nil {
+		return false
+	}
+	sym := scope.Lookup("connection")
+	if sym == nil || sym.Kind != SymVariable {
+		return false
+	}
+	_, ws := sym.Node.(*ast.WsEndpoint)
+	return ws
+}
+
+// checkWsConnectionReserved rejects a WS path parameter, input, or binding
+// named connection. The generated handler declares `connection` for every
+// socket, so a second declaration would not compile.
+func (c *Checker) checkWsConnectionReserved(n *ast.WsEndpoint) {
+	const hint = "connection is reserved in WS endpoints for this socket (connection.id); rename it"
+	for _, segment := range strings.Split(n.Path, "/") {
+		if segment == ":connection" {
+			c.addErrorCode(n.Loc, CodeInvalidWsTarget, "WS path parameter :connection is reserved", hint)
+		}
+	}
+	var walk func(stmts []ast.ArrowStmt)
+	walk = func(stmts []ast.ArrowStmt) {
+		for _, stmt := range stmts {
+			switch s := stmt.(type) {
+			case *ast.StepStmt:
+				if s.Binding == "connection" {
+					c.addErrorCode(s.Loc, CodeInvalidWsTarget, "cannot bind connection in a WS endpoint", hint)
+				}
+				if call, ok := s.Expr.(*ast.FnCall); ok && call.Name == "inject" && len(call.Args) >= 2 {
+					if alias, ok := call.Args[1].(*ast.Ident); ok && alias.Name == "connection" {
+						c.addErrorCode(alias.Loc, CodeInvalidWsTarget, "cannot inject as connection in a WS endpoint", hint)
+					}
+				}
+			case *ast.WhenStmt:
+				walk(s.Body)
+			case *ast.TryRecover:
+				walk(s.Try)
+				walk(s.Recover)
+			}
+		}
+	}
+	walk(n.Stmts)
+	walk(n.OnConnect)
+	walk(n.OnMessage)
+	walk(n.OnDisconnect)
+}
+
+// checkConnectionFieldAccess allows only connection.id: the WS connection
+// exposes its id and nothing else.
+func (c *Checker) checkConnectionFieldAccess(access *ast.FieldAccess, scope *Scope) {
+	base, ok := access.Base.(*ast.Ident)
+	if !ok || base.Name != "connection" || access.Field == "id" || !isWSConnectionBinding(scope) {
+		return
+	}
+	c.addErrorCode(access.Loc, CodeInvalidWsTarget,
+		fmt.Sprintf("connection has no field %q", access.Field),
+		"connection exposes only id; use connection.id",
+	)
+}
+
+// checkWhisperTarget validates `whisper connection(id) { data }`: the target
+// must be connection(one id) and the data block is required.
+func (c *Checker) checkWhisperTarget(call *ast.FnCall) {
+	if len(call.Args) == 0 {
+		return
+	}
+	target, ok := call.Args[0].(*ast.FnCall)
+	if !ok || target.Name != "connection" {
+		hint := "Write whisper connection(id) { data } to send to one WebSocket connection"
+		if ok && target.Name == "room" {
+			hint = "whisper addresses one connection; use broadcast room(name) { data } to send to a room"
+		}
+		c.addErrorCode(call.Loc, CodeInvalidWsTarget, "whisper target must be connection(id)", hint)
+		return
+	}
+	if len(target.Args) != 1 {
+		c.addErrorCode(target.Loc, CodeInvalidWsTarget,
+			fmt.Sprintf("connection(...) takes one id, got %d arguments", len(target.Args)),
+			"Pass the connection id, e.g. whisper connection(message.to) { ... }",
+		)
+		return
+	}
+	if len(call.Args) < 2 {
+		c.addErrorCode(call.Loc, CodeInvalidWsTarget,
+			"whisper needs a data block",
+			"Write whisper connection(id) { field: value }",
+		)
+	}
+}
+
 func fieldHasRef(field *ast.Field) bool {
 	if field == nil {
 		return false
@@ -2318,10 +2436,14 @@ func (c *Checker) checkExpr(expr ast.Expr) {
 		c.checkExpr(e.Operand)
 	case *ast.FnCall:
 		c.checkFnCall(e)
+		if e.Name == "whisper" {
+			c.checkWhisperTarget(e)
+		}
 		for i, arg := range e.Args {
 			// `join room(x)`, `leave room(x)`, and `broadcast room(x) { ... }`
-			// name a room, not a function; codegen uses only x.
-			if target, ok := arg.(*ast.FnCall); ok && i == 0 && target.Name == "room" && isRoomBuiltin(e.Name) {
+			// name a room, not a function; codegen uses only x. `whisper
+			// connection(x) { ... }` names a connection the same way.
+			if target, ok := arg.(*ast.FnCall); ok && i == 0 && isRealtimeTarget(e.Name, target.Name) {
 				for _, targetArg := range target.Args {
 					c.checkExpr(targetArg)
 				}
@@ -2349,6 +2471,12 @@ func (c *Checker) checkExpr(expr ast.Expr) {
 
 func isRoomBuiltin(name string) bool {
 	return name == "join" || name == "leave" || name == "broadcast"
+}
+
+// isRealtimeTarget reports whether target is the symbolic destination of op:
+// room(x) for the room built-ins, connection(x) for whisper.
+func isRealtimeTarget(op, target string) bool {
+	return (target == "room" && isRoomBuiltin(op)) || (target == "connection" && op == "whisper")
 }
 
 func (c *Checker) checkFnCall(call *ast.FnCall) {
@@ -2624,6 +2752,7 @@ var checkerBuiltinFns = map[string]bool{
 	"using":            true,
 	"webhook_sig":      true,
 	"where":            true,
+	"whisper":          true,
 	"with":             true,
 }
 

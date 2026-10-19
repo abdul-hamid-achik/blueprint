@@ -22,7 +22,7 @@ Color is automatic for a TTY. `NO_COLOR=1` or `--no-color` forces plain output.
 
 | Prefix | Pass | Notes |
 |---|---|---|
-| `C001`-`C052` | Checker | Every checker error has a code. C048 is an enum or name-case rule. C052 is a constraint value that does not fit its type. C035 is an unbound identifier, including `close` outside a WS handler. C005 is a duplicate route. C011 is a step after an output. |
+| `C001`-`C054` | Checker | Every checker error has a code. C048 is an enum or name-case rule. C052 is a constraint value that does not fit its type. C053 is an `auth ... using(...)` that does not name a declared secret. C054 is an invalid WS connection use (a `connection` field other than `id`, or a `whisper` target other than `connection(id)`). C035 is an unbound identifier, including `close`, `connection`, or `whisper` outside a WS handler. C005 is a duplicate route. C011 is a step after an output. |
 | `L###` | Lexer | Some tokens. |
 | `P###` | Parser | For example P001: the file does not start with a `blueprint` block. Some parser errors have no code yet and render without a bracket. |
 | `R###`, `G###` | Resolver, codegen | Reserved. A codegen failure prints as a codegen error, with exit 4. |

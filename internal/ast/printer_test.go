@@ -797,6 +797,33 @@ GET /api/x {
 	}
 }
 
+// TestPrint_WhisperRoundTrip guards `whisper connection(id) { data }`: the
+// target and data block print in source form and survive a format round-trip.
+func TestPrint_WhisperRoundTrip(t *testing.T) {
+	src := `blueprint "test" {
+  version "1.0.0"
+  port 8080
+  runtime node
+}
+
+WS /ws/chat {
+  on_message {
+    |> whisper connection(message.to) { from: connection.id, body: message.body }
+  }
+}
+`
+	file := parseForPrint(t, src)
+	out := ast.Print(file)
+	want := "|> whisper connection(message.to) { from: connection.id, body: message.body }"
+	if !strings.Contains(out, want) {
+		t.Fatalf("whisper not printed in source form, want %q\nfull output:\n%s", want, out)
+	}
+	if strings.Contains(out, "whisper(connection") {
+		t.Fatalf("whisper emitted as a plain FnCall\nfull output:\n%s", out)
+	}
+	checkFormatRoundTrip(t, "test.bp", []byte(src))
+}
+
 // TestPrint_StreamShorthand guards inject/join/leave/broadcast/log emit so
 // they reflect the source idiom rather than synthesising a function-call
 // form that the parser rejects.

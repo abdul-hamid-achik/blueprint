@@ -21,7 +21,7 @@ can also produce a FastAPI + SQLAlchemy project.
 
 ## Highlights
 
-- **Structured diagnostics.** Checker errors carry codes C001–C052, and the
+- **Structured diagnostics.** Checker errors carry codes C001–C054, and the
   lexer and parser add L001 and P001. `bp explain <code>` prints the
   documentation for a code, with worked examples in
   [docs/error-codes.md](./docs/error-codes.md).
