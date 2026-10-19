@@ -198,11 +198,24 @@ does not itself call the model, and the current generation prompt is built from
 the slot text, hints, and a short containing-block label rather than the entire
 source file.
 
+## Exit codes
+
+| Code | When |
+|------|------|
+| `0` | Success, including a file with no `@>` slots (the command prints that and exits) |
+| `1` | The `.bp` file has syntax errors, so no request is sent |
+| `2` | `ANTHROPIC_API_KEY` is not set, or the file cannot be read or written |
+| `4` | An Anthropic request failed, so no slot is replaced |
+
+`bp build`, `bp diff`, and `bp test` exit `4` while any `@>` slot remains, and
+they print the `bp generate --write` instruction.
+
 ## Current limitations
 
 - `ANTHROPIC_API_KEY` is required; there is no offline generation mode.
-- The Anthropic model is selected by the tool; the CLI does not expose model or
-  temperature flags.
+- The request uses a fixed model, `claude-haiku-4-5-20251001`, with a 256-token
+  limit. The CLI does not expose model or temperature flags, and the only flag
+  is `--write`.
 - A slot occupies one source line. `--write` replaces that line with the model's
   returned statements while preserving its leading indentation.
 - `bp check` can validate a source file that still contains a slot, but every
