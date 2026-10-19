@@ -33,6 +33,7 @@ func Lint(f *ast.File) []Issue {
 	issues = append(issues, checkWherePredicateSelfEqual(f)...)
 	issues = append(issues, checkUnusedInput(f)...)
 	issues = append(issues, checkUnenforceableWsAuth(f)...)
+	issues = append(issues, checkUnenforcedAuth(f)...)
 	issues = append(issues, checkCacheOnNonGet(f)...)
 	issues = append(issues, checkUnusedSecretsAndEnvs(f)...)
 	issues = append(issues, checkUnusedFunctions(f)...)
@@ -356,12 +357,10 @@ func checkEmptyEndpoints(f *ast.File) []Issue {
 }
 
 // checkUnenforceableWsAuth flags `auth` meta on WS endpoints that codegen
-// cannot enforce. genWsRoute only wires real enforcement for `auth webhook_sig
-// using(secret.NAME)` (an HMAC signature check run as middleware before the
-// handshake) — bare identifiers like `bearer`, `jwt`, `api_key(...)`, or
-// `basic` have no generic verification codegen anywhere in this target (the
-// same is true for REST's genRoute), so the connection ships without the
-// declared auth actually being checked unless it's verified by hand (e.g. in
+// cannot enforce. Codegen enforces `auth webhook_sig using(secret.NAME)` (an
+// HMAC check) and `auth bearer|jwt|api_key|basic using(secret.NAME)` (checked
+// before the handshake). A bare strategy has no secret to check against, so
+// the connection ships unauthenticated unless it is verified by hand (e.g. in
 // on_connect, or via a `use` middleware).
 func checkUnenforceableWsAuth(f *ast.File) []Issue {
 	var issues []Issue
@@ -372,7 +371,7 @@ func checkUnenforceableWsAuth(f *ast.File) []Issue {
 			continue
 		}
 		for _, meta := range ws.Meta {
-			if meta.Kind != "auth" || isWebhookSigAuth(meta.Value) {
+			if meta.Kind != "auth" || isWebhookSigAuth(meta.Value) || hasUsingSecret(meta.Value) {
 				continue
 			}
 			issues = append(issues, Issue{
@@ -382,7 +381,7 @@ func checkUnenforceableWsAuth(f *ast.File) []Issue {
 				Level:   "warning",
 				Rule:    "unenforceable-ws-auth",
 				Message: fmt.Sprintf("auth %s on WS %s is not enforced by codegen", authMetaName(meta.Value), ws.Path),
-				Hint:    "WS transports only auto-enforce `auth webhook_sig using(secret.NAME)` — verify bearer/jwt/api_key/basic tokens yourself (e.g. in on_connect, or via a `use` middleware) or the connection ships unauthenticated",
+				Hint:    "add `using(secret.NAME)` so codegen verifies the credential, for example `auth " + authMetaName(meta.Value) + " using(secret.JWT_SECRET)`, or verify it yourself in on_connect or a `use` middleware",
 			})
 		}
 	}
@@ -390,11 +389,68 @@ func checkUnenforceableWsAuth(f *ast.File) []Issue {
 	return issues
 }
 
+// checkUnenforcedAuth flags REST and STREAM endpoints whose `auth` declares a
+// strategy that codegen does not verify: no `using(secret.NAME)`, not
+// webhook_sig, and no `use` middleware on the endpoint or the blueprint that
+// could check the credential instead.
+func checkUnenforcedAuth(f *ast.File) []Issue {
+	var issues []Issue
+	blueprintUses := f.Blueprint != nil && len(f.Blueprint.Uses) > 0
+
+	check := func(method, path string, meta []*ast.EndpointMeta) {
+		hasUse := false
+		for _, m := range meta {
+			if m.Kind == "use" {
+				hasUse = true
+			}
+		}
+		if hasUse || blueprintUses {
+			return
+		}
+		for _, m := range meta {
+			if m.Kind != "auth" || isWebhookSigAuth(m.Value) || hasUsingSecret(m.Value) {
+				continue
+			}
+			issues = append(issues, Issue{
+				File:    m.Loc.File,
+				Line:    m.Loc.Line,
+				Col:     m.Loc.Col,
+				Level:   "warning",
+				Rule:    "unenforced-auth",
+				Message: fmt.Sprintf("auth %s on %s %s is not enforced by codegen", authMetaName(m.Value), method, path),
+				Hint:    "add `using(secret.NAME)` so codegen verifies the credential, for example `auth " + authMetaName(m.Value) + " using(secret.API_KEY)`, or add a `use` middleware that verifies it",
+			})
+		}
+	}
+
+	for _, block := range f.Blocks {
+		switch b := block.(type) {
+		case *ast.Endpoint:
+			check(b.Method, b.Path, b.Meta)
+		case *ast.StreamEndpoint:
+			check("STREAM", b.Path, b.Meta)
+		}
+	}
+
+	return issues
+}
+
 // isWebhookSigAuth reports whether an auth meta value is a `webhook_sig` call
-// — the only auth form genWsRoute/genStreamRoute/genRoute actually enforce.
+// — the auth form with its own HMAC check in every transport.
 func isWebhookSigAuth(expr ast.Expr) bool {
 	fn, ok := expr.(*ast.FnCall)
 	return ok && fn.Name == "webhook_sig"
+}
+
+// hasUsingSecret reports whether an auth meta value carries `using(...)`, the
+// secret that codegen checks the credential against.
+func hasUsingSecret(expr ast.Expr) bool {
+	fn, ok := expr.(*ast.FnCall)
+	if !ok || len(fn.Args) == 0 {
+		return false
+	}
+	using, ok := fn.Args[0].(*ast.FnCall)
+	return ok && using.Name == "using"
 }
 
 // authMetaName renders an auth meta value's identifying name for messages

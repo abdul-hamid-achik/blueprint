@@ -3273,31 +3273,25 @@ func TestLintJSONSingleFile(t *testing.T) {
 		t.Errorf("issues must be an empty array, got %v", clean["issues"])
 	}
 
-	// realtime-chat.bp has one known warning; warnings alone exit 0.
+	// realtime-chat.bp authenticates its WS endpoint with `auth jwt
+	// using(secret.JWT_SECRET)`, so it has no warnings. Info-level hints
+	// (unpaginated-list) are still reported and must carry the JSON fields.
 	obj, code := mfRunJSON(t, "lint", filepath.Join(root, "examples", "realtime-chat.bp"), "--json")
 	if code != 0 {
-		t.Errorf("warnings only must exit 0, got %d", code)
+		t.Errorf("lint must exit 0, got %d", code)
 	}
-	// Info-level hints (e.g. unpaginated-list) are reported too; only the
-	// warnings are pinned here.
+	if obj["warning_count"] != float64(0) {
+		t.Errorf("realtime-chat must have no warnings, got %v", obj["issues"])
+	}
 	all, _ := obj["issues"].([]interface{})
-	var issues []interface{}
-	for _, raw := range all {
-		if raw.(map[string]interface{})["severity"] == "warning" {
-			issues = append(issues, raw)
-		}
+	if len(all) == 0 {
+		t.Fatalf("expected the info-level unpaginated-list hint, got none")
 	}
-	if len(issues) != 1 {
-		t.Fatalf("expected one warning, got %v", obj["issues"])
-	}
-	issue := issues[0].(map[string]interface{})
+	issue := all[0].(map[string]interface{})
 	for _, key := range []string{"file", "rule", "severity", "line", "column", "message", "hint"} {
 		if _, ok := issue[key]; !ok {
 			t.Errorf("lint issue missing %q: %v", key, issue)
 		}
-	}
-	if issue["rule"] != "unenforceable-ws-auth" || issue["severity"] != "warning" || obj["warning_count"] != float64(1) {
-		t.Errorf("unexpected issue: %v", issue)
 	}
 }
 

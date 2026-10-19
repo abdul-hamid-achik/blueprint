@@ -640,6 +640,8 @@ described in [Multiple files and directories](#multiple-files-and-directories).
 | `unused-function` | warning | A `fn`, `pipe`, or `middleware` that nothing calls or applies. A self-call does not count (same suppression) |
 | `fetch-without-guard` | warning | A REST endpoint reads a `fetch` result before `guard <name>`. A missing row fails the request (500) instead of returning 404 |
 | `cache-on-non-get` | warning | A `cache` line on a non-GET endpoint (or a STREAM/WS endpoint). `Cache-Control` is only set on REST GET responses, so the line has no effect |
+| `unenforceable-ws-auth` | warning | A WS `auth` line with no `using(secret.NAME)` (other than `webhook_sig`). Codegen does not check it. Add `using(secret.NAME)` to enforce bearer, jwt, api_key, or basic |
+| `unenforced-auth` | warning | A REST or STREAM `auth` line with no `using(secret.NAME)` (other than `webhook_sig`), on an endpoint with no `use` middleware and no blueprint-level `use`. Codegen does not check it. Add `using(secret.NAME)` or a `use` middleware that verifies the credential |
 | `unpaginated-list` | info | A `GET` endpoint returns every row of a `query` with no `paginate(...)` or `first` |
 
 **Example:**

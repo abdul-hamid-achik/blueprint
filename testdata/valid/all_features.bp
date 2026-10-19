@@ -229,6 +229,7 @@ WS /ws/jobs/:id {
 
 @ "List jobs for the authenticated user"
 GET /api/jobs {
+  auth jwt using(secret.API_SIGNING_KEY)
   use require_auth
   limit 30/min
   tags  ["jobs"]

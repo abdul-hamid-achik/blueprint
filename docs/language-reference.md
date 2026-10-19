@@ -897,7 +897,7 @@ POST /api/watermark {
 | Key | Syntax | Node runtime behavior |
 |-----|--------|-----------------------|
 | `use` | `use middleware_name` | Applies a declared custom middleware |
-| `auth` | `auth api_key` | Metadata only for generic strategies; webhook HMAC is the exception below |
+| `auth` | `auth jwt using(secret.JWT_SECRET)` | Enforced for `bearer`, `jwt`, `api_key`, and `basic` with `using(secret.NAME)`, and for `webhook_sig`; metadata only otherwise (see Auth Strategies) |
 | `limit` | `limit 60/min` | Enforced by an in-process, per-instance IP/path counter |
 | `cache` | `cache 5min` | GET only: sets `Cache-Control` on 2xx responses (see below); ignored on other methods |
 | `tags` | `tags ["a", "b"]` | Included in generated OpenAPI metadata |
@@ -925,14 +925,34 @@ metadata today.
 
 | Strategy | Node runtime status |
 |----------|---------------------|
-| `auth api_key` | Parsed metadata; does not verify the header by itself |
-| `auth bearer` | Parsed metadata; does not verify a JWT by itself |
-| `auth session` | Parsed metadata; does not verify a session by itself |
+| `auth bearer using(secret.NAME)` | Enforced: `Authorization: Bearer <token>` must equal the secret value |
+| `auth jwt using(secret.NAME)` | Enforced: `Authorization: Bearer <jwt>`; HS256 only, signed with the secret; `exp` and `nbf` are checked |
+| `auth api_key using(secret.NAME)` | Enforced: the `X-API-Key` header must equal the secret value |
+| `auth basic using(secret.NAME)` | Enforced: `Authorization: Basic <base64(user:password)>`; the secret holds `user:password` |
 | `auth webhook_sig using(secret.KEY)` | Enforced with HMAC-SHA256 against `X-Webhook-Signature` |
+| `auth bearer`, `auth jwt`, `auth api_key`, `auth basic`, `auth session` (no `using`) | Parsed metadata; does not verify anything by itself |
 
-For API keys, bearer tokens, and sessions, declare and apply a middleware whose
-`before` block validates the credential and `inject`s the authenticated value.
-Do not rely on a bare `auth` line as a security boundary.
+An enforced check runs before the handler, before `use` middleware and input
+validation. When it fails, the response is `401` with `{ "error": "Unauthorized" }`
+and the handler does not run. On WS, the upgrade is refused. `bearer` and `jwt`
+send `WWW-Authenticate: Bearer`, `basic` sends `WWW-Authenticate: Basic realm="<blueprint name>"`,
+and `api_key` sends no challenge. Secrets are compared in constant time. An unset
+or empty secret fails closed.
+
+STREAM and WS also accept the credential in the query string, because browsers
+cannot set headers on `EventSource` or `WebSocket`: `?token=` for `bearer` and
+`jwt`, `?api_key=` for `api_key`. `basic` and REST endpoints accept headers only.
+
+Claims from a verified JWT are not exposed to the handler in this version. A
+`use` middleware is still the way to read claims, and it can verify them too.
+
+The generated check lives in `src/lib/auth.ts`, which is emitted only when an
+endpoint enforces a strategy. Without `using(...)`, the strategy stays metadata
+only. The `unenforced-auth` lint warns about REST and STREAM endpoints that
+declare it that way, unless the endpoint or the blueprint has a `use` middleware.
+For sessions, and for checks the strategies above do not cover, declare and
+apply a middleware whose `before` block validates the credential and `inject`s
+the authenticated value. Do not rely on a bare `auth` line as a security boundary.
 
 ### Input Sources
 
@@ -1064,7 +1084,7 @@ WebSocket endpoints.
 
 ```bp
 WS /ws/chat {
-  auth bearer
+  auth bearer using(secret.CHAT_TOKEN)
 
   on_connect {
     |> log "Client connected"
@@ -1101,6 +1121,14 @@ skipped. A socket whose unsent buffer exceeds `BP_WS_MAX_BUFFERED_BYTES` (defaul
 with code 1013 and reason `slow consumer`, and logs one warning. Replies sent
 directly to the current socket are not limited by this check. The limit is read
 once at startup; an invalid or non-positive value falls back to the default.
+
+`auth` on a WS endpoint is checked before the upgrade. Use an enforced strategy,
+such as `auth jwt using(secret.JWT_SECRET)`; the client sends the token in the
+`Authorization` header or, since browsers cannot set WebSocket headers, in
+`?token=`. A bare `auth bearer` (no `using`) is metadata only, and the
+`unenforceable-ws-auth` lint warns about it. Claims are not passed to
+`on_connect`; decode them there from `header.Authorization` as
+`examples/realtime-chat.bp` does, or in a `use` middleware.
 
 ```bp
 WS /ws/rooms/:id {

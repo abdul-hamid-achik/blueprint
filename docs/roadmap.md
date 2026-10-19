@@ -93,9 +93,10 @@ review workflow that makes source changes easier to inspect before applying.
 
 - `whisper` (delivery to a single connection) is not implemented. The checker
   rejects it, and the language reference says so.
-- WS `auth bearer`, `jwt`, `api_key`, and `basic` are not enforced by codegen.
-  The `unenforceable-ws-auth` lint reports them, and only `auth webhook_sig`
-  is enforced automatically.
+- WS and REST `auth bearer`, `jwt`, `api_key`, and `basic` are enforced only
+  with `using(secret.NAME)`; codegen checks the credential on REST, STREAM, and
+  WS. Without `using`, the `unenforceable-ws-auth` and `unenforced-auth` lints
+  report the line.
 
 ### Editor experience
 

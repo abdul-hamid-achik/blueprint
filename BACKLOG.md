@@ -169,6 +169,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done (move to CHANGELOG 
   SSE subscriptions unsubscribed on abort; STREAM guards run before the 200 is sent; dead-socket
   eviction + broadcast readyState guard; STREAM auth/limit/use meta enforced, WS bare-auth gets
   linter warning `unenforceable-ws-auth`. See CHANGELOG [Unreleased].)_
+- [x] **Enforced endpoint auth on Node (REST, STREAM, WS).** `auth bearer|jwt|api_key|basic using(secret.NAME)` is verified before the handler (401 `{"error":"Unauthorized"}`); jwt is HS256 only; STREAM/WS accept `?token=`/`?api_key=`; `unenforced-auth` lint added; C053 added. Python is not covered yet. _(shipped 2026-10-18)_
 - [x] **STREAM/WS remaining tail:** WS rooms use Redis pub/sub for multi-instance
   broadcast (shipped v0.14.0). STREAM listeners fan out across instances through Redis
   when `REDIS_URL` is set; subscribe handlers stay local. STREAM/WS `<-` path-param

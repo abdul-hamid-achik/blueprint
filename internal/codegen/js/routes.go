@@ -363,6 +363,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	middlewareNames := make(map[string]bool)
 	needsZValidator := false
 	needsWebhookAuth := false
+	needsRequireAuth := false
 	needsZodPathParam := false
 	pathEnumSchemas := make(map[string]bool)
 	needsRateLimit := false
@@ -409,6 +410,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 			}
 			if meta.Kind == "auth" && webhookAuthSecretKey(meta.Value) != "" {
 				needsWebhookAuth = true
+			}
+			if _, ok := endpointEnforcedAuth(meta.Value); ok && meta.Kind == "auth" {
+				needsRequireAuth = true
 			}
 			if meta.Kind == "limit" {
 				needsRateLimit = true
@@ -483,12 +487,16 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
 	}
 
+	if needsRequireAuth {
+		b.WriteString("import { requireAuth as _requireAuth } from '../lib/auth.js';\n")
+	}
+
 	// Collect additional imports from endpoint bodies (pipes, functions, storage, env, enums)
 	ic := newImportCollector()
 	for _, ep := range endpoints {
 		ic.merge(g.collectImports(ep.Stmts))
 	}
-	if needsWebhookAuth {
+	if needsWebhookAuth || needsRequireAuth {
 		ic.needsEnv = true
 	}
 	if len(enqueueQueues) > 0 {
@@ -533,6 +541,12 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 		// every other middleware and handler.
 		if cacheMW := endpointCacheMiddleware(ep, g.file.Blueprint); cacheMW != "" {
 			fmt.Fprintf(&b, ", %s", cacheMW)
+		}
+
+		// Enforced auth runs before use middleware and zValidator, so a bad
+		// body or a user middleware never runs for an unauthenticated request.
+		if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+			fmt.Fprintf(&b, ", %s", requireAuthMiddleware(ea, false, g.blueprintNameOf()))
 		}
 
 		// Add middleware
@@ -794,6 +808,7 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 	// does — STREAM endpoints previously parsed but silently dropped this meta.
 	middlewareNames := make(map[string]bool)
 	needsWebhookAuth := false
+	needsRequireAuth := false
 	needsRateLimit := false
 	for _, ep := range endpoints {
 		for _, meta := range ep.Meta {
@@ -802,6 +817,9 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 			}
 			if meta.Kind == "auth" && webhookAuthSecretKey(meta.Value) != "" {
 				needsWebhookAuth = true
+			}
+			if _, ok := endpointEnforcedAuth(meta.Value); ok && meta.Kind == "auth" {
+				needsRequireAuth = true
 			}
 			if meta.Kind == "limit" {
 				needsRateLimit = true
@@ -816,6 +834,10 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
 	if needsWebhookAuth {
 		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
+	}
+
+	if needsRequireAuth {
+		b.WriteString("import { requireAuth as _requireAuth } from '../lib/auth.js';\n")
 	}
 
 	// Check if any handler uses event subscriptions (needs events lib)
@@ -835,7 +857,7 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 		// swallows writes to an already-closed stream).
 		b.WriteString("import { onStream, offStream } from '../lib/events.js';\n")
 	}
-	if needsWebhookAuth {
+	if needsWebhookAuth || needsRequireAuth {
 		ic.needsEnv = true
 	}
 	ic.writeImports(&b, g.hasStorage)
@@ -863,6 +885,11 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 
 		// Build handler: routeVar.get('path', ...middleware, async (c) => { ... })
 		fmt.Fprintf(&b, "%s.get('%s'", routeVar, ep.Path)
+		// Enforced auth runs first, before use middleware and input validation,
+		// and accepts the query-string credential (browsers cannot set headers).
+		if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+			fmt.Fprintf(&b, ", %s", requireAuthMiddleware(ea, true, g.blueprintNameOf()))
+		}
 		for _, meta := range ep.Meta {
 			if meta.Kind == "use" && meta.Use != nil {
 				fmt.Fprintf(&b, ", %s", toCamelCase(meta.Use.Name))
@@ -1119,6 +1146,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	// that gap instead — see checkUnenforceableWsAuth in internal/linter.
 	middlewareNames := make(map[string]bool)
 	needsWebhookAuth := false
+	needsRequireAuth := false
 	needsRateLimit := false
 	for _, ep := range endpoints {
 		for _, meta := range ep.Meta {
@@ -1127,6 +1155,9 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 			}
 			if meta.Kind == "auth" && webhookAuthSecretKey(meta.Value) != "" {
 				needsWebhookAuth = true
+			}
+			if _, ok := endpointEnforcedAuth(meta.Value); ok && meta.Kind == "auth" {
+				needsRequireAuth = true
 			}
 			if meta.Kind == "limit" {
 				needsRateLimit = true
@@ -1144,6 +1175,9 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	}
 	if needsWebhookAuth {
 		ic.needsEnv = true
+	}
+	if needsRequireAuth {
+		b.WriteString("import { requireAuth as _requireAuth } from '../lib/auth.js';\n")
 	}
 	// WS handler bodies may read env.NAME; env.ts is always generated.
 	ic.needsEnv = true
@@ -1219,6 +1253,12 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 			if meta.Kind == "use" && meta.Use != nil {
 				fmt.Fprintf(&b, ", %s", toCamelCase(meta.Use.Name))
 			}
+		}
+
+		// Enforced auth runs before path validation and the handshake, so an
+		// unauthenticated client gets 401 and never reaches the upgrade.
+		if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+			fmt.Fprintf(&b, ", %s", requireAuthMiddleware(ea, true, g.blueprintNameOf()))
 		}
 
 		// Declared path inputs are validated before the handshake: a failing

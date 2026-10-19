@@ -476,9 +476,11 @@ STREAM /api/jobs/:id/progress {
 }
 ```
 
-To protect the stream, apply a declared middleware that validates the API key
-and rejects the request before streaming starts. A bare `auth api_key` line is
-metadata and does not generate credential verification by itself.
+To protect the stream, declare `secret STREAM_KEY required` and add
+`auth api_key using(secret.STREAM_KEY)` to the endpoint. The server
+checks the `X-API-Key` header, or `?api_key=` for browser `EventSource` clients,
+and answers 401 before streaming starts. A bare `auth api_key` line with no
+`using` is metadata and does not verify anything by itself.
 
 ---
 

@@ -397,6 +397,62 @@ GET /api/nothing {
 	}
 }
 
+// Enforced auth (using(secret.NAME)) is described as enforced and documents a
+// 401. Metadata-only auth on the same strategy keeps the "not verified" wording
+// and no 401, and a mixed scheme gets a description true for both.
+func TestGenerateOpenAPI_EnforcedAuthSchemesAndUnauthorized(t *testing.T) {
+	spec := parseAndGenOpenAPI(t, openAPIHeader+`
+secret JWT_SECRET required
+
+GET /api/jwt {
+  auth jwt using(secret.JWT_SECRET)
+  -> 200 "ok"
+}
+
+GET /api/meta {
+  auth jwt
+  -> 200 "ok"
+}
+`)
+	schemes := spec["components"].(map[string]any)["securitySchemes"].(map[string]any)
+	jwt, ok := schemes["jwtAuth"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing jwtAuth scheme in %v", schemes)
+	}
+	if jwt["type"] != "http" || jwt["scheme"] != "bearer" || jwt["bearerFormat"] != "JWT" {
+		t.Errorf("jwtAuth = %v", jwt)
+	}
+	if desc, _ := jwt["description"].(string); !strings.Contains(desc, "Declared by some operations") {
+		t.Errorf("mixed jwtAuth description = %q", desc)
+	}
+
+	enforced := openAPIOperation(t, spec, "/api/jwt", "get")
+	if got := openAPIResponseSchema(t, enforced, "401"); got == nil {
+		t.Errorf("enforced auth must document 401")
+	}
+	metaOnly := openAPIOperation(t, spec, "/api/meta", "get")
+	if _, ok := metaOnly["responses"].(map[string]any)["401"]; ok {
+		t.Errorf("metadata-only auth must not document 401: %v", metaOnly["responses"])
+	}
+}
+
+func TestGenerateOpenAPI_EnforcedOnlyDescribesEnforcement(t *testing.T) {
+	spec := parseAndGenOpenAPI(t, openAPIHeader+`
+secret API_KEY required
+
+GET /api/keyed {
+  auth api_key using(secret.API_KEY)
+  -> 200 "ok"
+}
+`)
+	schemes := spec["components"].(map[string]any)["securitySchemes"].(map[string]any)
+	key := schemes["apiKeyAuth"].(map[string]any)
+	desc, _ := key["description"].(string)
+	if !strings.Contains(desc, "Enforced by the generated Node server") || !strings.Contains(desc, "X-API-Key") {
+		t.Errorf("enforced api_key description = %q", desc)
+	}
+}
+
 func TestGenerateOpenAPI_OutputIsDeterministic(t *testing.T) {
 	src := openAPIHeader + `
 secret STRIPE_KEY required

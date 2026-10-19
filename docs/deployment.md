@@ -240,10 +240,13 @@ to overwrite it unless explicitly forced.
 Generated code is a starting point, not an infrastructure security boundary.
 Review these behaviors before scaling beyond one process:
 
-- Bare metadata such as `auth api_key`, `auth bearer`, or `auth session` does
-  not generate generic credential verification on Node. Use explicit,
-  tested middleware. Generated webhook HMAC verification is the implemented
-  exception.
+- On Node, `auth bearer`, `jwt` (HS256), `api_key`, and `basic` with
+  `using(secret.NAME)` compare the request against one shared secret. They do
+  not look up users, rotate keys, or check JWT issuer or audience. Bare metadata
+  such as `auth session` (no `using`) verifies nothing. Generated webhook HMAC
+  verification is also implemented. STREAM and WS endpoints accept the
+  credential in `?token=` or `?api_key=`, so keep query strings out of proxy
+  and access logs.
 - Endpoint `cache <duration>` on the Node target sets `Cache-Control` on GET 2xx
   responses only. Responses that may depend on the caller use `private`, so
   shared caches do not store them. Endpoints without `use`, `auth`, or `limit`
@@ -278,7 +281,8 @@ Before routing production traffic:
 - [ ] Match the container port to the Blueprint-declared port.
 - [ ] Configure `/health` as liveness and a dependency-aware route as readiness
       when required.
-- [ ] Implement and test real authentication/authorization middleware.
+- [ ] Set every `auth ... using(secret.NAME)` secret, and implement and test
+      authorization (and any per-user authentication) in middleware.
 - [ ] Put distributed rate limiting, request-size limits, TLS, and trusted proxy
       handling at an appropriate edge layer.
 - [ ] Restrict CORS to intended origins and verify error responses do not expose

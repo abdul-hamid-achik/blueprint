@@ -87,7 +87,7 @@ GET /api/rooms/:id/messages {
 
 @ "Join a room and chat in real time"
 WS /ws/rooms/:id {
-  auth bearer
+  auth jwt using(secret.JWT_SECRET)
   on_connect {
     |> room = fetch room(id)
     |> guard room -> 404 "Room not found"

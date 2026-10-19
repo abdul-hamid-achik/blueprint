@@ -2,6 +2,7 @@
 package js
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -722,6 +723,12 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// src/lib/http-cache.ts (if any GET endpoint declares `cache`)
 	if hasHTTPCacheEndpoints(endpoints, bp) {
 		files = append(files, g.genHTTPCache())
+	}
+
+	// src/lib/auth.ts (if any endpoint enforces bearer, jwt, api_key, or basic
+	// auth with using(secret.NAME))
+	if hasEnforcedAuth(endpoints, streams, ws) {
+		files = append(files, g.genAuthLib())
 	}
 
 	// src/types.ts
@@ -1611,6 +1618,99 @@ func webhookAuthSecretKey(expr ast.Expr) string {
 		return ""
 	}
 	return fa.Field
+}
+
+// enforcedAuthStrategies are the `auth` strategies that codegen verifies at
+// runtime when they carry `using(secret.NAME)` (see src/lib/auth.ts). Keep in
+// step with the checker's enforcedAuthStrategies.
+var enforcedAuthStrategies = map[string]bool{
+	"bearer":  true,
+	"jwt":     true,
+	"api_key": true,
+	"basic":   true,
+}
+
+// enforcedAuth is an endpoint `auth` declaration that the generated server
+// enforces: a bearer, jwt, api_key, or basic strategy with using(secret.NAME).
+type enforcedAuth struct {
+	Strategy string // bearer, jwt, api_key, or basic
+	Secret   string // env variable name, the secret's NAME
+}
+
+// endpointEnforcedAuth returns the enforced auth declared by an auth meta value.
+// It reports false for metadata-only declarations (no using(...)) and for
+// webhook_sig, which has its own HMAC check.
+// Input AST: FnCall{Name:"jwt", Args:[FnCall{Name:"using", Args:[FieldAccess{Base:"secret",Field:"KEY"}]}]}
+func endpointEnforcedAuth(expr ast.Expr) (enforcedAuth, bool) {
+	fn, ok := expr.(*ast.FnCall)
+	if !ok || !enforcedAuthStrategies[fn.Name] || len(fn.Args) == 0 {
+		return enforcedAuth{}, false
+	}
+	inner, ok := fn.Args[0].(*ast.FnCall)
+	if !ok || inner.Name != "using" || len(inner.Args) == 0 {
+		return enforcedAuth{}, false
+	}
+	fa, ok := inner.Args[0].(*ast.FieldAccess)
+	if !ok || fa.Field == "" {
+		return enforcedAuth{}, false
+	}
+	if base, ok := fa.Base.(*ast.Ident); !ok || base.Name != "secret" {
+		return enforcedAuth{}, false
+	}
+	return enforcedAuth{Strategy: fn.Name, Secret: fa.Field}, true
+}
+
+// endpointEnforcedAuthMeta returns the first enforced auth declared in meta.
+func endpointEnforcedAuthMeta(meta []*ast.EndpointMeta) (enforcedAuth, bool) {
+	for _, m := range meta {
+		if m.Kind != "auth" {
+			continue
+		}
+		if ea, ok := endpointEnforcedAuth(m.Value); ok {
+			return ea, true
+		}
+	}
+	return enforcedAuth{}, false
+}
+
+// requireAuthMiddleware renders the Hono middleware expression that verifies an
+// enforced auth declaration before the endpoint runs. allowQuery is true only on
+// STREAM and WS endpoints, whose browser clients cannot set headers. The
+// generated name is _requireAuth, the import alias: a user middleware named
+// require_auth camel-cases to requireAuth and would otherwise collide.
+func requireAuthMiddleware(ea enforcedAuth, allowQuery bool, blueprintName string) string {
+	realm, _ := json.Marshal(blueprintName)
+	return fmt.Sprintf("_requireAuth({ strategy: '%s', secret: env.%s, allowQuery: %t, realm: %s })",
+		ea.Strategy, ea.Secret, allowQuery, realm)
+}
+
+// hasEnforcedAuth reports whether any REST, STREAM, or WS endpoint declares an
+// enforced auth, which is the condition for emitting src/lib/auth.ts.
+func hasEnforcedAuth(endpoints []*ast.Endpoint, streams []*ast.StreamEndpoint, ws []*ast.WsEndpoint) bool {
+	for _, ep := range endpoints {
+		if _, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+			return true
+		}
+	}
+	for _, s := range streams {
+		if _, ok := endpointEnforcedAuthMeta(s.Meta); ok {
+			return true
+		}
+	}
+	for _, w := range ws {
+		if _, ok := endpointEnforcedAuthMeta(w.Meta); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// blueprintNameOf returns the blueprint name for the realm of auth challenges.
+func (g *Generator) blueprintNameOf() string {
+	if g.file == nil || g.file.Blueprint == nil {
+		return ""
+	}
+	return g.file.Blueprint.Name
 }
 
 // queryIsPaginated checks if a query FnCall has a paginate() marker in its args.

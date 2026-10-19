@@ -465,7 +465,8 @@ issues := linter.Lint(file)
 | `fetch-without-guard` | warning | REST endpoint reads a `fetch` result before `guard <name>` |
 | `unpaginated-list` | info | `GET` endpoint returns every row of a `query` without `paginate` or `first` |
 | `cache-on-non-get` | warning | `cache` on a non-GET endpoint, which sends no `Cache-Control` (STREAM and WS included) |
-| `unenforceable-ws-auth` | warning | WS `auth` other than `webhook_sig`, which codegen does not enforce |
+| `unenforceable-ws-auth` | warning | WS `auth` with no `using(secret.NAME)` (other than `webhook_sig`), which codegen does not check |
+| `unenforced-auth` | warning | REST or STREAM `auth` with no `using(secret.NAME)` (other than `webhook_sig`), with no `use` middleware on the endpoint or the blueprint |
 | `unused-input` | warning | An endpoint input that the body never references |
 | `where-predicate-self-equal` | warning | A `where` predicate such as `x == x` where no input or binding named `x` is in scope |
 

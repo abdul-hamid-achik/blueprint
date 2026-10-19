@@ -399,6 +399,27 @@ Use a hand-written Vitest multipart test today. Python rejects authored
 
 ## Advanced Topics
 
+### How do I require a token or API key on an endpoint?
+
+Name the secret in the `auth` line. On the Node target, `auth bearer`, `jwt`,
+`api_key`, and `basic` with `using(secret.NAME)` are checked before the handler
+runs, and a bad or missing credential gets `401 {"error":"Unauthorized"}`:
+
+```bp
+secret JWT_SECRET required
+
+GET /api/items {
+  auth jwt using(secret.JWT_SECRET)
+  -> 200 { items: [] }
+}
+```
+
+The jwt form expects an HS256 token, signed with the secret. STREAM and WS also
+accept the token in `?token=`, because browsers cannot set headers there. The
+verified claims are not passed to the handler; use a `use` middleware for them.
+A bare `auth jwt` with no `using` is only metadata, and the `unenforced-auth`
+lint warns about it.
+
 ### How do I add custom middleware?
 
 ```bp

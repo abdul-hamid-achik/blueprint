@@ -66,6 +66,7 @@ GET /api/todos/:id {
 | `fn name { <- in type  -> type  impl node { module: "...", func: "..." } }` | Function; `impl` gives a user-owned scaffold. |
 | `pipe name { ... }` | Reusable pipeline. |
 | `GET\|POST\|PUT\|PATCH\|DELETE /path { ... }` | REST endpoint. |
+| `auth <strategy> using(secret.NAME)` (endpoint meta, REST/STREAM/WS) | Node enforces `bearer`, `jwt` (HS256 only), `api_key`, and `basic` against the secret before the handler: 401 `{"error":"Unauthorized"}`. STREAM/WS also accept `?token=` (bearer, jwt) and `?api_key=`. Claims are not exposed; use a `use` middleware. A bare strategy with no `using` is metadata only. |
 | `cache <duration>` (endpoint meta) | Node, GET only: `Cache-Control` on 2xx responses, `private` when the response can depend on the caller (`use`/`auth`/`limit`, global `use`, or header/cookie/session/auth reads), otherwise `public`. Other methods get no header (lint `cache-on-non-get`). Python rejects it. |
 | `STREAM /path { ... }` | SSE endpoint. Node only. |
 | `WS /path { on_connect { } on_message { } on_disconnect { } }` | WebSocket endpoint. Node only. |

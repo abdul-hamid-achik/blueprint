@@ -1306,6 +1306,30 @@ They do not apply to `bool`, `enum`, or `timestamp`. When both are literals,
 `min` must not exceed `max`. `format` applies only to `string` fields and
 accepts `email`, `url`, `uuid`, `ip`, or `date`.
 
+### C053 — auth secret is missing or unknown
+
+`auth bearer`, `auth jwt`, `auth api_key`, and `auth basic` take
+`using(secret.NAME)` to verify requests. The check fails when the `using(...)`
+argument is not `secret.NAME`, when `NAME` is not a declared `secret`, or when
+`using(...)` is written on a strategy that takes no secret. Only `webhook_sig`,
+`bearer`, `jwt`, `api_key`, and `basic` accept `using(...)`.
+
+```bp
+blueprint "todo-api" {
+  version "1.0.0"
+  runtime node
+}
+
+GET /api/tasks {
+  auth jwt using(secret.JWT_SECRET)   # C053: JWT_SECRET is not declared
+  -> 200 { ok: true }
+}
+```
+
+Declare the secret with `secret JWT_SECRET required`. The message names the
+strategy, so `auth jwt requires using(secret.NAME)` means the argument is
+missing or malformed.
+
 ---
 
 ## Adding a new code

@@ -40,6 +40,9 @@ func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, secrets []*ast.Secre
 	}
 	files = append(files, g.genTestSetupFile(secrets))
 	files = append(files, g.genVitestConfig())
+	if endpointsUseEnforcedJwt(endpoints) {
+		files = append(files, g.genTestAuthHelper())
+	}
 
 	groups := make(map[string][]*ast.Endpoint)
 	var order []string
@@ -268,6 +271,9 @@ func (g *Generator) genContractTestFile(resource string, eps []*ast.Endpoint, ha
 		b.WriteString("vi.mock('../../src/lib/db', async () => ({ db: (await import('../_harness/db.js')).db }));\n\n")
 	}
 	b.WriteString("import app from '../../src/index.js';\n")
+	if endpointsUseEnforcedJwt(eps) {
+		b.WriteString("import { signTestJwt } from '../_harness/auth.js';\n")
+	}
 	if hasDB {
 		b.WriteString("import { resetDb")
 		if needsSeed {
@@ -346,14 +352,23 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, fileN
 		b.WriteString(seedBody.String())
 	}
 
-	// Request options.
+	// Request options. An endpoint with enforced auth gets credentials built
+	// from the test secret values, so the happy path reaches the handler.
+	var headers []string
+	if len(bodyInputs) > 0 {
+		headers = append(headers, "'Content-Type': 'application/json'")
+	}
+	authHeaders := testAuthHeaders(ep)
+	headers = append(headers, authHeaders...)
 	opts := fmt.Sprintf("method: '%s'", method)
+	if len(headers) > 0 {
+		opts += ", headers: { " + strings.Join(headers, ", ") + " }"
+	}
 	if len(bodyInputs) > 0 {
 		parts := make([]string, 0, len(bodyInputs))
 		for _, inp := range bodyInputs {
 			parts = append(parts, fmt.Sprintf("%s: %s", inp.Name, sampleJSExpr(g, inp.Type, inp.Constraints)))
 		}
-		opts += ", headers: { 'Content-Type': 'application/json' }"
 		opts += fmt.Sprintf(", body: JSON.stringify({ %s })", strings.Join(parts, ", "))
 	}
 	fmt.Fprintf(b, "%sconst res = await app.request(%s, { %s });\n", indent, url, opts)
@@ -361,6 +376,11 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, fileN
 	// Status containment assertion.
 	statuses := g.collectAllowedStatuses(ep)
 	fmt.Fprintf(b, "%sexpect([%s]).toContain(res.status);\n", indent, strings.Join(statuses, ", "))
+	// With enforced auth and no use middleware, only the auth check can answer
+	// 401, so the credentials built above must get past it.
+	if _, ok := endpointEnforcedAuthMeta(ep.Meta); ok && !endpointHasUseMeta(ep.Meta) {
+		fmt.Fprintf(b, "%sexpect(res.status).not.toBe(401);\n", indent)
+	}
 
 	// Opportunistic response-shape checks for 2xx object outputs.
 	for _, sc := range collectShapeChecks(ep.Stmts) {
@@ -373,7 +393,81 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, fileN
 	}
 
 	b.WriteString("  });\n\n")
+	if _, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+		g.emitUnauthenticatedTest(b, ep)
+	}
 	return seeds
+}
+
+// emitUnauthenticatedTest writes the negative case for an endpoint with enforced
+// auth: the same request without credentials must be rejected with 401. Auth
+// runs before validation and handlers, so no body or seed data is needed.
+func (g *Generator) emitUnauthenticatedTest(b *strings.Builder, ep *ast.Endpoint) {
+	method := strings.ToUpper(ep.Method)
+	url := g.buildRequestPath(ep.Path, nil)
+	fmt.Fprintf(b, "  it('%s %s rejects requests without credentials', async () => {\n", method, ep.Path)
+	fmt.Fprintf(b, "    const res = await app.request(%s, { method: '%s' });\n", url, method)
+	b.WriteString("    expect(res.status).toBe(401);\n")
+	b.WriteString("  });\n\n")
+}
+
+// testAuthHeaders returns the request headers that satisfy an endpoint's
+// enforced auth in the generated contract tests. The credential is built at
+// request time from the test secret value (test/_harness/setup.ts sets each
+// declared secret to 'test' when unset). Nil when auth is not enforced.
+func testAuthHeaders(ep *ast.Endpoint) []string {
+	ea, ok := endpointEnforcedAuthMeta(ep.Meta)
+	if !ok {
+		return nil
+	}
+	secret := "process.env." + ea.Secret
+	switch ea.Strategy {
+	case "bearer":
+		return []string{"'Authorization': 'Bearer ' + (" + secret + " ?? '')"}
+	case "jwt":
+		return []string{"'Authorization': 'Bearer ' + signTestJwt(" + secret + " ?? '')"}
+	case "api_key":
+		return []string{"'X-API-Key': " + secret + " ?? ''"}
+	case "basic":
+		return []string{"'Authorization': 'Basic ' + Buffer.from(" + secret + " ?? '').toString('base64')"}
+	}
+	return nil
+}
+
+// genTestAuthHelper emits test/_harness/auth.ts, the HS256 signer used by
+// contract tests for endpoints that enforce jwt auth. It uses node:crypto only.
+func (g *Generator) genTestAuthHelper() codegen.OutputFile {
+	var b strings.Builder
+	b.WriteString(fileHeader(g.sourceFile))
+	b.WriteString("import { createHmac } from 'node:crypto';\n\n")
+	b.WriteString("// signTestJwt returns a compact HS256 token signed with secret, for the\n")
+	b.WriteString("// contract tests of endpoints that enforce `auth jwt using(secret.NAME)`.\n")
+	b.WriteString("export function signTestJwt(secret: string, claims: Record<string, unknown> = { sub: 'test' }): string {\n")
+	b.WriteString("  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');\n")
+	b.WriteString("  const input = encode({ alg: 'HS256', typ: 'JWT' }) + '.' + encode(claims);\n")
+	b.WriteString("  return input + '.' + createHmac('sha256', secret).update(input).digest('base64url');\n")
+	b.WriteString("}\n")
+	return codegen.OutputFile{Path: "test/_harness/auth.ts", Content: []byte(b.String())}
+}
+
+// endpointHasUseMeta reports whether an endpoint applies any use middleware.
+func endpointHasUseMeta(meta []*ast.EndpointMeta) bool {
+	for _, m := range meta {
+		if m.Kind == "use" && m.Use != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointsUseEnforcedJwt reports whether any endpoint enforces jwt auth.
+func endpointsUseEnforcedJwt(eps []*ast.Endpoint) bool {
+	for _, ep := range eps {
+		if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok && ea.Strategy == "jwt" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildRequestPath renders a JS template literal for the endpoint path, substituting

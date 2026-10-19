@@ -435,9 +435,11 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
 
 ## Current Status
 
-- The Node target is the release/reference path. Generic `auth api_key`,
-  `auth bearer`, and `auth session` metadata does not itself generate credential
-  verification; use explicit middleware. Webhook HMAC auth is implemented.
+- The Node target is the release/reference path. Endpoint `auth bearer`, `jwt`
+  (HS256), `api_key`, and `basic` with `using(secret.NAME)` are verified before
+  the handler and answer 401 otherwise. A bare `auth` line with no `using`, such
+  as `auth session`, is metadata only; use explicit middleware for it. Webhook
+  HMAC auth is implemented.
 - Node `external` auth is a separate generated boundary: `bearer`/`jwt`/`basic`/
   `api_key` accept one declared `secret.NAME` or `env.NAME`. `retry N` adds N
   immediate retries for network/timeout failures and HTTP 408/429/5xx, with a

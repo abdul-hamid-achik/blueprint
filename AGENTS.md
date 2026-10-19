@@ -165,10 +165,11 @@ The implementation stub must be `UserOwned: true`.
 
 Treat these as correctness constraints for docs, diagnostics, and new features:
 
-- On the Node target, bare endpoint metadata such as `auth api_key`,
-  `auth bearer`, or `auth session` does not generate generic credential
-  verification. Webhook HMAC via `auth webhook_sig using(secret.KEY)` is the
-  implemented generated-auth path. Use explicit middleware for other auth.
+- On the Node target, `auth bearer`, `jwt`, `api_key`, or `basic` is verified
+  only with `using(secret.NAME)` (REST, STREAM, and WS; the generated check is
+  `src/lib/auth.ts`). Webhook HMAC via `auth webhook_sig using(secret.KEY)` is
+  also generated. A bare `auth` line, such as `auth session`, is metadata only;
+  use explicit middleware for it.
 - This endpoint-auth limitation does not apply to Node `external` service
   configuration. External `bearer`/`jwt`/`basic`/`api_key` auth requires exactly
   one declared `secret.NAME` or `env.NAME` and generates the corresponding

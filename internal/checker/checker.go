@@ -208,7 +208,21 @@ const (
 	// value cannot apply to the declared type (for example default("abc") on
 	// an int, or max(3) on a bool).
 	CodeInvalidConstraintValue = "C052"
+	// CodeAuthSecret = `auth <strategy> using(...)` for bearer, jwt, api_key, or
+	// basic does not name a declared secret, or uses using(...) on a strategy
+	// that does not take a secret.
+	CodeAuthSecret = "C053"
 )
+
+// enforcedAuthStrategies are the auth strategies that accept using(secret.NAME)
+// and are verified by the generated Node server (see src/lib/auth.ts). Keep in
+// step with the codegen enforcedAuthStrategies.
+var enforcedAuthStrategies = map[string]bool{
+	"bearer":  true,
+	"jwt":     true,
+	"api_key": true,
+	"basic":   true,
+}
 
 // --- Pass 1: Collect top-level declarations ---
 
@@ -2478,6 +2492,7 @@ func (c *Checker) checkEndpointAuth(meta *ast.EndpointMeta) {
 		return
 	}
 	if fn.Name != "webhook_sig" {
+		c.checkEnforcedAuth(meta, fn)
 		return
 	}
 	secretName, ok := webhookSignatureSecretName(fn)
@@ -2497,12 +2512,56 @@ func (c *Checker) checkEndpointAuth(meta *ast.EndpointMeta) {
 	}
 }
 
+// checkEnforcedAuth validates `using(...)` on a non-webhook auth strategy.
+// Without using(...) the strategy is metadata only and nothing is checked. With
+// it, the strategy must be one that takes a secret, and the argument must be
+// secret.NAME naming a declared secret.
+func (c *Checker) checkEnforcedAuth(meta *ast.EndpointMeta, fn *ast.FnCall) {
+	if len(fn.Args) == 0 {
+		return
+	}
+	using, ok := fn.Args[0].(*ast.FnCall)
+	if !ok || using.Name != "using" {
+		return
+	}
+	if !enforcedAuthStrategies[fn.Name] {
+		c.addErrorCode(meta.Loc, CodeAuthSecret,
+			fmt.Sprintf("auth %s does not accept using(...)", fn.Name),
+			"using(secret.NAME) is supported for auth webhook_sig, bearer, jwt, api_key, and basic",
+		)
+		return
+	}
+	secretName, ok := authUsingSecretName(using)
+	if !ok {
+		c.addErrorCode(meta.Loc, CodeAuthSecret,
+			fmt.Sprintf("auth %s requires using(secret.NAME)", fn.Name),
+			fmt.Sprintf("Use: auth %s using(secret.JWT_SECRET), and declare that secret with: secret JWT_SECRET required", fn.Name),
+		)
+		return
+	}
+	sym := c.global.Lookup(secretName)
+	if sym == nil || sym.Kind != SymSecret {
+		c.addErrorCode(meta.Loc, CodeAuthSecret,
+			fmt.Sprintf("auth %s references unknown secret %q", fn.Name, secretName),
+			"Declare it with: secret "+secretName+" required",
+		)
+	}
+}
+
 func webhookSignatureSecretName(fn *ast.FnCall) (string, bool) {
 	if fn == nil || fn.Name != "webhook_sig" || len(fn.Args) == 0 {
 		return "", false
 	}
 	using, ok := fn.Args[0].(*ast.FnCall)
-	if !ok || using.Name != "using" || len(using.Args) == 0 {
+	if !ok || using.Name != "using" {
+		return "", false
+	}
+	return authUsingSecretName(using)
+}
+
+// authUsingSecretName returns NAME from a using(secret.NAME) call.
+func authUsingSecretName(using *ast.FnCall) (string, bool) {
+	if using == nil || len(using.Args) == 0 {
 		return "", false
 	}
 	field, ok := using.Args[0].(*ast.FieldAccess)

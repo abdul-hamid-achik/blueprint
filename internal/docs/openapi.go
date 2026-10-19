@@ -579,6 +579,8 @@ func addGeneratedErrorResponses(responses map[string]any, meta []*ast.EndpointMe
 			if authStrategy(m.Value) == "webhook_sig" {
 				addJSONResponse(responses, "401", httpStatusDescription("401"), errorBodySchema())
 				addJSONResponse(responses, "400", httpStatusDescription("400"), errorBodySchema())
+			} else if authEnforced(m.Value) {
+				addJSONResponse(responses, "401", httpStatusDescription("401"), errorBodySchema())
 			}
 		case "limit":
 			addJSONResponse(responses, "429", httpStatusDescription("429"), errorBodySchema())
@@ -692,7 +694,11 @@ func endpointAuthScheme(meta []*ast.EndpointMeta) (string, map[string]any, bool)
 			continue
 		}
 		strategy := authStrategy(m.Value)
+		enforced := authEnforced(m.Value)
 		notVerified := "Declared with `auth " + strategy + "`; the generated Node server does not verify it. Use middleware for credential checks."
+		if enforced {
+			notVerified = "Enforced by the generated Node server against the secret named in `using(secret.NAME)`."
+		}
 		switch strategy {
 		case "bearer":
 			return "bearerAuth", map[string]any{"type": "http", "scheme": "bearer", "description": notVerified}, true
@@ -701,9 +707,13 @@ func endpointAuthScheme(meta []*ast.EndpointMeta) (string, map[string]any, bool)
 		case "basic":
 			return "basicAuth", map[string]any{"type": "http", "scheme": "basic", "description": notVerified}, true
 		case "api_key":
+			desc := notVerified + " Blueprint does not name the header; X-API-Key is assumed."
+			if enforced {
+				desc = notVerified + " The credential is the X-API-Key header."
+			}
 			return "apiKeyAuth", map[string]any{
 				"type": "apiKey", "in": "header", "name": "X-API-Key",
-				"description": notVerified + " Blueprint does not name the header; X-API-Key is assumed.",
+				"description": desc,
 			}, true
 		case "session":
 			return "sessionAuth", map[string]any{
@@ -718,6 +728,22 @@ func endpointAuthScheme(meta []*ast.EndpointMeta) (string, map[string]any, bool)
 		}
 	}
 	return "", nil, false
+}
+
+// authEnforced reports whether an auth declaration is one the generated server
+// verifies: bearer, jwt, api_key, or basic with using(...).
+func authEnforced(e ast.Expr) bool {
+	fn, ok := e.(*ast.FnCall)
+	if !ok || len(fn.Args) == 0 {
+		return false
+	}
+	switch fn.Name {
+	case "bearer", "jwt", "api_key", "basic":
+	default:
+		return false
+	}
+	using, ok := fn.Args[0].(*ast.FnCall)
+	return ok && using.Name == "using"
 }
 
 // authStrategy returns the strategy name of an auth value: `bearer` for a bare
@@ -746,11 +772,33 @@ func middlewareNames(meta []*ast.EndpointMeta) []string {
 // buildSecuritySchemes collects the security schemes used by any endpoint.
 func buildSecuritySchemes(f *ast.File) map[string]any {
 	schemes := map[string]any{}
+	// A scheme is shared by every endpoint with the same strategy. Track whether
+	// its endpoints are enforced (using(...)), not enforced, or both, so a mixed
+	// scheme gets a description that is true for all of them.
+	const enforcedSeen, unenforcedSeen = 1, 2
+	seen := map[string]int{}
 	add := func(meta []*ast.EndpointMeta) {
-		if name, scheme, ok := endpointAuthScheme(meta); ok {
-			schemes[name] = scheme
+		name, scheme, ok := endpointAuthScheme(meta)
+		if !ok {
+			return
+		}
+		schemes[name] = scheme
+		if endpointAuthEnforced(meta) {
+			seen[name] |= enforcedSeen
+		} else {
+			seen[name] |= unenforcedSeen
 		}
 	}
+	defer func() {
+		for name, bits := range seen {
+			if bits != enforcedSeen|unenforcedSeen {
+				continue
+			}
+			if s, ok := schemes[name].(map[string]any); ok {
+				s["description"] = "Declared by some operations with using(secret.NAME), which the generated Node server enforces, and by others without it, which it does not verify. See each operation's security and 401 response."
+			}
+		}
+	}()
 	for _, block := range f.Blocks {
 		switch b := block.(type) {
 		case *ast.Endpoint:
@@ -762,6 +810,16 @@ func buildSecuritySchemes(f *ast.File) map[string]any {
 		}
 	}
 	return schemes
+}
+
+// endpointAuthEnforced reports whether any auth declaration in meta is enforced.
+func endpointAuthEnforced(meta []*ast.EndpointMeta) bool {
+	for _, m := range meta {
+		if m.Kind == "auth" && authEnforced(m.Value) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildResponseObject builds a single response object from an OutputStmt.
