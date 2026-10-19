@@ -233,6 +233,7 @@ behavior.
 | Endpoint `cache <duration>` | `Cache-Control` on GET 2xx responses | `Cache-Control` on GET 2xx responses through `src/lib/http_cache.py`; `private` under the same rules |
 | Endpoint `limit <n>/<unit>` | in-process counter, `429` `{"error": "Rate limit exceeded"}` | `src/lib/rate_limit.py`, same key (client address and path, with `FORWARDED_ALLOW_IPS` trust on both targets) and window, same `429` body |
 | Endpoint `tags [...]` | OpenAPI tags | FastAPI route `tags=[...]` |
+| `storage s3` (`upload`, `download`) | `@aws-sdk/client-s3` in `src/lib/storage.ts`; `upload` returns `s3://<bucket>/<uuid>` | boto3 in `src/lib/storage.py`; the same URL and the same `AWS_*` variables; handlers that call storage are sync `def` (threadpool) |
 | `try/recover` with two or more writes | `db.transaction(...)` | `with db.begin_nested():` (a SAVEPOINT) |
 | `log` | `console.*` levels | stdlib `logging` through `src/lib/log.py` |
 | `pipe` declarations | `src/pipes/<name>.ts` | `src/pipes/<name>.py` for the inline subset only |
@@ -257,6 +258,7 @@ reasons come from `unsupportedFeatures()` in
 - STREAM endpoints that use `use` middleware with configuration or an undeclared middleware, `cache`, `auth webhook_sig`, `try/recover` before the stream block, calls to functions or `header`/`env` inside a handler, or handler output that is not an object literal
 - `emit ... to(service)` (no Python transport)
 - `schedule`, `worker`, `subscribe`, and `external` declarations
+- `storage` backends other than `s3`, `delete_s3_object`, and endpoint `file` inputs (Node rejects `file` inputs too)
 - `env` declarations, and `env.X` reads outside endpoint and middleware bodies
 - `fn logic` bodies and `middleware after` bodies
 - endpoint `timeout` metadata, bare `auth webhook_sig` and bare `auth` lines (only `auth bearer|jwt|api_key|basic|webhook_sig using(secret.NAME)` is enforced), and blueprint-level `use`

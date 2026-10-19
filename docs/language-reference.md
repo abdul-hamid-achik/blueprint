@@ -1877,6 +1877,15 @@ upload(file, bucket)              # upload to S3/GCS → { url }
 download(url)                     # download file → file
 ```
 
+**On the Python target**, `storage s3` is implemented with boto3
+(`src/lib/storage.py`). `upload` stores the body under a random UUID key and
+returns the same `s3://<bucket>/<key>` URL as Node. `download` takes that URL
+and returns the object's bytes. The S3 settings are the standard AWS variables
+(`AWS_REGION`, `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`), read from the environment or
+`.env`. Only `storage s3` is accepted on Python; `gcs` and `local` backends and
+`delete_s3_object` are rejected there.
+
 ### Pipeline
 
 ```bp
