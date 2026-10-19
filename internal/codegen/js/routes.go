@@ -56,6 +56,7 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 
 	b.WriteString("import { secureHeaders } from 'hono/secure-headers';\n")
 	b.WriteString("import { env } from './lib/env.js';\n")
+	b.WriteString("import { BpError } from './lib/errors.js';\n")
 	if hasDB {
 		b.WriteString("import { db } from './lib/db.js';\n")
 	}
@@ -247,8 +248,11 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	// Health check endpoint
 	b.WriteString("app.get('/health', (c) => c.json({ status: 'ok', uptime: process.uptime() }));\n\n")
 
-	// Global error handler — suppress internal details
+	// Global error handler — suppress internal details. A guard in a `use`
+	// middleware throws BpError outside the route's own try/catch, so answer
+	// its status and message here, as the route would.
 	b.WriteString("app.onError((err, c) => {\n")
+	b.WriteString("  if (err instanceof BpError) return c.json({ error: err.message }, err.statusCode);\n")
 	b.WriteString("  console.error(err);\n")
 	b.WriteString("  return c.json({ error: 'Internal server error' }, 500 as const);\n")
 	b.WriteString("});\n\n")
@@ -1285,18 +1289,19 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		// Extract path params for this endpoint
 		pathParams := extractPathParams(ep.Path)
 
-		// Build handler: routeVar.get('path', ...use middleware, [rate-limit/webhook-auth middleware], upgradeWebSocket(...))
+		// Build handler: routeVar.get('path', [auth], ...use middleware, [rate-limit/webhook-auth middleware], upgradeWebSocket(...))
 		fmt.Fprintf(&b, "%s.get('%s'", routeVar, ep.Path)
+
+		// Enforced auth runs before use middleware, path validation, and the
+		// handshake, as on REST and STREAM, so an unauthenticated client gets 401
+		// and a user middleware never runs for it.
+		if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+			fmt.Fprintf(&b, ", %s", requireAuthMiddleware(ea, true, g.blueprintNameOf()))
+		}
 		for _, meta := range ep.Meta {
 			if meta.Kind == "use" && meta.Use != nil {
 				fmt.Fprintf(&b, ", %s", toCamelCase(meta.Use.Name))
 			}
-		}
-
-		// Enforced auth runs before path validation and the handshake, so an
-		// unauthenticated client gets 401 and never reaches the upgrade.
-		if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
-			fmt.Fprintf(&b, ", %s", requireAuthMiddleware(ea, true, g.blueprintNameOf()))
 		}
 
 		// Declared path inputs are validated before the handshake: a failing

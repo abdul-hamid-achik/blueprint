@@ -240,3 +240,58 @@ GET /b {
 		t.Errorf("missing strategies in %v", calls)
 	}
 }
+
+// WS runs enforced auth before use middleware, as REST and STREAM do, so a
+// user middleware never runs for an unauthenticated client.
+func TestAuthWSWiresBeforeUse(t *testing.T) {
+	contents, paths := authTestFiles(t, `
+middleware check_user {
+  before {
+    |> guard header.Authorization -> 401 "Unauthorized"
+  }
+}
+
+WS /ws/chat {
+  auth jwt using(secret.JWT_SECRET)
+  use check_user
+
+  on_connect {
+    |> log "connected"
+  }
+}
+`)
+	routes := routeFileContent(t, paths, contents)
+	chain := routes[strings.Index(routes, ".get('/ws/chat'"):]
+	authAt := strings.Index(chain, "requireAuth(")
+	useAt := strings.Index(chain, ", checkUser")
+	if authAt < 0 || useAt < 0 || authAt > useAt {
+		t.Errorf("requireAuth must come before use middleware on WS (auth %d, use %d):\n%s", authAt, useAt, chain)
+	}
+}
+
+// A guard in a use middleware throws BpError outside the route's try/catch;
+// app.onError answers it with its status and message, not a 500.
+func TestIndexOnErrorAnswersBpError(t *testing.T) {
+	contents, paths := authTestFiles(t, `
+GET /a {
+  -> 200 { ok: true }
+}
+`)
+	var index string
+	for _, p := range paths {
+		if p == "src/index.ts" {
+			index = contents[p]
+		}
+	}
+	for _, want := range []string{
+		"import { BpError } from './lib/errors.js';",
+		"if (err instanceof BpError) return c.json({ error: err.message }, err.statusCode);",
+	} {
+		if !strings.Contains(index, want) {
+			t.Errorf("src/index.ts missing %q:\n%s", want, index)
+		}
+	}
+	if strings.Index(index, "err instanceof BpError") > strings.Index(index, "'Internal server error'") {
+		t.Errorf("BpError must be answered before the generic 500")
+	}
+}
