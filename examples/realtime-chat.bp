@@ -91,6 +91,9 @@ WS /ws/rooms/:id {
   on_connect {
     |> room = fetch room(id)
     |> guard room -> 404 "Room not found"
+    # auth jwt already verified the token. This decodes its claims from the
+    # Authorization header, so it works for clients that send the header, not
+    # for browser clients that pass ?token=.
     |> payload = verify_jwt(header.Authorization)
     |> guard payload -> 401 "Authentication required"
     |> inject payload.username as sender

@@ -1153,8 +1153,11 @@ such as `auth jwt using(secret.JWT_SECRET)`; the client sends the token in the
 `Authorization` header or, since browsers cannot set WebSocket headers, in
 `?token=`. A bare `auth bearer` (no `using`) is metadata only, and the
 `unenforceable-ws-auth` lint warns about it. Claims are not passed to
-`on_connect`; decode them there from `header.Authorization` as
-`examples/realtime-chat.bp` does, or in a `use` middleware.
+`on_connect`. A client that sends the `Authorization` header can have them
+decoded there from `header.Authorization`, as `examples/realtime-chat.bp` does,
+or in a `use` middleware. A browser client that sends `?token=` passes the
+`auth` check, but its claims cannot be read in `on_connect` in this version,
+because WS handlers cannot read the query string.
 
 ```bp
 WS /ws/rooms/:id {

@@ -62,6 +62,10 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Breaking (Node):** the generated `src/index.ts` exports `app` by name
+  (`import { app } from '../src/index.js'`). Generated tests are regenerated,
+  but hand-written tests and scripts that use `import app from` must switch to
+  the named import. See Fixed for why.
 - STREAM and WS fan-out on the Node target apply backpressure. Each STREAM
   client gets a serialized write queue, and `emit` no longer waits on SSE
   writes. A client that stays more than `BP_SSE_MAX_PENDING` events (default
