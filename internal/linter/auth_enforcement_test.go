@@ -239,3 +239,62 @@ GET /api/health {
 		t.Fatalf("optional-auth-secret count = %d, want 0 for a secret no auth line uses", n)
 	}
 }
+
+func TestLint_WebhookSigWithoutBody(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"GET", `
+@ "Poll"
+GET /api/poll {
+  auth webhook_sig using(secret.JWT_SECRET)
+  -> 200 "ok"
+}
+`, 1},
+		{"STREAM", `
+@ "Live"
+STREAM /api/live {
+  auth webhook_sig using(secret.JWT_SECRET)
+
+  stream {
+    |> on timeout(5s) {
+      -> { type: "ping" }
+    }
+  }
+}
+`, 1},
+		{"WS", `
+@ "Chat"
+WS /ws/chat {
+  auth webhook_sig using(secret.JWT_SECRET)
+
+  on_connect {
+    |> log "connected"
+  }
+}
+`, 1},
+		{"POST", `
+@ "Hook"
+POST /api/hook {
+  auth webhook_sig using(secret.JWT_SECRET)
+  -> 200 "ok"
+}
+`, 0},
+		{"GET with jwt", `
+@ "List"
+GET /api/list {
+  auth jwt using(secret.JWT_SECRET)
+  -> 200 "ok"
+}
+`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if n := ruleCount(t, authSecretHeader+tc.src, "webhook-sig-without-body"); n != tc.want {
+				t.Fatalf("webhook-sig-without-body count = %d, want %d", n, tc.want)
+			}
+		})
+	}
+}

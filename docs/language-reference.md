@@ -963,7 +963,7 @@ is enforced (see Auth Strategies).
 | `auth jwt using(secret.NAME)` | Enforced: `Authorization: Bearer <jwt>`; HS256 only, signed with the secret; `exp` and `nbf` are checked |
 | `auth api_key using(secret.NAME)` | Enforced: the `X-API-Key` header must equal the secret value |
 | `auth basic using(secret.NAME)` | Enforced: `Authorization: Basic <base64(user:password)>`; the secret holds `user:password` |
-| `auth webhook_sig using(secret.KEY)` | Enforced with HMAC-SHA256 (hex) over the raw body, against `X-Webhook-Signature`. An unset or empty secret fails closed. A bad, non-hex, or missing signature, or one made with an empty key, answers `401` with `{ "error": "Invalid signature" }`. A verified body that is not JSON answers `400` with `{ "error": "Invalid payload" }`. The parsed body is bound to `data`. Python enforces the same contract in `src/lib/webhook.py` |
+| `auth webhook_sig using(secret.KEY)` | Enforced with HMAC-SHA256 (hex) over the raw body, against `X-Webhook-Signature`. An unset or empty secret fails closed. A bad, non-hex, or missing signature, or one made with an empty key, answers `401` with `{ "error": "Invalid signature" }`. A verified body that is not JSON answers `400` with `{ "error": "Invalid payload" }`. The parsed body is bound to `data`. Python enforces the same contract in `src/lib/webhook.py`. The signature covers the body, so use it on endpoints that receive one; on `GET`, STREAM, and WS the body is empty, and `bp lint` warns (`webhook-sig-without-body`) |
 | `auth bearer`, `auth jwt`, `auth api_key`, `auth basic`, `auth session` (no `using`) | Parsed metadata; does not verify anything by itself |
 
 An enforced check runs before the handler, before `use` middleware and input
