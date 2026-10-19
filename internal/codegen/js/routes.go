@@ -144,7 +144,7 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	// Import worker + schedule handlers. Both need `Worker` from bullmq:
 	// workers consume their own queue, and schedules consume the shared
 	// 'scheduler' queue (see below) — without a consumer there, the cron
-	// entries added via schedulerQueue.add() would be enqueued but never run.
+	// entries upserted via schedulerQueue.upsertJobScheduler() would be enqueued but never run.
 	if len(workers) > 0 || len(schedules) > 0 {
 		b.WriteString("import { Worker } from 'bullmq';\n")
 	}
@@ -303,13 +303,21 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	// without this Worker, jobs added to the 'scheduler' queue below would
 	// sit there forever (cron handlers would be dead code at runtime).
 	if len(schedules) > 0 {
-		b.WriteString("  // Register scheduled jobs\n")
+		b.WriteString("  // Register scheduled jobs. Job scheduler id == job name == schedule name.\n")
 		b.WriteString("  const schedulerQueue = new Queue('__bp_scheduler', { connection: { url: env.REDIS_URL } });\n")
+		knownSchedules := make([]string, 0, len(schedules))
 		for _, s := range schedules {
 			name := toCamelCase(s.Name)
 			cronName := name + "Cron"
-			fmt.Fprintf(&b, "  schedulerQueue.add('%s', {}, { repeat: { pattern: %s }, attempts: 3, backoff: { type: 'exponential', delay: 1000 } });\n", s.Name, cronName)
+			knownSchedules = append(knownSchedules, fmt.Sprintf("'%s'", s.Name))
+			fmt.Fprintf(&b, "  await schedulerQueue.upsertJobScheduler('%s', { pattern: %s }, { name: '%s', data: {}, opts: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } } });\n", s.Name, cronName, s.Name)
 		}
+		// Drop schedulers whose schedule was removed from the .bp file, so they
+		// stop firing into the "Unknown scheduled job" default branch below.
+		fmt.Fprintf(&b, "  const knownSchedules = new Set([%s]);\n", strings.Join(knownSchedules, ", "))
+		b.WriteString("  for (const scheduler of await schedulerQueue.getJobSchedulers()) {\n")
+		b.WriteString("    if (!knownSchedules.has(scheduler.key)) await schedulerQueue.removeJobScheduler(scheduler.key);\n")
+		b.WriteString("  }\n")
 		b.WriteString("  new Worker('__bp_scheduler', async (job) => {\n")
 		b.WriteString("    switch (job.name) {\n")
 		for _, s := range schedules {

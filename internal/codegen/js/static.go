@@ -27,15 +27,18 @@ func (g *Generator) genPackageJSON(bp *ast.Blueprint, hasDB, hasCache, hasStorag
 		deps["pg"] = "^8.13.0"
 	}
 	if hasCache {
-		// bullmq@5.30+ peer-requires redis>=5.0.0; keep these in lockstep
-		// so `npm install` on a generated project doesn't ERESOLVE.
+		// Cache uses node-redis directly. BullMQ 6 declares redis and ioredis
+		// as optional peers; the queue connections below use ioredis.
 		deps["redis"] = "^5.0.0"
 	}
 	if hasStorage {
 		deps["@aws-sdk/client-s3"] = "^3.700.0"
 	}
 	if hasQueue {
-		deps["bullmq"] = "^5.30.0"
+		// BullMQ 6 loads ioredis for `connection: { url }`. It is an optional
+		// peer, so the generated project must list it explicitly.
+		deps["bullmq"] = "^6.3.0"
+		deps["ioredis"] = "^5.11.1"
 	}
 	if hasWS {
 		deps["@hono/node-ws"] = "^1.0.0"

@@ -2747,7 +2747,7 @@ func TestGenWorkerBasicFixture(t *testing.T) {
 // TestGenScheduleBasicFixtureRunsScheduledJobs builds testdata/valid/schedule_basic.bp
 // and asserts that schedules are actually executed at runtime: a Worker
 // consumes the shared 'scheduler' queue with a switch case per schedule,
-// wired inside the VITEST guard alongside the producer-side schedulerQueue.add().
+// wired inside the VITEST guard alongside the producer-side upsertJobScheduler().
 func TestGenScheduleBasicFixtureRunsScheduledJobs(t *testing.T) {
 	src, err := os.ReadFile("../../../testdata/valid/schedule_basic.bp")
 	if err != nil {
@@ -2778,16 +2778,35 @@ func TestGenScheduleBasicFixtureRunsScheduledJobs(t *testing.T) {
 		"case 'cleanup':",
 		"return cleanup();",
 		"Unknown scheduled job",
+		// BullMQ v6 job scheduler registration: id == job name == schedule name.
+		"await schedulerQueue.upsertJobScheduler('cleanup', { pattern: cleanupCron }, { name: 'cleanup', data: {}, opts: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } } });",
+		// Stale scheduler cleanup: schedulers whose id is not a declared schedule are removed.
+		"const knownSchedules = new Set(['cleanup']);",
+		"for (const scheduler of await schedulerQueue.getJobSchedulers()) {",
+		"if (!knownSchedules.has(scheduler.key)) await schedulerQueue.removeJobScheduler(scheduler.key);",
 	} {
 		if !strings.Contains(indexStr, expected) {
 			t.Errorf("expected scheduler consumer wiring %q, got:\n%s", expected, indexStr)
 		}
+	}
+	if strings.Contains(indexStr, "repeat:") || strings.Contains(indexStr, "schedulerQueue.add(") {
+		t.Errorf("legacy BullMQ v5 repeatable registration must not be emitted, got:\n%s", indexStr)
 	}
 
 	guardIdx := strings.Index(indexStr, "if (!process.env.VITEST)")
 	schedulerWorkerIdx := strings.Index(indexStr, "new Worker('__bp_scheduler'")
 	if guardIdx == -1 || schedulerWorkerIdx == -1 || schedulerWorkerIdx < guardIdx {
 		t.Errorf("expected the scheduler Worker to appear after the VITEST guard, got:\n%s", indexStr)
+	}
+
+	pkgContent, err := os.ReadFile(filepath.Join(outDir, "package.json"))
+	if err != nil {
+		t.Fatal("package.json should exist")
+	}
+	for _, expected := range []string{`"bullmq": "^6.3.0"`, `"ioredis": "^5.11.1"`} {
+		if !strings.Contains(string(pkgContent), expected) {
+			t.Errorf("expected %s in package.json, got:\n%s", expected, string(pkgContent))
+		}
 	}
 
 	requireTypeScriptCompile(t, outDir)
