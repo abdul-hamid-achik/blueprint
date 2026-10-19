@@ -179,6 +179,9 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	out = append(out, emptyInit("src/routes/__init__.py", g.sourceFile))
 	out = append(out, g.genEnvPy(secrets, hasDB, hasCache))
 	out = append(out, g.genLogPy())
+	if pythonUsesFormats(models, endpoints) {
+		out = append(out, g.genFormatsPy())
+	}
 	out = append(out, g.genAppPy(bp, endpoints))
 
 	// Phase 2: data layer (models + db session + alembic) when the spec
@@ -339,6 +342,13 @@ func (g *Generator) unsupportedFeatures() []string {
 			for _, field := range n.Fields {
 				if !validPythonIdentifier(field.Name) {
 					add(fmt.Sprintf("model field %q that is not a valid Python identifier", field.Name))
+				}
+				for _, c := range field.Constraints {
+					if c.Kind == "format" {
+						if reason := formatFeature(field.Type, c); reason != "" {
+							add(fmt.Sprintf("model field %q: %s", field.Name, reason))
+						}
+					}
 				}
 			}
 		case *ast.Env:
@@ -597,7 +607,11 @@ func (g *Generator) complexEndpointFeatures(ep *ast.Endpoint) []string {
 			}
 			if common.IsPathParam(input.Name, ep.Path) {
 				for _, constraint := range input.Constraints {
-					if constraint.Kind != "required" {
+					switch constraint.Kind {
+					case "required", "min", "max", "format":
+						// Emitted as Path(...) bounds and formats.py types; the
+						// per-kind value checks run in complexStmtFeatures.
+					default:
 						seen[fmt.Sprintf("path input constraint %q", constraint.Kind)] = true
 					}
 				}
@@ -910,6 +924,11 @@ func pythonInputConstraintFeature(t ast.TypeExpr, constraint *ast.Constraint_) s
 			return ""
 		}
 		return fmt.Sprintf("endpoint input %s constraint on %T", constraint.Kind, t)
+	case "format":
+		if reason := formatFeature(t, constraint); reason != "" {
+			return "endpoint input " + reason
+		}
+		return ""
 	case "default":
 		if pythonDefaultMatchesType(t, constraint.Value) {
 			return ""

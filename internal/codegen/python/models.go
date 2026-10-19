@@ -233,6 +233,7 @@ func pythonAnnotationForField(t ast.TypeExpr, cs []*ast.Constraint_) string {
 	if base == "" || strings.Contains(base, "TODO") {
 		base = "str"
 	}
+	base = annotatedType(base, t, cs)
 	for _, c := range cs {
 		if c.Kind == "optional" {
 			return "Optional[" + base + "]"
@@ -315,11 +316,10 @@ func exprAsName(e ast.Expr) string {
 func (g *Generator) genPydanticPy(models []*ast.Model) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
-	b.WriteString("from pydantic import BaseModel, ConfigDict\n")
-
 	needsUUID := false
 	needsDateTime := false
 	needsOptional := false
+	needsFormats := false
 	for _, m := range models {
 		for _, f := range m.Fields {
 			if pt, ok := f.Type.(*ast.PrimitiveType); ok {
@@ -335,8 +335,12 @@ func (g *Generator) genPydanticPy(models []*ast.Model) codegen.OutputFile {
 					needsOptional = true
 				}
 			}
+			if formatTypeFor(f.Type, f.Constraints) != "" {
+				needsFormats = true
+			}
 		}
 	}
+	b.WriteString("from pydantic import BaseModel, ConfigDict\n")
 	if needsUUID {
 		b.WriteString("from uuid import UUID\n")
 	}
@@ -345,6 +349,9 @@ func (g *Generator) genPydanticPy(models []*ast.Model) codegen.OutputFile {
 	}
 	if needsOptional {
 		b.WriteString("from typing import Optional\n")
+	}
+	if needsFormats {
+		b.WriteString("from src.lib import formats\n")
 	}
 	b.WriteString("\n")
 

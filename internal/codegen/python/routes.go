@@ -49,6 +49,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsHeader := false
 	needsEnv := false
 	needsLog := false
+	needsPath := false
+	needsAnnotated := false
+	needsFormats := false
 	userFnCalls := map[string]bool{}
 	middlewares := map[string]bool{}
 	for _, ep := range eps {
@@ -66,7 +69,15 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			if input, ok := s.(*ast.InputStmt); ok {
 				needsUUID = needsUUID || typeContainsPrimitive(input.Type, "uuid")
 				needsNow = needsNow || typeContainsPrimitive(input.Type, "timestamp")
-				if !common.IsPathParam(input.Name, ep.Path) {
+				if formatTypeFor(input.Type, input.Constraints) != "" {
+					needsFormats = true
+				}
+				if common.IsPathParam(input.Name, ep.Path) {
+					if len(inputValidationArgs(input.Type, input.Constraints)) > 0 {
+						needsAnnotated = true
+						needsPath = true
+					}
+				} else {
 					if strings.EqualFold(ep.Method, "GET") || strings.EqualFold(ep.Method, "DELETE") {
 						needsQuery = true
 					} else {
@@ -127,6 +138,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	if needsQuery {
 		fastapiImports = append(fastapiImports, "Query")
 	}
+	if needsPath {
+		fastapiImports = append(fastapiImports, "Path")
+	}
 	if needsHeader {
 		fastapiImports = append(fastapiImports, "Header")
 	}
@@ -179,6 +193,12 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	}
 	if needsUUID {
 		b.WriteString("from uuid import UUID\n")
+	}
+	if needsAnnotated {
+		b.WriteString("from typing import Annotated\n")
+	}
+	if needsFormats {
+		b.WriteString("from src.lib import formats\n")
 	}
 	if needsEnv {
 		b.WriteString("from src.lib.env import env\n")
@@ -468,12 +488,17 @@ func signatureParams(method, path string, inputs []*ast.InputStmt) string {
 	var pathParams, requestParams []string
 	query := strings.EqualFold(method, "GET") || strings.EqualFold(method, "DELETE")
 	for _, in := range inputs {
-		typ := pythonTypeAnnotation(in.Type)
 		if common.IsPathParam(in.Name, path) {
+			var extra []string
+			if args := inputValidationArgs(in.Type, in.Constraints); len(args) > 0 {
+				extra = append(extra, fmt.Sprintf("Path(%s)", strings.Join(args, ", ")))
+			}
+			typ := annotatedType(pythonTypeAnnotation(in.Type), in.Type, in.Constraints, extra...)
 			pathParams = append(pathParams, fmt.Sprintf("%s: %s", in.Name, typ))
 			continue
 		}
 
+		typ := annotatedType(pythonTypeAnnotation(in.Type), in.Type, in.Constraints)
 		defaultValue := "..."
 		if value, ok := inputDefaultValue(in.Constraints); ok {
 			defaultValue = value

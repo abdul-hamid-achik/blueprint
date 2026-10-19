@@ -627,29 +627,22 @@ func intSampleStrPy(constraints []*ast.Constraint_) string {
 func stringSamplePy(constraints []*ast.Constraint_) string {
 	for _, c := range constraints {
 		if c.Kind == "format" {
-			if s, ok := c.Value.(*ast.StringLit); ok {
-				switch s.Value {
-				case "email":
-					return "test@example.com"
-				case "url":
-					return "https://example.com"
-				case "uuid":
-					return zeroUUIDPy
-				}
-			}
-			if id, ok := c.Value.(*ast.Ident); ok {
-				switch id.Name {
-				case "email":
-					return "test@example.com"
-				case "url":
-					return "https://example.com"
-				case "uuid":
-					return zeroUUIDPy
-				}
+			if sample, ok := formatSamplePy[formatKind(c.Value)]; ok {
+				return sample
 			}
 		}
 	}
 	return "test"
+}
+
+// formatSamplePy holds one value per format(...) kind that satisfies the
+// validator in src/lib/formats.py, so generated contract tests send valid input.
+var formatSamplePy = map[string]string{
+	"email": "test@example.com",
+	"url":   "https://example.com",
+	"uuid":  zeroUUIDPy,
+	"ip":    "127.0.0.1",
+	"date":  "2026-01-01",
 }
 
 // --- Endpoint analysis ---

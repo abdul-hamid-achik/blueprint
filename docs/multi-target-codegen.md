@@ -232,7 +232,13 @@ models still emits an importable empty Drizzle schema or SQLAlchemy `Base`.
 
 Within the supported Python slice, GET/DELETE inputs use FastAPI `Query(...)`,
 POST/PUT/PATCH inputs use embedded `Body(...)`, and `header.X-Name` becomes a
-valid `Header(..., alias="X-Name")` parameter. `env.FIELD` is accepted only for
+valid `Header(..., alias="X-Name")` parameter. `min`/`max` on a path input
+become `Path(...)` bounds, so an over-long segment answers 422 (FastAPI's
+convention, not Node's 400). `format(email|url|uuid|ip|date)` on a string
+endpoint input or model field becomes a `formats.Email`/`Url`/`Uuid`/
+`IpAddress`/`Date` type from the generated `src/lib/formats.py`. Those are
+stdlib-only `str` subclasses, so handlers still receive a plain `str`, and a
+bad value answers 422. Unknown format kinds fail the build. `env.FIELD` is accepted only for
 a declared secret or generated infrastructure setting. These are
 target-preserving translations, not a claim of parity with Node. In particular,
 bare `where(q)` is text search only
