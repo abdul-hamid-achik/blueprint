@@ -37,6 +37,26 @@ All notable changes to this project will be documented in this file.
   `bp:stream:<event>` for other instances, and no listener receives an event
   twice. Payload keys stay as written in the `.bp`, so Node and Python
   instances do not share events through Redis.
+- Python target: `WS` endpoints, backed by `src/lib/realtime.py`.
+  - The handshake checks `auth` (header or `?token=`/`?api_key=`), path
+    inputs, and `limit` before the upgrade, in Node's order, and refuses with
+    the same status-only responses: 401, 400, and 429.
+  - `on_connect`, `on_message`, and `on_disconnect` send the same JSON frames
+    as Node. Supported steps: `join`, `leave`, `broadcast`,
+    `whisper connection(id)`, `close`, `emit`, `inject`, `log`, `when`,
+    `guard`, and data operations. `claims` and `connection.id` are available,
+    and bindings made in `on_connect` last for the whole connection.
+  - Each handler runs off the event loop with its own short-lived database
+    session.
+  - With `REDIS_URL` set, rooms and whisper use Node's `room:<id>` and
+    `bp:ws:whisper` channels and payloads.
+  - `BP_WS_MAX_BUFFERED_BYTES` closes a stalled socket with 1013
+    `slow consumer`.
+  - `examples/realtime-chat.bp` now builds for Python, and its generated
+    suite runs in CI.
+  - WS bodies that cannot be translated faithfully still fail the build with
+    a named reason, among them `use` middleware, `try/recover`, and
+    `auth webhook_sig`.
 - Python target: `min` and `max` on model fields become pydantic `Field`
   bounds in `src/models/pydantic.py`. They bound the length of `string`,
   `text`, lists, and maps, and the value of `int`, `float`, and `money`. Node
