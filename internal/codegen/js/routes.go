@@ -613,6 +613,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 				if secretKey := webhookAuthSecretKey(meta.Value); secretKey != "" {
 					b.WriteString("  const _payload = await c.req.text();\n")
 					b.WriteString("  const _sig = c.req.header('X-Webhook-Signature') ?? '';\n")
+					fmt.Fprintf(&b, "  if (!env.%s) return c.json({ error: 'Invalid signature' }, 401 as const);\n", secretKey)
 					fmt.Fprintf(&b, "  const _expected = createHmac('sha256', env.%s).update(_payload).digest('hex');\n", secretKey)
 					b.WriteString("  let _sigBuf: Buffer; try { _sigBuf = Buffer.from(_sig, 'hex'); } catch { return c.json({ error: 'Invalid signature' }, 401 as const); }\n")
 					b.WriteString("  if (_sigBuf.length !== Buffer.from(_expected, 'hex').length || !timingSafeEqual(_sigBuf, Buffer.from(_expected, 'hex'))) return c.json({ error: 'Invalid signature' }, 401 as const);\n")
@@ -961,6 +962,7 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 				if secretKey := webhookAuthSecretKey(meta.Value); secretKey != "" {
 					b.WriteString("  const _payload = await c.req.text();\n")
 					b.WriteString("  const _sig = c.req.header('X-Webhook-Signature') ?? '';\n")
+					fmt.Fprintf(&b, "  if (!env.%s) return c.json({ error: 'Invalid signature' }, 401 as const);\n", secretKey)
 					fmt.Fprintf(&b, "  const _expected = createHmac('sha256', env.%s).update(_payload).digest('hex');\n", secretKey)
 					b.WriteString("  let _sigBuf: Buffer; try { _sigBuf = Buffer.from(_sig, 'hex'); } catch { return c.json({ error: 'Invalid signature' }, 401 as const); }\n")
 					b.WriteString("  if (_sigBuf.length !== Buffer.from(_expected, 'hex').length || !timingSafeEqual(_sigBuf, Buffer.from(_expected, 'hex'))) return c.json({ error: 'Invalid signature' }, 401 as const);\n")
@@ -1348,6 +1350,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 					if secretKey := webhookAuthSecretKey(meta.Value); secretKey != "" {
 						b.WriteString("  const _payload = await c.req.text();\n")
 						b.WriteString("  const _sig = c.req.header('X-Webhook-Signature') ?? '';\n")
+						fmt.Fprintf(&b, "  if (!env.%s) return c.json({ error: 'Invalid signature' }, 401 as const);\n", secretKey)
 						fmt.Fprintf(&b, "  const _expected = createHmac('sha256', env.%s).update(_payload).digest('hex');\n", secretKey)
 						b.WriteString("  let _sigBuf: Buffer; try { _sigBuf = Buffer.from(_sig, 'hex'); } catch { return c.json({ error: 'Invalid signature' }, 401 as const); }\n")
 						b.WriteString("  if (_sigBuf.length !== Buffer.from(_expected, 'hex').length || !timingSafeEqual(_sigBuf, Buffer.from(_expected, 'hex'))) return c.json({ error: 'Invalid signature' }, 401 as const);\n")
