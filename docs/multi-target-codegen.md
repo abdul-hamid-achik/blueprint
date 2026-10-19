@@ -238,6 +238,7 @@ behavior.
 | `try/recover` with two or more writes | `db.transaction(...)` | `with db.begin_nested():` (a SAVEPOINT) |
 | `log` | `console.*` levels | stdlib `logging` through `src/lib/log.py` |
 | `pipe` declarations | `src/pipes/<name>.ts` | `src/pipes/<name>.py` for the inline subset only |
+| `schedule` declarations | BullMQ repeatable job on the `__bp_scheduler` Redis queue; one run per tick across instances; 3 attempts with exponential backoff from 1s | `src/lib/scheduler.py` on APScheduler 3.x, in-process: one run per tick per process, runs serialized on one worker thread; 3 attempts with 1s and 2s backoff; started by the app lifespan and skipped under pytest |
 | Named `enum` (model column, endpoint input) | pgEnum `<lowercased name>`, Zod enum | `class Name(str, enum.Enum)` in `src/models/enums.py`; SQLAlchemy `Enum` with the same Postgres type name |
 | Inline `enum(...)` endpoint input | Zod `z.enum([...])` | `Literal[...]`; `default` names a variant |
 | `type` declaration | TypeScript interface and Zod schema | Pydantic `BaseModel` in `src/models/types.py` |
@@ -258,7 +259,7 @@ reasons come from `unsupportedFeatures()` in
 - WS endpoints that use `use` middleware with configuration (`use name { ... }`) or an undeclared middleware, `auth webhook_sig`, a bare `header` or `env` name or a read deeper than one field, a step outside the translated set, or a handler output that is not an object literal
 - STREAM endpoints that use `use` middleware with configuration or an undeclared middleware, `cache`, `auth webhook_sig`, a bare `header` or `env` name or a read deeper than one field in a handler, a statement before the stream block other than an input, a step, a guard, or `try`/`recover`, or handler output that is not an object literal
 - `emit ... to(service)` (no Python transport)
-- `schedule`, `worker`, `subscribe`, and `external` declarations
+- `worker`, `subscribe`, and `external` declarations
 - `storage` backends other than `s3`, `delete_s3_object`, and endpoint `file` inputs (Node rejects `file` inputs too)
 - `env` declarations, and `env.X` reads outside endpoint and middleware bodies
 - `fn logic` bodies and `middleware after` bodies

@@ -1518,6 +1518,17 @@ schedule reset_quotas {
 
 Standard 5-field cron syntax: `minute hour day-of-month month day-of-week`.
 
+**On the Python target** (`--target python`), each schedule is an APScheduler
+3.x cron job inside the app process, started and stopped with the FastAPI
+lifespan. The body runs the same statements as an endpoint body, minus the
+request: `->` responses, `<-` inputs, `header` reads, and `emit` are rejected at
+build time. A tick queues one run on a single worker thread, so runs of the same
+schedule never overlap, and a failing run is retried twice with 1s and 2s
+backoff before it is logged and dropped. The Node target keeps schedules in
+Redis, so one run fires per tick across all instances; the Python target runs
+them in each process, so use one process per schedule set. Both targets use the
+process-local timezone. The scheduler does not start under pytest.
+
 ---
 
 ## 18. `external`
