@@ -255,9 +255,9 @@ STREAM /events {
   }
 }
 `,
-		"websocket endpoint": `blueprint "x" { version "1.0" port 3000 runtime node }
+		"websocket endpoint with an unsupported step": `blueprint "x" { version "1.0" port 3000 runtime node }
 WS /socket {
-  on_message { -> { body: message.body } }
+  on_message { |> notify(message) }
 }
 `,
 		"sum without a collection expression": `blueprint "x" { version "1.0" port 3000 runtime node }

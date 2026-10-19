@@ -192,7 +192,7 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("from fastapi import FastAPI\n")
-	guarded := g.withStreamEndpoints(endpoints)
+	guarded := g.withRealtimeEndpoints(endpoints)
 	if hasEnforcedAuth(guarded) {
 		b.WriteString("from src.lib.auth import Unauthorized, unauthorized_handler\n")
 	}

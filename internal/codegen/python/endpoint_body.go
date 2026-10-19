@@ -73,6 +73,14 @@ type bodyCtx struct {
 	// A guard there raises StreamError (answered as {"error": ...}) instead of
 	// HTTPException, because the response has not started yet.
 	streamPre bool
+
+	// ws is set while emitting a WS handler body. The body runs as a sync helper
+	// that returns a WsResult: frames, room work and close become tuples on _fx,
+	// a guard raises WsGuardError, and message.x reads go through ws_get.
+	ws bool
+	// wsReturn is the Python expression for the bindings the helper returns with
+	// its WsResult ("None" when the handler binds nothing later handlers read).
+	wsReturn string
 }
 
 func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
@@ -227,6 +235,9 @@ func emitStep(b *strings.Builder, s *ast.StepStmt, ctx *bodyCtx, indent string) 
 	// Bare BlockExpr step: `|> filters = { status: "active" }` → Python dict.
 	if blk, ok := s.Expr.(*ast.BlockExpr); ok && s.Binding != "" {
 		fmt.Fprintf(b, "%s%s = %s\n", indent, s.Binding, blockExprToPyDict(blk))
+		return
+	}
+	if ctx != nil && ctx.ws && emitWsStep(b, s, ctx, indent) {
 		return
 	}
 	fn, ok := s.Expr.(*ast.FnCall)
@@ -937,6 +948,9 @@ func emitLog(b *strings.Builder, fn *ast.FnCall, ctx *bodyCtx, indent string) {
 //     output / nested when statements indented one level deeper.
 func emitWhen(b *strings.Builder, s *ast.WhenStmt, ctx *bodyCtx, indent string) {
 	cond := exprToPyWithCtx(s.Condition, ctx)
+	if ctx != nil && ctx.ws {
+		cond = "js_truthy(" + cond + ")"
+	}
 	if s.Inline != nil {
 		stmt := inlineWhenStatement(s.Inline, ctx)
 		fmt.Fprintf(b, "%sif %s: %s\n", indent, cond, stmt)
@@ -1133,6 +1147,12 @@ func emitGuard(b *strings.Builder, s *ast.GuardStmt, ctx *bodyCtx, indent string
 	if status == "" {
 		status = "400"
 	}
+	if ctx != nil && ctx.ws {
+		// JavaScript truthiness, and a WsGuardError the WS helper turns into a frame.
+		fmt.Fprintf(b, "%sif not js_truthy(%s):\n", indent, cond)
+		fmt.Fprintf(b, "%s    raise WsGuardError(%s, %s)\n", indent, status, pyStringLiteral(s.Message))
+		return
+	}
 	fmt.Fprintf(b, "%sif not (%s):\n", indent, cond)
 	if ctx != nil && ctx.streamPre {
 		fmt.Fprintf(b, "%s    raise StreamError(%s, %s)\n", indent, status, pyStringLiteral(s.Message))
@@ -1198,6 +1218,11 @@ func emitReturn(b *strings.Builder, s *ast.OutputStmt, ctx *bodyCtx, indent stri
 	if status == "" {
 		status = "200"
 	}
+	if ctx != nil && ctx.ws {
+		// A WS output is a frame: the status is ignored, as on Node.
+		fmt.Fprintf(b, "%s_fx.append((\"send\", ws_dumps(%s)))\n", indent, exprToPyWithCtx(s.Value, ctx))
+		return
+	}
 	var expr string
 	switch {
 	case status == "204":
@@ -1250,6 +1275,9 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 	case *ast.FieldAccess:
 		if ctx != nil && ctx.jwtClaims && isClaimsAccess(v) {
 			return claimsFieldPy(v)
+		}
+		if ctx != nil && ctx.ws && isFieldChainRootedAt(v, "message") {
+			return wsMessageChainPy(v)
 		}
 		if ctx != nil && ctx.webhookData && isFieldChainRootedAt(v, "data") {
 			return dictFieldChainPy("data", v)

@@ -174,7 +174,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	hasCache := blueprintEntry(bp, "cache") != ""
 
 	var out []codegen.OutputFile
-	out = append(out, g.genPyProjectTOML(bp, hasDB, hasCache, len(streams) > 0))
+	out = append(out, g.genPyProjectTOML(bp, hasDB, hasCache, len(streams) > 0 || len(wss) > 0))
 	out = append(out, g.genReadme(bp, hasDB))
 	out = append(out, emptyInit("src/__init__.py", g.sourceFile))
 	out = append(out, emptyInit("src/lib/__init__.py", g.sourceFile))
@@ -188,7 +188,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		out = append(out, g.genHTTPCachePy())
 	}
 	// STREAM endpoints share the rate-limit and auth helpers with REST endpoints.
-	guarded := g.withStreamEndpoints(endpoints)
+	guarded := g.withRealtimeEndpoints(endpoints)
 	if usesEndpointMeta(guarded, "limit") {
 		out = append(out, g.genRateLimitPy())
 	}
@@ -198,9 +198,12 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	if hasWebhookSig(endpoints) {
 		out = append(out, g.genWebhookPy())
 	}
-	// events.py backs the emit step and STREAM listeners (and the WS emit later).
-	if len(streams) > 0 || usesEmit(endpoints) {
+	// events.py backs the emit step, STREAM listeners and the WS runtime (realtime.py imports it).
+	if len(streams) > 0 || len(wss) > 0 || usesEmit(endpoints) {
 		out = append(out, g.genEventsPy())
+	}
+	if usesRealtime(wss) {
+		out = append(out, g.genRealtimePy())
 	}
 	out = append(out, g.genAppPy(bp, endpoints))
 
@@ -442,10 +445,11 @@ func (g *Generator) unsupportedFeatures() []string {
 				add(reason)
 			}
 		case *ast.WsEndpoint:
-			// The current emitter accepts a socket but comments out every
-			// lifecycle body. A successful build must not imply those handlers
-			// execute.
-			add("`WS` endpoints (lifecycle handler bodies)")
+			// A WS endpoint is translated when every handler statement, path input
+			// and meta entry has a faithful Python form; anything else is named here.
+			for _, reason := range g.wsFeatures(n) {
+				add(reason)
+			}
 		case *ast.Fn:
 			if !validPythonIdentifier(n.Name) {
 				add(fmt.Sprintf("fn name %q that is not a valid Python identifier", n.Name))
