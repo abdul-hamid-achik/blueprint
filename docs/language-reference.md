@@ -1330,8 +1330,9 @@ is dropped. Whisper sends use the same slow-consumer limit as room broadcasts;
 a slow target is closed with 1013 and removed from the registry.
 
 A WS endpoint can use `use` middleware too. The variables it injects are typed
-inside the handlers as they are on REST routes. The Python target does not
-support `use` on WS endpoints yet.
+inside the handlers as they are on REST routes. The middleware runs in the
+handshake, after enforced `auth`; a failing guard refuses the upgrade with its
+status.
 
 ### Python target
 
@@ -1341,9 +1342,9 @@ the send queue, and Redis fan-out). The client-visible behavior matches Node,
 with these differences:
 
 - The handshake runs `auth`, then `use` middleware, then path inputs, then
-  `limit`, then the upgrade. Without `use`, that is Node's order. A refusal
-  carries its status and no body: `401` for auth, the guard's status for a
-  failing `use` middleware, `400` for a path input, and `429` for `limit`. Python sends it
+  `limit`, then the upgrade, in the same order as Node. A refusal carries its
+  status and no body: `401` for auth, the guard's status for a failing `use`
+  middleware, `400` for a path input, and `429` for `limit`. Python sends it
   through the `websocket.http.response` extension, which uvicorn implements. A
   server without the extension closes the socket before accept, and the server
   answers `403`.

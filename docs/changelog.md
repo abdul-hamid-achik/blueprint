@@ -4,8 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Python target: `use` middleware on STREAM and WS endpoints, with the REST
+  subset (a `before` block with `guard`, `fetch`, `log`, function steps, and at
+  most one `inject`). On STREAM it runs before the stream opens, and a failing
+  guard answers `{"error": ...}` with its status. On WS it runs in the
+  handshake after `auth`, and a failing guard refuses the upgrade with its
+  status. The injected value is readable in pre-stream statements, `on event`,
+  `on timeout`, and every WS handler. Each run uses a short-lived database
+  session.
+
 ### Changed
 
+- **Breaking for Python clients:** a `guard` failure on the Python target
+  answers `{"error": "..."}` as Node does, instead of FastAPI's
+  `{"detail": "..."}`. `src/app.py` registers a handler for
+  `HTTPException`, which also covers FastAPI's own 404 and 405 responses.
+  Input validation errors keep FastAPI's `422` body.
+- Node WS endpoints run enforced `auth` before `use` middleware, as REST and
+  STREAM do. Before, the middleware ran first, so it could run for an
+  unauthenticated client.
 - **Breaking for Python realtime clients:** the Python target camel-cases
   object keys on the realtime paths, as Node does: `emit` payloads, STREAM
   frames (`on event` and `on timeout`), and WS `broadcast` and `whisper`
@@ -23,6 +42,12 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Node: a failing `guard` in a `use` middleware answered `500` with
+  `{"error": "Internal server error"}` instead of its own status and message.
+  The middleware throws outside the route's `try`/`catch`, and `app.onError`
+  did not recognize `BpError`. It now answers the guard's status with
+  `{"error": "..."}` on REST and STREAM, and refuses a WS upgrade with that
+  status.
 - `bp test` on a spec that generates no tests (for example, only STREAM or WS
   endpoints) prints `No tests generated` and exits 0. Before, Vitest and
   pytest failed on the empty suite, so `bp test` exited 1.
