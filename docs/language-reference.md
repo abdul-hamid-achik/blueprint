@@ -906,7 +906,7 @@ POST /api/watermark {
 |-----|--------|-----------------------|
 | `use` | `use middleware_name` | Applies a declared custom middleware |
 | `auth` | `auth jwt using(secret.JWT_SECRET)` | Enforced for `bearer`, `jwt`, `api_key`, and `basic` with `using(secret.NAME)`, and for `webhook_sig`; metadata only otherwise (see Auth Strategies). On Python, only the four strategies with `using(secret.NAME)` are accepted |
-| `limit` | `limit 60/min` | Enforced by an in-process, per-instance IP/path counter |
+| `limit` | `limit 60/min` | Enforced by an in-process, per-instance counter keyed by client address and path (behind a reverse proxy, set `FORWARDED_ALLOW_IPS`; see [Deployment](deployment.md#multi-instance-and-security-caveats)) |
 | `cache` | `cache 5min` | GET only: sets `Cache-Control` on 2xx responses (see below); ignored on other methods |
 | `tags` | `tags ["a", "b"]` | Included in generated OpenAPI metadata |
 | `timeout` | `timeout 30s` | Parsed, but REST handler cancellation is not generated yet |
@@ -931,7 +931,7 @@ reports it.
 On `--target python`, the same rules apply through a `cache_control(...)` helper
 in `src/lib/http_cache.py`. The helper sets the header on the returned 2xx
 response, so a guard's 4xx or any other error response carries none. `limit` is
-enforced by `src/lib/rate_limit.py` with the same client-and-path key and fixed
+enforced by `src/lib/rate_limit.py` with the same client-address-and-path key and fixed
 window as Node, and an over-limit request answers `429` with
 `{"error": "Rate limit exceeded"}`. `tags` become the route's FastAPI tags, which
 show in the generated OpenAPI. `timeout` metadata, `auth webhook_sig`, and bare

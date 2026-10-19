@@ -220,7 +220,7 @@ behavior.
 | `use` middleware variables on STREAM/WS | Typed like REST (`c.get('auth')` has the injected row type) | Not supported: STREAM/WS endpoints fail closed |
 | STREAM event fan-out | Redis `bp:stream:<event>` channels when `REDIS_URL` is set | Not supported |
 | Endpoint `cache <duration>` | `Cache-Control` on GET 2xx responses | `Cache-Control` on GET 2xx responses through `src/lib/http_cache.py`; `private` under the same rules |
-| Endpoint `limit <n>/<unit>` | in-process counter, `429` `{"error": "Rate limit exceeded"}` | `src/lib/rate_limit.py`, same key and window, same `429` body |
+| Endpoint `limit <n>/<unit>` | in-process counter, `429` `{"error": "Rate limit exceeded"}` | `src/lib/rate_limit.py`, same key (client address and path, with `FORWARDED_ALLOW_IPS` trust on both targets) and window, same `429` body |
 | Endpoint `tags [...]` | OpenAPI tags | FastAPI route `tags=[...]` |
 | `try/recover` with two or more writes | `db.transaction(...)` | `with db.begin_nested():` (a SAVEPOINT) |
 | `log` | `console.*` levels | stdlib `logging` through `src/lib/log.py` |

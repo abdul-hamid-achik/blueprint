@@ -448,7 +448,8 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
 - Node endpoint `cache <duration>` sets `Cache-Control` on 2xx GET responses:
   `private` when the endpoint reads per-user state or has `use`, `auth`, or
   `limit` metadata, and `public` otherwise. Endpoint rate limits are in-process
-  and per instance.
+  and per instance, keyed by client address and path. Behind a reverse proxy, set
+  `FORWARDED_ALLOW_IPS` to the proxy's address(es).
 - On both Node and Python, declaring a model implies the full Postgres data
   layer. `database postgres` with no models still emits an importable empty
   schema so migration tooling remains valid.

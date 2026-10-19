@@ -187,7 +187,9 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
   Malformed durations fail codegen; `cache` on non-GET, STREAM, or WS
   endpoints emits nothing and is reported by the `cache-on-non-get` lint rule. Python rejects endpoint
   `cache`. Endpoint `limit` is an in-process, per-instance rate limiter rather
-  than a distributed guarantee.
+  than a distributed guarantee. Its key is the client address and path; the
+  address honors `X-Forwarded-For` only from peers listed in `FORWARDED_ALLOW_IPS`
+  (uvicorn's rules: Node `src/lib/client-ip.ts`, Python uvicorn itself).
 - The Node target rejects file/MIME endpoint inputs, including file-containing
   named types, until route parsing and the generated SDK both support
   multipart/form-data. File/MIME types remain valid in functions, pipes, and

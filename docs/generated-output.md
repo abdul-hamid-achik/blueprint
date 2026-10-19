@@ -49,6 +49,7 @@ generated/
     │   ├── state.ts
     │   ├── cache.ts           # conditional: cache redis
     │   ├── http-cache.ts      # conditional: GET endpoints with `cache`
+    │   ├── client-ip.ts       # conditional: any endpoint with `limit`
     │   ├── events.ts          # conditional: subscribe, emit, or STREAM `on event(...)`
     │   └── backpressure.ts    # conditional: STREAM or WS endpoints
     ├── routes/
@@ -606,6 +607,15 @@ message to one WS socket and closes a socket whose unsent buffer exceeds
 `BP_WS_MAX_BUFFERED_BYTES` (default 1048576) with code 1013. Both limits are read
 from the environment once at startup. The file has no imports and adds no
 dependencies.
+
+### `src/lib/client-ip.ts` (conditional: any endpoint with `limit`)
+
+Resolves the client address that `limit` keys on, following uvicorn's
+`ProxyHeadersMiddleware`. `clientIp(c)` returns the TCP peer unless the peer is
+listed in `FORWARDED_ALLOW_IPS`, in which case the rightmost untrusted
+`X-Forwarded-For` hop wins. `FORWARDED_ALLOW_IPS` is read once at startup and
+defaults to `127.0.0.1,::1`. The file has no npm dependencies beyond Hono and
+`@hono/node-server`.
 
 ### `test/generated/<resource>.test.ts` (opt-in via `--gen-tests`)
 

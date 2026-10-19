@@ -254,8 +254,14 @@ Review these behaviors before scaling beyond one process:
   metadata, with no global `use`, and whose bodies do not read caller-scoped
   inputs use `public`. Behind a CDN, verify the header with a request from two
   different callers before relying on it.
-- Endpoint rate limits use an in-process map. Every replica has its own counter,
-  and the generated code trusts `X-Forwarded-For`. Use a trusted proxy plus a
+- Endpoint rate limits use an in-process map. Every replica has its own counter.
+  The client address is the TCP peer, and `X-Forwarded-For` is honored only when
+  the peer matches `FORWARDED_ALLOW_IPS`. The variable uses uvicorn's format
+  (`*`, IPv4 or IPv6 addresses, IPv4 CIDR ranges, comma-separated), and the same
+  variable works on Node and Python. It defaults to `127.0.0.1,::1`, and an empty
+  string trusts no proxy. Behind a reverse proxy, set it to the proxy's
+  address(es), or every client shares the proxy's bucket. Only list proxies you
+  control, because a trusted peer can send any `X-Forwarded-For` value. Use a
   gateway or distributed limiter for production enforcement.
 - `emit` runs subscribe handlers on the emitting replica only. STREAM listeners
   also receive events emitted on other replicas when `REDIS_URL` is set; without
@@ -285,7 +291,8 @@ Before routing production traffic:
 - [ ] Set every `auth ... using(secret.NAME)` secret, and implement and test
       authorization (and any per-user authentication) in middleware.
 - [ ] Put distributed rate limiting, request-size limits, TLS, and trusted proxy
-      handling at an appropriate edge layer.
+      handling at an appropriate edge layer. Set `FORWARDED_ALLOW_IPS` to that proxy so
+      `limit` keys on the real client.
 - [ ] Restrict CORS to intended origins and verify error responses do not expose
       secrets or internal stack traces.
 - [ ] Send stdout/stderr to centralized logs and add metrics/tracing outside the

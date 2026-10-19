@@ -559,7 +559,8 @@ Make sure:
 
 ### Rate limiting isn't working
 
-Endpoint `limit` metadata generates a per-process, per-instance IP/path counter:
+Endpoint `limit` metadata generates a per-process, per-instance counter keyed by
+the client address and path:
 
 ```bp
 GET /api/items {
@@ -568,7 +569,13 @@ GET /api/items {
 }
 ```
 
-This counter is not shared across replicas. For a global or distributed limit,
+This counter is not shared across replicas.
+
+Behind a reverse proxy or load balancer, every request arrives from the proxy's
+address, so every client shares one bucket. Set `FORWARDED_ALLOW_IPS` to the
+proxy's address(es), such as `10.0.0.5` or `10.0.0.0/8`. It is the same variable
+on Node and Python, and uvicorn reads it natively on Python. Only list proxies
+you control, because a trusted peer can send any `X-Forwarded-For` value. For a global or distributed limit,
 declare a custom middleware backed by Redis or an API gateway. The recognized
 `use rate_limit(...)` name is not generated as a working global middleware.
 
