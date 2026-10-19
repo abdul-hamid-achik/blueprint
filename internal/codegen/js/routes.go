@@ -304,8 +304,9 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	// sit there forever (cron handlers would be dead code at runtime).
 	if len(schedules) > 0 {
 		b.WriteString("  // Register scheduled jobs. Job scheduler id == job name == schedule name.\n")
-		b.WriteString("  // Registration retries in the background, so an unreachable Redis at boot\n")
-		b.WriteString("  // delays the schedules instead of the HTTP server.\n")
+		b.WriteString("  // Registration runs in the background: BullMQ waits for Redis, so an\n")
+		b.WriteString("  // unreachable Redis at boot delays the schedules instead of the HTTP server.\n")
+		b.WriteString("  // An error that Redis returns is logged and retried every 5s.\n")
 		b.WriteString("  const schedulerQueue = new Queue('__bp_scheduler', { connection: { url: env.REDIS_URL } });\n")
 		b.WriteString("  const registerSchedules = async () => {\n")
 		knownSchedules := make([]string, 0, len(schedules))

@@ -1563,8 +1563,9 @@ scheduler on the `__bp_scheduler` Redis queue, whose id and job name are the
 schedule name. Startup upserts one scheduler per declared schedule and removes
 any scheduler whose name is no longer declared, so deleting or renaming a
 schedule stops its old runs. A failing run is retried with 3 attempts and
-exponential backoff from 1s. Registration runs in the background and retries
-every 5s, so the HTTP server starts while Redis is down.
+exponential backoff from 1s. Registration runs in the background and waits for
+Redis, so the HTTP server starts while Redis is down; an error that Redis
+returns is logged and retried every 5s.
 
 ---
 

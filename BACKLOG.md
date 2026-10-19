@@ -428,8 +428,9 @@ Prep work (must precede the Python generator):
   - [ ] Python generated tests import `starlette.testclient` through httpx,
     which Starlette now deprecates in favor of `httpx2`; move the dev
     dependency before a Starlette release drops httpx.
-  - [x] Startup does not wait for Redis: Node registers schedules in a
-    background retry loop, Python starts schedules and workers once Redis
+  - [x] Startup does not wait for Redis: Node registers schedules in the
+    background (BullMQ waits for the connection; an error reply is retried
+    every 5 s), Python starts schedules and workers once Redis
     answers `PING`. Verified both apps serve HTTP with Redis stopped, register
     within seconds of Redis starting, and exit on SIGTERM in 2 s (Python used
     to hang in lifespan startup and ignore SIGTERM). _(2026-10-19)_

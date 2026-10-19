@@ -55,12 +55,12 @@ All notable changes to this project will be documented in this file.
   declared are removed at startup. `apscheduler` is no longer a dependency;
   `bullmq>=3.4,<4` is added whenever a spec declares a worker or a schedule.
 - Both targets: the HTTP server no longer waits for Redis at startup. Node
-  registers its schedules in a background loop that retries every 5s, and its
-  workers reconnect on their own. Python starts its schedules and workers in a
-  lifespan background task once Redis answers `PING`, logging a warning and
-  retrying every 5s. While Redis is down, a Node `enqueue` waits for it to come
-  back (BullMQ waits for its connection), and a Python `enqueue` answers `500`
-  after 30s.
+  registers its schedules in the background, waiting for Redis (an error that
+  Redis returns is logged and retried every 5s), and its workers reconnect on
+  their own. Python starts its schedules and workers in a lifespan background
+  task once Redis answers `PING`, logging a warning and retrying every 5s.
+  While Redis is down, a Node `enqueue` waits for it to come back (BullMQ waits
+  for its connection), and a Python `enqueue` answers `500` after 30s.
 
 ### Fixed
 

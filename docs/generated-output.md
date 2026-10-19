@@ -507,8 +507,8 @@ worker; unsupported producer contexts fail before output is written.
 Schedule handlers and their cron expressions. `src/index.ts` upserts one BullMQ
 job scheduler per schedule, removes schedulers for schedules no longer
 declared, and runs a scheduler consumer that dispatches to these functions.
-Registration runs in the background and retries every 5s, so the server starts
-while Redis is down.
+Registration runs in the background and waits for Redis, so the server starts
+while Redis is down; an error that Redis returns is logged and retried every 5s.
 
 ```typescript
 import { db } from '../lib/db.js';
