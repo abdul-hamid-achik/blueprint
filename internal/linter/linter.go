@@ -34,6 +34,7 @@ func Lint(f *ast.File) []Issue {
 	issues = append(issues, checkUnusedInput(f)...)
 	issues = append(issues, checkUnenforceableWsAuth(f)...)
 	issues = append(issues, checkUnenforcedAuth(f)...)
+	issues = append(issues, checkOptionalAuthSecret(f)...)
 	issues = append(issues, checkCacheOnNonGet(f)...)
 	issues = append(issues, checkUnusedSecretsAndEnvs(f)...)
 	issues = append(issues, checkUnusedFunctions(f)...)
@@ -433,6 +434,90 @@ func checkUnenforcedAuth(f *ast.File) []Issue {
 	}
 
 	return issues
+}
+
+// checkOptionalAuthSecret flags `auth <strategy> using(secret.NAME)` on REST,
+// STREAM, and WS endpoints when NAME is declared `optional`. Generated auth
+// fails closed on an unset or empty secret, so without a value the endpoint
+// answers 401 to every request instead of stopping the service at startup. A
+// non-empty default is worse: the key is in the .bp source, so anyone who can
+// read the spec can sign webhooks or mint tokens.
+func checkOptionalAuthSecret(f *ast.File) []Issue {
+	optional := map[string]*ast.Secret{}
+	for _, block := range f.Blocks {
+		if s, ok := block.(*ast.Secret); ok && !s.Required {
+			optional[s.Name] = s
+		}
+	}
+	if len(optional) == 0 {
+		return nil
+	}
+
+	var issues []Issue
+	check := func(method, path string, meta []*ast.EndpointMeta) {
+		for _, m := range meta {
+			if m.Kind != "auth" {
+				continue
+			}
+			name, ok := usingSecretName(m.Value)
+			if !ok {
+				continue
+			}
+			s, ok := optional[name]
+			if !ok {
+				continue
+			}
+			issue := Issue{
+				File:  m.Loc.File,
+				Line:  m.Loc.Line,
+				Col:   m.Loc.Col,
+				Level: "warning",
+				Rule:  "optional-auth-secret",
+			}
+			if lit, isLit := s.Default.(*ast.StringLit); s.Default == nil || (isLit && lit.Value == "") {
+				issue.Message = fmt.Sprintf("auth %s on %s %s uses optional secret %s; while it is unset or empty, every request answers 401", authMetaName(m.Value), method, path, name)
+				issue.Hint = "declare it `secret " + name + " required` so a missing value stops the service at startup"
+			} else {
+				issue.Message = fmt.Sprintf("auth %s on %s %s uses secret %s, whose default value is in the .bp source", authMetaName(m.Value), method, path, name)
+				issue.Hint = "anyone who can read the spec can forge credentials with the default; remove it and declare `secret " + name + " required`"
+			}
+			issues = append(issues, issue)
+		}
+	}
+
+	for _, block := range f.Blocks {
+		switch b := block.(type) {
+		case *ast.Endpoint:
+			check(b.Method, b.Path, b.Meta)
+		case *ast.StreamEndpoint:
+			check("STREAM", b.Path, b.Meta)
+		case *ast.WsEndpoint:
+			check("WS", b.Path, b.Meta)
+		}
+	}
+
+	return issues
+}
+
+// usingSecretName returns NAME from an auth meta value of the form
+// `<strategy> using(secret.NAME)`.
+func usingSecretName(expr ast.Expr) (string, bool) {
+	if !hasUsingSecret(expr) {
+		return "", false
+	}
+	using := expr.(*ast.FnCall).Args[0].(*ast.FnCall)
+	if len(using.Args) == 0 {
+		return "", false
+	}
+	field, ok := using.Args[0].(*ast.FieldAccess)
+	if !ok {
+		return "", false
+	}
+	base, ok := field.Base.(*ast.Ident)
+	if !ok || base.Name != "secret" || field.Field == "" {
+		return "", false
+	}
+	return field.Field, true
 }
 
 // isWebhookSigAuth reports whether an auth meta value is a `webhook_sig` call

@@ -294,7 +294,9 @@ namespace; it is interpreted only by `auth <strategy> using(secret.KEY)`.
 
 Declare a secret used by `auth ... using(...)` as `required`, so a missing
 value stops the service at startup. An `optional` auth secret that is unset or
-empty does not open the endpoint: every request to it answers `401`.
+empty does not open the endpoint: every request to it answers `401`. The
+`optional-auth-secret` lint warns about it, and about an auth secret with a
+non-empty `default(...)`, which puts the key in the `.bp` source.
 
 Generated `.env.example` lists all declared secrets.
 

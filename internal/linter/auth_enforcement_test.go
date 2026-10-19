@@ -1,6 +1,7 @@
 package linter_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/abdul-hamid-achik/blueprint/internal/ast"
@@ -162,5 +163,79 @@ WS /ws/chat {
 `
 	if n := ruleCount(t, src, "unenforceable-ws-auth"); n != 1 {
 		t.Fatalf("unenforceable-ws-auth count = %d, want 1", n)
+	}
+}
+
+func TestLint_OptionalAuthSecret(t *testing.T) {
+	endpoints := `
+@ "Receive events"
+POST /hooks/events {
+  auth webhook_sig using(secret.KEY)
+  -> 200 "ok"
+}
+
+@ "Live reports"
+STREAM /api/reports/live {
+  auth bearer using(secret.KEY)
+
+  stream {
+    |> on timeout(5s) {
+      -> { type: "ping" }
+    }
+  }
+}
+
+@ "Chat"
+WS /ws/chat {
+  auth jwt using(secret.KEY)
+
+  on_connect {
+    |> log "connected"
+  }
+}
+`
+	cases := []struct {
+		name, decl, wantMsg string
+		want                int
+	}{
+		{"required", `secret KEY required`, "", 0},
+		{"optional without default", `secret KEY optional`, "every request answers 401", 3},
+		{"optional empty default", `secret KEY optional default("")`, "every request answers 401", 3},
+		{"optional with default", `secret KEY optional default("dev-key")`, "default value is in the .bp source", 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			file, errs := parser.ParseFile("test.bp", []byte(minimalHeader+"\n"+tc.decl+"\n"+endpoints))
+			if len(errs) > 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			n := 0
+			for _, iss := range linter.Lint(file) {
+				if iss.Rule != "optional-auth-secret" {
+					continue
+				}
+				n++
+				if iss.Level != "warning" || !strings.Contains(iss.Message, tc.wantMsg) {
+					t.Errorf("unexpected issue: %v", iss)
+				}
+			}
+			if n != tc.want {
+				t.Fatalf("optional-auth-secret count = %d, want %d", n, tc.want)
+			}
+		})
+	}
+}
+
+func TestLint_OptionalAuthSecret_UnusedByAuth_NoWarning(t *testing.T) {
+	src := minimalHeader + `
+secret SENTRY_DSN optional default("")
+
+@ "Health"
+GET /api/health {
+  -> 200 { dsn: env.SENTRY_DSN }
+}
+`
+	if n := ruleCount(t, src, "optional-auth-secret"); n != 0 {
+		t.Fatalf("optional-auth-secret count = %d, want 0 for a secret no auth line uses", n)
 	}
 }

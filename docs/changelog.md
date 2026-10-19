@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `bp lint` rule `optional-auth-secret` (warning): an `auth <strategy>
+  using(secret.NAME)` line on a REST, STREAM, or WS endpoint whose secret is
+  declared `optional`. Generated auth fails closed, so while the secret is
+  unset or empty every request answers 401 instead of the service failing at
+  startup. With a non-empty `default(...)`, the key is in the `.bp` source and
+  anyone who can read the spec can forge credentials. Declare auth secrets
+  `required`.
+
+### Changed
+
+- The `secret` example in the language reference declares the webhook key
+  `required` instead of `optional default("")`.
+
 ## [0.20.0] - 2026-10-19
 
 ### Added

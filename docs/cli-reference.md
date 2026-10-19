@@ -642,6 +642,7 @@ described in [Multiple files and directories](#multiple-files-and-directories).
 | `cache-on-non-get` | warning | A `cache` line on a non-GET endpoint (or a STREAM/WS endpoint). `Cache-Control` is only set on REST GET responses, so the line has no effect |
 | `unenforceable-ws-auth` | warning | A WS `auth` line with no `using(secret.NAME)` (other than `webhook_sig`). Codegen does not check it. Add `using(secret.NAME)` to enforce bearer, jwt, api_key, or basic |
 | `unenforced-auth` | warning | A REST or STREAM `auth` line with no `using(secret.NAME)` (other than `webhook_sig`), on an endpoint with no `use` middleware and no blueprint-level `use`. Codegen does not check it. Add `using(secret.NAME)` or a `use` middleware that verifies the credential |
+| `optional-auth-secret` | warning | An `auth <strategy> using(secret.NAME)` line on a REST, STREAM, or WS endpoint whose secret is declared `optional`. Generated auth fails closed, so while the secret is unset or empty every request answers 401; with a non-empty `default(...)` the key is in the `.bp` source. Declare the secret `required` |
 | `unpaginated-list` | info | A `GET` endpoint returns every row of a `query` with no `paginate(...)` or `first` |
 
 **Example:**

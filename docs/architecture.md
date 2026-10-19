@@ -467,6 +467,7 @@ issues := linter.Lint(file)
 | `cache-on-non-get` | warning | `cache` on a non-GET endpoint, which sends no `Cache-Control` (STREAM and WS included) |
 | `unenforceable-ws-auth` | warning | WS `auth` with no `using(secret.NAME)` (other than `webhook_sig`), which codegen does not check |
 | `unenforced-auth` | warning | REST or STREAM `auth` with no `using(secret.NAME)` (other than `webhook_sig`), with no `use` middleware on the endpoint or the blueprint |
+| `optional-auth-secret` | warning | `auth ... using(secret.NAME)` on any endpoint where `NAME` is declared `optional`: 401 for every request while it is unset or empty, or a key committed in the `.bp` source when it has a default |
 | `unused-input` | warning | An endpoint input that the body never references |
 | `where-predicate-self-equal` | warning | A `where` predicate such as `x == x` where no input or binding named `x` is in scope |
 
