@@ -177,9 +177,11 @@ func (g *Generator) genEnvTS(secrets []*ast.Secret, envs []*ast.Env, extraEnvVar
 	declared := make(map[string]bool)
 	for _, s := range secrets {
 		declared[s.Name] = true
+		// An empty required secret fails at startup like a missing one: an
+		// empty key would otherwise reach the auth checks and HMACs.
 		req := ".optional()"
 		if s.Required {
-			req = ""
+			req = ".min(1)"
 		}
 		fmt.Fprintf(&b, "  %s: z.string()%s,\n", s.Name, req)
 	}

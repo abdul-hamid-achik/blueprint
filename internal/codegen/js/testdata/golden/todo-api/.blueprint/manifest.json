@@ -16,7 +16,7 @@
     "package.json": "sha256:beb6d54b423538c5129150510d46d7ac5f9cc08f411aacf65117be80f7c56304",
     "src/index.ts": "sha256:8db367fea1d883261eeee312e7f7a00b6b77a3cfedf393a3f276217d0c81526f",
     "src/lib/db.ts": "sha256:48dbfdf0931da24ff3f2794cc72d4243b9526193fe9ca8df4f256fb670ae968a",
-    "src/lib/env.ts": "sha256:7d0f93df90045ced6f8657c13f3914caeaeedc9da8c70d597142c78b0a72a757",
+    "src/lib/env.ts": "sha256:e9cf1562ea4a15de5f6c8b073b3427bc24dddaa670d55fd601dbd387735b3af6",
     "src/lib/errors.ts": "sha256:9201185d16c626dc08c063767e1c508b0c3315f006ea9768dd965f9d4a99b84c",
     "src/models/schema.ts": "sha256:077e4bf81b2fd9ebf5ff205764b2d42034444e6bd442835c2150071b1dc05c1f",
     "src/routes/todos.ts": "sha256:875cf6fe9d8fca8b47d7f82f0236fbd740549db18bc078db1732e71e737c511b",

@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ## [0.20.1] - 2026-10-19
 
+### Security
+
+- A required secret set to an empty string now stops the service at startup,
+  as a missing one does: `z.string().min(1)` in the Node `src/lib/env.ts` and
+  `Field(min_length=1)` in the Python `src/lib/env.py`. `.env.example` lists
+  every secret as `NAME=`, so a copied but unfilled file used to start the
+  service with empty keys. On v0.19.0 and earlier, an empty webhook secret
+  then accepted forged signatures. Since v0.20.0 auth fails closed, and now
+  the service does not start at all. Regenerate to pick this up.
+
 ### Added
 
 - `bp lint` rule `optional-auth-secret` (warning): an `auth <strategy>

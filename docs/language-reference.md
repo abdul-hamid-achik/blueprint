@@ -278,7 +278,9 @@ validation runs before generators can silently fall back to defaults.
 
 ### `secret`
 
-Secrets are sensitive values loaded from environment variables. Missing required secrets cause a startup error.
+Secrets are sensitive values loaded from environment variables. A required
+secret that is missing or empty causes a startup error, so an unfilled
+`NAME=` line copied from `.env.example` stops the service.
 
 ```bp
 secret DATABASE_URL required

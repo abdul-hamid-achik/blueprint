@@ -525,6 +525,22 @@ GET /api/x { -> 200 { origin: env.API_ORIGIN } }
 	}
 }
 
+func TestPython_RequiredSecretRejectsEmpty(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+secret WEBHOOK_KEY required
+GET /api/x { -> 200 { ok: true } }
+`
+	env := readPy(t, buildPython(t, src), "src/lib/env.py")
+	for _, want := range []string{
+		"from pydantic import Field\n",
+		"WEBHOOK_KEY: str = Field(min_length=1)\n",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("env.py missing %q:\n%s", want, env)
+		}
+	}
+}
+
 const phase2Src = `@ "Phase 2 minimal"
 blueprint "phase2" {
   version "1.0.0"

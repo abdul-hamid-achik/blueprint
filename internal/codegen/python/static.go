@@ -132,12 +132,23 @@ uv run pytest
 }
 
 // genEnvPy emits the Pydantic Settings module. Required secrets become
-// required fields; optional secrets become Optional fields. When the spec
-// declares a database, DATABASE_URL is added as a required field even if the
-// .bp source didn't declare it as a secret (Alembic and db.py both need it).
+// required, non-empty fields (as on Node); optional secrets become Optional
+// fields. When the spec declares a database, DATABASE_URL is added as a
+// required field even if the .bp source didn't declare it as a secret
+// (Alembic and db.py both need it).
 func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache bool) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
+	hasRequired := false
+	for _, s := range secrets {
+		if s.Required {
+			hasRequired = true
+			break
+		}
+	}
+	if hasRequired {
+		b.WriteString("from pydantic import Field\n")
+	}
 	b.WriteString("from pydantic_settings import BaseSettings, SettingsConfigDict\n")
 	hasOptional := false
 	for _, s := range secrets {
@@ -156,7 +167,7 @@ func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache bool) codege
 	for _, s := range secrets {
 		declared[s.Name] = true
 		if s.Required {
-			fmt.Fprintf(&b, "    %s: str\n", s.Name)
+			fmt.Fprintf(&b, "    %s: str = Field(min_length=1)\n", s.Name)
 		} else {
 			defaultValue := "None"
 			if value, ok := s.Default.(*ast.StringLit); ok {

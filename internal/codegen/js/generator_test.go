@@ -4336,3 +4336,33 @@ GET /api/pages/:page {
 	}
 	requireTypeScriptCompile(t, outDir)
 }
+
+func TestGenerateEnvRequiredSecretRejectsEmpty(t *testing.T) {
+	src := `blueprint "test" { version "1.0.0" port 3000 runtime node }
+secret WEBHOOK_KEY required
+secret SENTRY_DSN optional default("")
+`
+	file, errs := parser.ParseFile("test.bp", []byte(src))
+	if len(errs) > 0 {
+		t.Fatalf("parse errors: %v", errs)
+	}
+	outDir := t.TempDir()
+	if err := New().Generate(file, outDir); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	envContent, err := os.ReadFile(filepath.Join(outDir, "src/lib/env.ts"))
+	if err != nil {
+		t.Fatal("src/lib/env.ts should exist")
+	}
+	envStr := string(envContent)
+	// An empty required secret (an unfilled `WEBHOOK_KEY=` copied from
+	// .env.example) must stop the service at startup, like a missing one.
+	for _, want := range []string{
+		"WEBHOOK_KEY: z.string().min(1),",
+		"SENTRY_DSN: z.string().optional(),",
+	} {
+		if !strings.Contains(envStr, want) {
+			t.Errorf("env.ts missing %q:\n%s", want, envStr)
+		}
+	}
+}
