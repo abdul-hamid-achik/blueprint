@@ -284,13 +284,43 @@ func (g *Generator) pythonAnnotationForField(t ast.TypeExpr, cs []*ast.Constrain
 	if _, inline := t.(*ast.EnumInline); inline || base == "" || strings.Contains(base, "TODO") {
 		base = "str"
 	}
-	base = annotatedType(base, t, cs)
+	base = annotatedType(base, t, cs, pydanticFieldBounds(t, cs)...)
 	for _, c := range cs {
 		if c.Kind == "optional" {
 			return "Optional[" + base + "]"
 		}
 	}
 	return base
+}
+
+// pydanticFieldBounds returns the pydantic Field(...) argument for min/max on a
+// model field, as a one-element slice, or nil. Bounds use the same mapping as
+// endpoint inputs and type/alias fields: length for string, text, list, and
+// map; value for int, float, and money. Other types carry no bounds, and a
+// bound whose value does not fit the type is skipped.
+func pydanticFieldBounds(t ast.TypeExpr, cs []*ast.Constraint_) []string {
+	switch v := t.(type) {
+	case *ast.PrimitiveType:
+		switch v.Name {
+		case "string", "text", "int", "float", "money":
+		default:
+			return nil
+		}
+	case *ast.ListType, *ast.MapType:
+	default:
+		return nil
+	}
+	var bounds []*ast.Constraint_
+	for _, c := range cs {
+		if (c.Kind == "min" || c.Kind == "max") && pythonConstraintValueMatches(t, c.Value) {
+			bounds = append(bounds, c)
+		}
+	}
+	args := inputValidationArgs(t, bounds)
+	if len(args) == 0 {
+		return nil
+	}
+	return []string{"Field(" + strings.Join(args, ", ") + ")"}
 }
 
 // sqlAlchemyMappedAnnotation returns the type for `Mapped[<X>]` — different
@@ -380,8 +410,12 @@ func (g *Generator) genPydanticPy(models []*ast.Model) codegen.OutputFile {
 	needsDateTime := false
 	needsOptional := false
 	needsFormats := false
+	needsField := false
 	for _, m := range models {
 		for _, f := range m.Fields {
+			if len(pydanticFieldBounds(f.Type, f.Constraints)) > 0 {
+				needsField = true
+			}
 			if pt, ok := f.Type.(*ast.PrimitiveType); ok {
 				if pt.Name == "uuid" {
 					needsUUID = true
@@ -400,15 +434,26 @@ func (g *Generator) genPydanticPy(models []*ast.Model) codegen.OutputFile {
 			}
 		}
 	}
-	b.WriteString("from pydantic import BaseModel, ConfigDict\n")
+	pyd := []string{"BaseModel", "ConfigDict"}
+	if needsField {
+		pyd = append(pyd, "Field")
+	}
+	fmt.Fprintf(&b, "from pydantic import %s\n", strings.Join(pyd, ", "))
 	if needsUUID {
 		b.WriteString("from uuid import UUID\n")
 	}
 	if needsDateTime {
 		b.WriteString("from datetime import datetime\n")
 	}
+	var typing []string
+	if needsField {
+		typing = append(typing, "Annotated")
+	}
 	if needsOptional {
-		b.WriteString("from typing import Optional\n")
+		typing = append(typing, "Optional")
+	}
+	if len(typing) > 0 {
+		fmt.Fprintf(&b, "from typing import %s\n", strings.Join(typing, ", "))
 	}
 	if needsFormats {
 		b.WriteString("from src.lib import formats\n")
