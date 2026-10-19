@@ -15,6 +15,19 @@ All notable changes to this project will be documented in this file.
   jwt`, `bearer`, or `api_key` with `using(secret.NAME)`. This replaces the
   `webhook-sig-without-body` lint warning added in 0.21.0, which is removed.
 
+### Added
+
+- Python target: `worker` declarations and `enqueue` steps in REST bodies run on
+  the official `bullmq` 3.4.x client, which runs the same Lua scripts as Node
+  BullMQ, so Node and Python services sharing one Redis exchange jobs. Each
+  worker becomes `src/workers/<name>.py` and a `Worker` started by the app
+  lifespan; `enqueue` calls `src/lib/queue.py`. Producer job options and the
+  capped `max` backoff match Node. Payload keys are camelCase on the wire.
+  Timeouts, final-attempt `on_fail`, and worker guards behave as on Node.
+  Under pytest, workers and schedules do not start and `enqueue_job` raises.
+- `REDIS_URL` is required on the Python target whenever a spec declares a
+  worker, an `enqueue`, or a `schedule`.
+
 ### Changed
 
 - **Breaking schema change:** `timestamp` model fields are Postgres
@@ -35,6 +48,12 @@ All notable changes to this project will be documented in this file.
   deleted or renamed schedule stops firing. Redis written by a v5 app can hold
   legacy repeatable keys that BullMQ 6 refuses to read; flush the queue Redis
   before the first v6 start.
+- Python target: `schedule` declarations run as BullMQ job schedulers on the
+  `__bp_scheduler` queue instead of in-process APScheduler. A tick now runs once
+  across all instances that share Redis, as on Node, and a failing run is
+  retried by BullMQ (3 attempts, exponential from 1s). Schedulers no longer
+  declared are removed at startup. `apscheduler` is no longer a dependency;
+  `bullmq>=3.4,<4` is added whenever a spec declares a worker or a schedule.
 
 ### Fixed
 

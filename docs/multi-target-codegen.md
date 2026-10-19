@@ -238,7 +238,8 @@ behavior.
 | `try/recover` with two or more writes | `db.transaction(...)` | `with db.begin_nested():` (a SAVEPOINT) |
 | `log` | `console.*` levels | stdlib `logging` through `src/lib/log.py` |
 | `pipe` declarations | `src/pipes/<name>.ts` | `src/pipes/<name>.py` for the inline subset only |
-| `schedule` declarations | BullMQ 6 job scheduler (id = schedule name) on the `__bp_scheduler` Redis queue; startup prunes schedulers for removed schedules; one run per tick across instances; 3 attempts with exponential backoff from 1s | `src/lib/scheduler.py` on APScheduler 3.x, in-process: one run per tick per process; runs serialized on one worker thread, with one run allowed to wait behind the running one (a further tick is skipped, as the job scheduler's single pending run does on Node); no catch-up for missed ticks; 3 attempts with 1s and 2s backoff; started by the app lifespan and skipped under pytest |
+| `schedule` declarations | BullMQ 6 job scheduler (id = schedule name) on the `__bp_scheduler` Redis queue; startup prunes schedulers for removed schedules; one run per tick across instances; 3 attempts with exponential backoff from 1s | `src/lib/scheduler.py` on the official `bullmq` 3.4.x client (the same Lua scripts), on the same `__bp_scheduler` queue: one run per tick across instances; 3 attempts with exponential backoff from 1s; started by the app lifespan and skipped under pytest |
+| `worker` declarations and `enqueue` | BullMQ `Worker` per `trigger queue(...)`; producer job options `attempts: N + 1` with fixed or exponential backoff, and a capped custom strategy when `max` is set; payload keys camelCase on the wire | `src/workers/<name>.py` and `src/lib/workers.py` on the same `bullmq` 3.4.x client and wire format, so Node and Python services sharing Redis exchange jobs; `enqueue` calls `src/lib/queue.py`; timeouts, final-attempt `on_fail`, and worker guards behave as on Node; started by the app lifespan and skipped under pytest |
 | Named `enum` (model column, endpoint input) | pgEnum `<lowercased name>`, Zod enum | `class Name(str, enum.Enum)` in `src/models/enums.py`; SQLAlchemy `Enum` with the same Postgres type name |
 | Inline `enum(...)` endpoint input | Zod `z.enum([...])` | `Literal[...]`; `default` names a variant |
 | `type` declaration | TypeScript interface and Zod schema | Pydantic `BaseModel` in `src/models/types.py` |
@@ -280,7 +281,7 @@ middleware subset. `Files` returns a clear error naming unsupported semantics
 and pointing at BACKLOG instead of emitting broken code:
 
 ```
-python target does not yet support: `worker` declarations, `subscribe` declarations.
+python target does not yet support: `subscribe` declarations.
   Track progress in BACKLOG.md ("Python target") ...
   Use --target node for the full feature set today.
 ```

@@ -1471,6 +1471,26 @@ functions, pipes, middleware, realtime handlers, workers, schedules,
 subscriptions, or authored test setup fail closed instead of producing a
 module with an undefined queue binding.
 
+**On the Python target** (`--target python`), workers and `enqueue` use the
+official `bullmq` 3.4.x client, which runs the same Lua scripts as Node BullMQ,
+so a Node and a Python service sharing one Redis exchange jobs. `enqueue` is a
+call to `enqueue_job` in `src/lib/queue.py` from the handler's threadpool; the
+producer job options are the same as on Node. Each worker becomes
+`src/workers/<name>.py` with `run_<name>` and `on_fail_<name>` functions and
+runs in a `Worker` started by the app lifespan (`src/lib/workers.py`). The
+worker timeout rejects the wait but does not cancel the body, as on Node. A
+`guard` in a worker body logs its message and returns, as on Node. A worker
+has no response, so `->` outputs, `emit`, and `header` reads are rejected, and
+so is a bare `update <model>` or `delete <model>` that has no binding from an
+earlier step in the same body.
+
+Payload keys are camelCase on the wire, as for `emit`: `enqueue "q" { job_id: x }`
+sends `jobId`, and a worker reads its `<- job_id` input from `jobId`. `REDIS_URL`
+is required whenever a spec declares a worker, an `enqueue`, or a `schedule`.
+Under pytest, workers and schedules do not start, and `enqueue_job` raises
+instead of waiting for a Redis connection, so the generated contract tests omit
+endpoints that enqueue.
+
 The generated timeout rejects the worker wait after the declared duration but
 does not cancel work already in progress.
 
@@ -1520,19 +1540,16 @@ schedule reset_quotas {
 
 Standard 5-field cron syntax: `minute hour day-of-month month day-of-week`.
 
-**On the Python target** (`--target python`), each schedule is an APScheduler
-3.x cron job inside the app process, started and stopped with the FastAPI
-lifespan. The body runs the same statements as an endpoint body, minus the
-request: `->` responses, `<-` inputs, `header` reads, and `emit` are rejected at
-build time. A tick starts a run on one worker thread, so runs never overlap. If
-a run is still going and another run is already waiting, a further tick is
-skipped with a logged warning, so a slow schedule never builds a backlog; ticks
-missed while the app was down are not replayed. A failing run is retried twice
-with 1s and 2s backoff, and each failure is logged. The Node target keeps
-schedules in Redis, so one run fires per tick across all instances; the Python
-target runs them in each process, so use one process per schedule set. Both
-targets use the process-local timezone. The scheduler does not start under
-pytest.
+**On the Python target** (`--target python`), each schedule is a BullMQ job
+scheduler on the `__bp_scheduler` queue, the same mechanism as on Node. At
+startup the app registers one scheduler per declaration and removes schedulers
+whose names are no longer declared, and one `Worker` on that queue runs the
+schedule body. A tick therefore runs once across all instances that share the
+Redis, as on Node. The body runs the same statements as an endpoint body, minus
+the request: `->` responses, `<-` inputs, `header` reads, and `emit` are
+rejected at build time. A failing run is retried by BullMQ 3 times with
+exponential backoff from 1s, as on Node. Both targets use the process-local
+timezone. The scheduler does not start under pytest.
 
 **On the Node target** (`--target node`), each schedule is a BullMQ 6 job
 scheduler on the `__bp_scheduler` Redis queue, whose id and job name are the
