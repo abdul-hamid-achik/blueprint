@@ -41,6 +41,16 @@ All notable changes to this project will be documented in this file.
   `limit` (in-process fixed window, 429 `{"error":"Rate limit exceeded"}`),
   through `src/lib/http_cache.py` and `src/lib/rate_limit.py`. Endpoint `auth`
   and `timeout` metadata are still rejected.
+- WS endpoints on the Node target: every connection gets a UUID
+  `connection.id` in `on_connect`, `on_message`, and `on_disconnect`, and
+  `whisper connection(id) { data }` sends JSON `data` to that one connection.
+  With `REDIS_URL` set, a whisper reaches a connection held by another instance
+  over the `bp:ws:whisper` channel. A whisper to an id connected nowhere is a
+  no-op. Whispers go through the same slow-consumer check as room broadcasts.
+- Checker code C054 rejects a `connection` field other than `id`, a `whisper`
+  target other than `connection(id)` (use `broadcast` for rooms), a `whisper`
+  with no data block, and a WS path parameter, binding, or `inject` alias named
+  `connection`. `connection` and `whisper` outside WS handlers are C035.
 
 ### Changed
 
