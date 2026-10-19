@@ -555,6 +555,49 @@ GET /api/x { -> 200 { ok: true } }
 	}
 }
 
+func TestPython_LengthBecomesLen(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+secret DATABASE_URL required
+model clip {
+  id     uuid    primary
+  title  string  required
+  length int     required
+}
+POST /api/clips/check {
+  <- title string required
+  |> clips = query clip
+  |> one = query clip first
+  |> guard title.length > 1 -> 400 "Title too short"
+  -> 200 { total: clips.length, seconds: one.length }
+}
+`
+	body := readPy(t, buildPython(t, src), "src/routes/clips.py")
+	for _, want := range []string{
+		"len(title) > 1",
+		`"total": len(clips)`,
+		`"seconds": one.length`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("clips.py missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestPython_UnhandledErrorAnswersErrorBody(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x { -> 200 { ok: true } }
+`
+	app := readPy(t, buildPython(t, src), "src/app.py")
+	for _, want := range []string{
+		"@app.exception_handler(Exception)\n",
+		`return JSONResponse({"error": "Internal server error"}, status_code=500)`,
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.py missing %q:\n%s", want, app)
+		}
+	}
+}
+
 func TestPython_RequiredSecretRejectsEmpty(t *testing.T) {
 	src := `blueprint "x" { version "1.0" port 3000 runtime node }
 secret WEBHOOK_KEY required

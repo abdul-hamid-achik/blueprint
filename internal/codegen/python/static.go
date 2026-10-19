@@ -253,6 +253,11 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 	b.WriteString("\n@app.exception_handler(StarletteHTTPException)\n")
 	b.WriteString("async def http_error_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:\n")
 	b.WriteString("    return JSONResponse({\"error\": exc.detail}, status_code=exc.status_code, headers=exc.headers)\n\n\n")
+	// An unhandled exception answers {"error": "Internal server error"} with 500,
+	// as Node's app.onError does, instead of Starlette's plain-text body.
+	b.WriteString("@app.exception_handler(Exception)\n")
+	b.WriteString("async def internal_error_handler(request: Request, exc: Exception) -> JSONResponse:\n")
+	b.WriteString("    return JSONResponse({\"error\": \"Internal server error\"}, status_code=500)\n\n\n")
 	if hasEnforcedAuth(guarded) {
 		// Auth failures raise Unauthorized so the body is exactly {"error": ...}
 		// rather than FastAPI's {"detail": ...}.

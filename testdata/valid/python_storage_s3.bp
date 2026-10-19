@@ -26,13 +26,13 @@ POST /api/stored-files {
   -> 201 { id: record.id, url: record.url }
 }
 
-@ "Download the stored object and return its text"
+@ "Download the stored object and return its size in bytes"
 GET /api/stored-files/:id {
   <- id uuid required
 
   |> record = fetch stored_file(id)
   |> guard record -> 404 "Stored file not found"
-  |> stored_text = download(record.url)
+  |> stored_bytes = download(record.url)
 
-  -> 200 { url: record.url, text: stored_text }
+  -> 200 { url: record.url, size: stored_bytes.length }
 }

@@ -1368,6 +1368,19 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 				}
 			}
 		}
+		// `.length` reads a string, list, or bytes length on Node. Python has no
+		// such attribute, so it becomes `len(x)`, except on a model row, where
+		// `length` names a column.
+		if v.Field == "length" {
+			row := false
+			if baseIdent, ok := v.Base.(*ast.Ident); ok && ctx.varModel[baseIdent.Name] != "" {
+				card := ctx.cardinality[baseIdent.Name]
+				row = card != resolve.CollectionCard && card != resolve.PaginatedCard
+			}
+			if !row {
+				return "len(" + exprToPyWithCtx(v.Base, ctx) + ")"
+			}
+		}
 		// `.count` on a collection binding resolves to Python `len(x)` —
 		// `list.count` is the method object, not a number, so the original
 		// emit (`items.count > 0`) would TypeError at runtime.
