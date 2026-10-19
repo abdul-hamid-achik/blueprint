@@ -41,7 +41,7 @@
 | 1 | Validation failure: check, lint, `fmt --check`, a failed test, `diff --exit-code` with changes, undocumented `bp explain` code. |
 | 2 | Usage or environment: no command or an unknown command, a missing required argument (usage is printed), an unknown subcommand or value, unknown flag, flag with no value, extra argument, missing file or directory with no `.bp`, `fmt` on several files without `--write`/`--check`, `diff --force` without `--apply`, missing `docker` or `uv`, unsafe `--out`. |
 | 3 | `bp fmt` refused: the formatter produced output that changed the syntax tree. Report it. |
-| 4 | Codegen error: the file checks, but the target cannot generate it (for example Python with STREAM/WS). |
+| 4 | Codegen error: the file checks, but the target cannot generate it (for example Python with a WS endpoint). |
 
 With several files, the exit code is the most severe per-file code, and a summary goes to stderr (`3 files checked, 1 failed`). `bp lint --json` and `bp check --json` wrap per-file results in one document.
 

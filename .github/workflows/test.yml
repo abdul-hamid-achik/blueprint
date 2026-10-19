@@ -191,10 +191,10 @@ jobs:
           fi
           echo "$output" | grep -q 'dictionary-backed input "payment"'
           if output=$(./bin/bp build examples/realtime-chat.bp --out /tmp/py-chat --target python 2>&1); then
-            echo "realtime-chat unexpectedly built despite unsupported STREAM/WS semantics"
+            echo "realtime-chat unexpectedly built despite unsupported WS semantics"
             exit 1
           fi
-          echo "$output" | grep -Eq '`STREAM` endpoints|`WS` endpoints'
+          echo "$output" | grep -q '`WS` endpoints'
           echo "Supported Python examples build + parse + idempotent; unsupported semantics fail closed"
 
       - name: Build and run the Effect health scaffold

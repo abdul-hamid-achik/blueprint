@@ -382,15 +382,20 @@ Prep work (must precede the Python generator):
     - [x] `bp test --target python` wraps `uv run pytest`; Docker remains a
       runtime requirement for the generated Postgres testcontainer.
   - [~] Phase 5: `cache redis` → `src/lib/cache.py` with a Redis client is
-    shipped. Dormant STREAM/WS routing emitters exist, but public Python
-    codegen now rejects those declarations because their event/lifecycle
-    bodies were only TODO placeholders; successful builds never imply that
-    incomplete handlers execute.
-  - [ ] Phase 5b: full STREAM/WS body translation (Redis pub/sub
-    backbone, `broadcast`/`join`/`leave`/`emit` builtins, `where(...)` filter
-    wiring), the rest of the `pipe` body surface, `worker` + `schedule`
-    via APScheduler, `storage s3` → boto3, and `payload.X` → `payload["X"]`
-    for fn returns typed `json`.
+    shipped. STREAM endpoints are translated (see Phase 5b below); WS
+    endpoints stay rejected until their lifecycle bodies are translated, so
+    successful builds never imply that incomplete handlers execute.
+  - [x] Phase 5b (STREAM part): STREAM endpoints and the `emit` step on
+    Python. SSE frames match Node; `where` filters per subscriber; pre-stream
+    guards answer `{"error"}` before the stream opens; `?token=`/`?api_key=`
+    on STREAM; `emit` delivers in-process and through `bp:stream:<event>` when
+    `REDIS_URL` is set; bounded per-client queue with `BP_SSE_MAX_PENDING`.
+    Unsupported STREAM forms fail closed with named reasons. _(shipped 2026-10-19)_
+  - [ ] Phase 5b (remaining): WS body translation (`on_connect`/`on_message`/
+    `on_disconnect`, `broadcast`/`join`/`leave`/`whisper`, and `emit` from WS
+    handlers through `src/lib/events.py`), the rest of the `pipe` body surface,
+    `worker` + `schedule` via APScheduler, `storage s3` → boto3, and
+    `payload.X` → `payload["X"]` for fn returns typed `json`.
 
 ## Later
 

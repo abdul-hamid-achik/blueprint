@@ -98,8 +98,8 @@ out/
     test_<resource>.py      one per route group
 ```
 
-Python codegen fails before returning files for STREAM/WS declarations,
-computed fields, relationship `with(...)`, and other unsupported semantics;
+Python codegen fails before returning files for WS declarations, STREAM
+bodies it cannot translate faithfully, computed fields, relationship `with(...)`, and other unsupported semantics;
 the tree above contains only fully translated
 surfaces. GET/DELETE inputs use FastAPI `Query`, POST/PUT/PATCH inputs use
 embedded `Body`, and direct `header.X-Name` access generates an aliased `Header`

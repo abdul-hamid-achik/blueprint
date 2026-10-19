@@ -176,7 +176,7 @@ STREAM /rooms/:id/events {
 }
 ```
 
-`:param` inputs on STREAM and WS are validated before the stream or upgrade starts (400 refuses the handshake). Python rejects both kinds of endpoint.
+`:param` inputs on STREAM and WS are validated before the stream or upgrade starts (400 refuses the handshake on Node). Python validates STREAM inputs with 422 and rejects WS endpoints.
 
 Each WS connection has `connection.id`, a UUID string, bound in `on_connect`, `on_message`, and `on_disconnect`. It is the only field of `connection`. Send to one connection with `whisper connection(id) { data }` (the example above); the id is how a client addresses a peer, so return it from `on_connect`.
 

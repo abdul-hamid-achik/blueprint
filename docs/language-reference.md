@@ -1140,6 +1140,43 @@ has the injected model's row type, not `any`.
 
 In OpenAPI output: exposed as `GET` with `text/event-stream` content type.
 
+### Python target
+
+`bp build --target python` emits STREAM endpoints with the same frames and
+headers as Node: each `on event` sends `event: <name>` and `data: <JSON>`, each
+`on timeout` sends `event: ping`, and nothing else is sent. Responses are
+`text/event-stream` with `Cache-Control: no-cache` and `Connection:
+keep-alive`. Differences:
+
+- Input errors answer `422` (FastAPI validation), not `400`.
+- Pre-stream statements run before the response starts. A guard answers
+  `{"error": "..."}` with its status, as on Node. The statements run on a
+  short-lived database session that closes before streaming, so a long stream
+  holds no pooled connection.
+- Credentials are verified as on REST, with the same `401` body. On STREAM only,
+  `?token=` (bearer, jwt) and `?api_key=` (api_key) are accepted when the header
+  is absent. Basic stays header-only.
+- Payload keys keep their `.bp` spelling: `emit new_message { room_id: id }`
+  is read as `event.room_id` and `where(room_id == id)`. Node camel-cases them.
+- An event field that is missing from the payload drops its key from the
+  frame, as Node does. A field that is present with a null value sends `null`.
+- Timestamps in frames use FastAPI's encoding (`2026-10-19T12:00:00.123456`),
+  not JavaScript's `toISOString()` form (`2026-10-19T12:00:00.123Z`).
+- Backpressure counts queued messages per client, like Node. It does not count
+  socket bytes on either target. `BP_SSE_MAX_PENDING`, the 5s grace period, the
+  16x hard cap, and the `slow consumer` warning behave the same.
+- With `REDIS_URL` set in the process environment, emitted events fan out on
+  `bp:stream:<event>` as on Node. Cross-language interop is not a goal: a Node
+  instance and a Python instance on the same Redis would read each other's
+  messages, but the payload keys differ (`roomId` versus `room_id`), so run one
+  runtime per Redis deployment.
+- A client that disconnects is unsubscribed at once and its timers are cancelled.
+
+Not supported on Python yet: `use` middleware, `cache`, `auth webhook_sig`,
+`try/recover` before the stream block, calls to functions or `header`/`env` in a
+handler, and handler output that is not an object literal. `bp build` names the
+reason. WS endpoints are rejected on Python.
+
 ---
 
 ## 15. WS Endpoints
@@ -1779,6 +1816,11 @@ Node generates and awaits the in-process `emit` bus in routes, functions,
 middleware, workers, schedules, STREAM, and WS handlers. `emit ... to(service)`
 fails closed until an external event transport adapter is available; use an
 explicit external HTTP `call` when that is the intended transport.
+
+Python generates `emit` in REST handlers and in STREAM pre-stream statements. It
+delivers to in-process STREAM listeners and, with `REDIS_URL` set, to other
+instances. Payload keys keep their `.bp` spelling. `emit` in WS handlers follows
+with WS support.
 
 ### Utility
 
