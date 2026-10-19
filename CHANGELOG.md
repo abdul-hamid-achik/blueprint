@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-18
+
 ### Added
 
 - `bp mcp` starts a stdio Model Context Protocol server for MCP-capable agents.

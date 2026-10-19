@@ -232,7 +232,7 @@ kinds fail the checker (C052) on every target.
 
 `bp build --target python` fails with exit `4` and lists each reason. The
 reasons come from `unsupportedFeatures()` in
-`internal/codegen/python/generator.go`. For 0.17.0 they include:
+`internal/codegen/python/generator.go`. They currently include:
 
 - inline `enum(...)` endpoint inputs, and named `enum` declarations
 - `type` and `alias` declarations
