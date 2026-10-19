@@ -219,7 +219,9 @@ behavior.
 | `format(email\|url\|uuid\|ip\|date)` | Zod `.email()`, `.url()`, `.uuid()`, `.ip()`, `.date()` | `formats.Email`, `formats.Url`, `formats.Uuid`, `formats.IpAddress`, `formats.Date` from `src/lib/formats.py`; a violation answers `422` |
 | `use` middleware variables on STREAM/WS | Typed like REST (`c.get('auth')` has the injected row type) | Not supported: STREAM/WS endpoints fail closed |
 | STREAM event fan-out | Redis `bp:stream:<event>` channels when `REDIS_URL` is set | Not supported |
-| Endpoint `cache <duration>` | `Cache-Control` on GET 2xx responses | Rejected (`cache` metadata) |
+| Endpoint `cache <duration>` | `Cache-Control` on GET 2xx responses | `Cache-Control` on GET 2xx responses through `src/lib/http_cache.py`; `private` under the same rules |
+| Endpoint `limit <n>/<unit>` | in-process counter, `429` `{"error": "Rate limit exceeded"}` | `src/lib/rate_limit.py`, same key and window, same `429` body |
+| Endpoint `tags [...]` | OpenAPI tags | FastAPI route `tags=[...]` |
 | `try/recover` with two or more writes | `db.transaction(...)` | `with db.begin_nested():` (a SAVEPOINT) |
 | `log` | `console.*` levels | stdlib `logging` through `src/lib/log.py` |
 | `pipe` declarations | `src/pipes/<name>.ts` | `src/pipes/<name>.py` for the inline subset only |
@@ -239,12 +241,12 @@ reasons come from `unsupportedFeatures()` in
 `internal/codegen/python/generator.go`. They currently include:
 
 - struct `enum` declarations (variants with bodies, such as `Plan[x].field` lookups)
-- model fields typed by an alias or a `type` declaration, and `json<T>` model fields over a declared type
+- model fields typed by a `type` declaration, primary keys typed by an alias, and `json<T>` model fields over a declared type
 - `STREAM` and `WS` endpoints
 - `schedule`, `worker`, `subscribe`, and `external` declarations
 - `env` declarations, and `env.X` reads outside endpoint and middleware bodies
 - `fn logic` bodies and `middleware after` bodies
-- endpoint `auth`, `cache`, `limit`, and `tags` metadata, and blueprint-level `use`
+- endpoint `auth` and `timeout` metadata, and blueprint-level `use`
 - authored `test` blocks and fixtures
 
 The Effect target stays a scaffold. It emits `GET /health` and typed `Config`,
@@ -287,7 +289,7 @@ target-preserving translations, not a claim of parity with Node. In particular,
 bare `where(q)` is text search only
 for a string/text endpoint input; Python rejects filter accumulators and other
 bound values there because it does not implement Node's dynamic key/value
-expansion. It also rejects field access on JSON/map endpoint inputs and
+expansion. It also rejects field access on JSON/map endpoint inputs (a `json<T>` input over a declared `type` is a class, so its fields work) and
 JSON-returning function results until it can translate `payload.X` to
 `payload["X"]` instead of emitting invalid dictionary attribute access. Direct
 header/env expressions are supported, but raw interpolation of header/env or

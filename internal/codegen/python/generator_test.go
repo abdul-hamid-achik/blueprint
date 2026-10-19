@@ -263,7 +263,7 @@ GET /api/x { -> 200 "ok" }
 `,
 		"endpoint metadata": `blueprint "x" { version "1.0" port 3000 runtime node }
 GET /api/x {
-  limit 60/min
+  timeout 5s
   -> 200 "ok"
 }
 `,

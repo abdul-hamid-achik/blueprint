@@ -351,6 +351,14 @@ Prep work (must precede the Python generator):
     - [x] Structured `log` levels via stdlib `logging` (debug/info to stdout,
       warn/error to stderr). Like Node, output is plain text; JSON lines and a
       `LOG_LEVEL` switch are not implemented on either target. _(shipped 2026-10-18)_
+    - [x] Named `enum` (model columns and endpoint inputs; `src/models/enums.py`, Postgres
+      type name = lowercased enum name, as on Node), inline `enum(...)` endpoint inputs
+      (`Literal`), `type` (Pydantic, `src/models/types.py`) and `alias` (`Annotated`) declarations,
+      alias-typed scalar model fields, and endpoint `tags`, `cache`, and `limit` metadata
+      (`src/lib/http_cache.py`, `src/lib/rate_limit.py`). _(shipped 2026-10-18)_
+    - [ ] Still rejected on Python: struct `enum` declarations (variants with bodies),
+      `type`-typed model fields and `json<T>` model fields over a declared type, primary keys
+      typed by an alias, endpoint `auth` and `timeout` metadata, and blueprint-level `use`.
   - [~] Phase 4: middleware, fn/pipe (Python `impl python` mode), `bp test`
     against testcontainers for real Postgres.
     - [x] `bp build --target python --gen-tests` emits a runnable pytest

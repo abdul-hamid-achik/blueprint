@@ -27,6 +27,7 @@ type bodyCtx struct {
 	fkAliases   map[string]string // "var.field" -> Python alias (e.g. "_product")
 	models      []*ast.Model      // for FK resolution
 	userFns     map[string]bool   // declared fn/pipe names (for step-call dispatch)
+	cacheValue  string            // Cache-Control for 2xx returns; "" when the endpoint has no cache
 
 	// orderedBindings lists every binding->model fact declared SO FAR (in
 	// source order, middleware-injected aliases first). It is built
@@ -63,6 +64,7 @@ type bodyCtx struct {
 
 func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
 	c := &bodyCtx{
+		cacheValue:    endpointCacheValue(ep),
 		path:          ep.Path,
 		inputs:        map[string]bool{},
 		varModel:      map[string]string{},
@@ -1127,25 +1129,25 @@ func emitReturn(b *strings.Builder, s *ast.OutputStmt, ctx *bodyCtx, indent stri
 	if status == "" {
 		status = "200"
 	}
-	if status == "204" {
-		fmt.Fprintf(b, "%sreturn Response(status_code=204)\n", indent)
-		return
-	}
-	switch v := s.Value.(type) {
-	case *ast.StringLit:
-		fmt.Fprintf(b, "%sreturn PlainTextResponse(%s, status_code=%s)\n",
-			indent, pyStringLiteral(v.Value), status)
-	case *ast.BlockExpr:
-		parts := make([]string, 0, len(v.Entries))
-		for _, kv := range v.Entries {
-			parts = append(parts, fmt.Sprintf("%q: %s", kv.Key, exprToPyWithCtx(kv.Value, ctx)))
-		}
-		body := "{" + strings.Join(parts, ", ") + "}"
-		fmt.Fprintf(b, "%sreturn JSONResponse(jsonable_encoder(%s), status_code=%s)\n", indent, body, status)
+	var expr string
+	switch {
+	case status == "204":
+		expr = "Response(status_code=204)"
 	default:
-		fmt.Fprintf(b, "%sreturn JSONResponse(jsonable_encoder(%s), status_code=%s)\n",
-			indent, exprToPyWithCtx(s.Value, ctx), status)
+		switch v := s.Value.(type) {
+		case *ast.StringLit:
+			expr = fmt.Sprintf("PlainTextResponse(%s, status_code=%s)", pyStringLiteral(v.Value), status)
+		case *ast.BlockExpr:
+			parts := make([]string, 0, len(v.Entries))
+			for _, kv := range v.Entries {
+				parts = append(parts, fmt.Sprintf("%q: %s", kv.Key, exprToPyWithCtx(kv.Value, ctx)))
+			}
+			expr = fmt.Sprintf("JSONResponse(jsonable_encoder(%s), status_code=%s)", "{"+strings.Join(parts, ", ")+"}", status)
+		default:
+			expr = fmt.Sprintf("JSONResponse(jsonable_encoder(%s), status_code=%s)", exprToPyWithCtx(s.Value, ctx), status)
+		}
 	}
+	fmt.Fprintf(b, "%sreturn %s\n", indent, wrapCacheReturn(expr, ctx.cacheValue))
 }
 
 // exprToPyWithCtx is exprToPy + identifier resolution for variables the body

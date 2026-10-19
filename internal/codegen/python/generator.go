@@ -184,6 +184,12 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	if g.usesFormats(models, endpoints) {
 		out = append(out, g.genFormatsPy())
 	}
+	if anyEndpointCache(endpoints) {
+		out = append(out, g.genHTTPCachePy())
+	}
+	if usesEndpointMeta(endpoints, "limit") {
+		out = append(out, g.genRateLimitPy())
+	}
 	out = append(out, g.genAppPy(bp, endpoints))
 
 	// Named enum / type / alias declarations live in src/models/ next to the
@@ -359,7 +365,7 @@ func (g *Generator) unsupportedFeatures() []string {
 				if !validPythonIdentifier(field.Name) {
 					add(fmt.Sprintf("model field %q that is not a valid Python identifier", field.Name))
 				}
-				if reason := g.modelFieldTypeFeature(field); reason != "" {
+				if reason := g.modelFieldTypeFeature(n, field); reason != "" {
 					add(fmt.Sprintf("model field %q: %s", field.Name, reason))
 				}
 				for _, c := range field.Constraints {
@@ -598,6 +604,12 @@ func (g *Generator) complexEndpointFeatures(ep *ast.Endpoint) []string {
 	inputNames := map[string]bool{}
 	for _, meta := range ep.Meta {
 		if meta.Kind != "use" {
+			if reason, handled := pythonMetaFeature(meta); handled {
+				if reason != "" {
+					seen[reason] = true
+				}
+				continue
+			}
 			seen[fmt.Sprintf("endpoint metadata %q", meta.Kind)] = true
 			continue
 		}

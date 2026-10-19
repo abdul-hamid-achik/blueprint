@@ -476,7 +476,7 @@ model job {
 }
 ```
 
-On `--target python`, an inline enum endpoint input (query, body, or path) becomes `Literal["a", "b"]`, and a `default(...)` names one of its variants. Inline enum model columns keep their string values.
+On `--target python`, an inline enum endpoint input (query, body, or path) becomes `Literal["a", "b"]`, and a `default(...)` names one of its variants. An inline enum model column keeps its string values and is a named Postgres type, `lowercase(model + Field)` (`job.kind` → `jobkind`), the same name Node uses.
 
 ### Naming
 
@@ -577,7 +577,7 @@ alias FileSize = int min(0) max(100mb)
 
 Supported formats: `email`, `url`, `uuid`, `ip`, `date`
 
-On `--target python`, an alias becomes `Name = Annotated[...]` in `src/models/types.py`, with `min`, `max`, and `format` applied. An alias of another alias is supported; `format` on that second level is rejected, so put the format on the base alias. A model field typed by an alias is rejected for now.
+On `--target python`, an alias becomes `Name = Annotated[...]` in `src/models/types.py`, with `min`, `max`, and `format` applied. An alias of another alias is supported; `format` on that second level is rejected, so put the format on the base alias. A model field typed by a scalar alias stores as that scalar, and its read model uses the alias type. A primary key typed by an alias is rejected.
 
 ### Extended Type Expressions
 
@@ -629,7 +629,7 @@ enum Status {
 
 Generated as a TypeScript union type and Zod enum.
 
-On `--target python`, a simple enum becomes a `str` Enum in `src/models/enums.py` whose values are the variant strings. A model column typed by the enum uses a SQLAlchemy `Enum` named with the lowercased enum name (`Status` → `status`), the same Postgres type name Node's `pgEnum` creates. Endpoint inputs typed by the enum validate the value and answer `422` for anything else. Rich enums (variants with bodies) are not yet supported on Python.
+On `--target python`, a simple enum becomes a `str` Enum in `src/models/enums.py` whose values are the variant strings. A model column typed by the enum uses a SQLAlchemy `Enum` named with the lowercased enum name (`Status` → `status`), the same Postgres type name Node's `pgEnum` creates. Endpoint inputs typed by the enum validate the value and answer `422` for anything else. Variant names must not start with `_` or be `mro`, which Python reserves. Rich enums (variants with bodies) are not yet supported on Python.
 
 ### Rich Enums
 
@@ -926,8 +926,16 @@ handlers that already set `Cache-Control` are left alone. The scope is:
 
 A non-GET endpoint with `cache` emits no header, and neither does a STREAM or WS
 endpoint. The build still succeeds, and the `cache-on-non-get` lint warning
-reports it. Python rejects endpoint `cache`
-metadata today.
+reports it.
+
+On `--target python`, the same rules apply through a `cache_control(...)` helper
+in `src/lib/http_cache.py`. The helper sets the header on the returned 2xx
+response, so a guard's 4xx or any other error response carries none. `limit` is
+enforced by `src/lib/rate_limit.py` with the same client-and-path key and fixed
+window as Node, and an over-limit request answers `429` with
+`{"error": "Rate limit exceeded"}`. `tags` become the route's FastAPI tags, which
+show in the generated OpenAPI. `auth` and `timeout` metadata still fail the
+Python build.
 
 ### Auth Strategies
 
@@ -1567,7 +1575,9 @@ header.X-API-Key                    # hyphenated header names
 ```
 
 The Python target currently rejects field access when the base is a JSON/map
-endpoint input or a declared function result typed as `json`; it does not emit
+endpoint input or a declared function result typed as `json`. An endpoint input
+typed `json<T>` over a declared `type` is a generated class, so `payload.field`
+works there. The rejection does not emit
 invalid `dict.attribute` code. Translating `payload.X` to `payload["X"]` remains
 future work. Direct `header.X` and declared `env.X` expressions are supported,
 but embedding header/env/dictionary-backed values inside raw string

@@ -231,13 +231,21 @@ GET /api/x { -> 200 "ok" }
 `,
 			want: `constraint "default"`,
 		},
-		"alias model field": {
+		"alias over a list model field": {
 			src: `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
-alias Code = string min(3)
-model thing { id uuid primary code Code required }
+alias Tags = string
+model thing { id uuid primary tags list(Tags) required }
 GET /api/x { -> 200 "ok" }
 `,
-			want: `alias-typed model field "Code"`,
+			want: "enum or named types inside list/map model fields",
+		},
+		"primary key typed by an alias": {
+			src: `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
+alias Key = uuid
+model thing { id Key primary }
+GET /api/x { -> 200 "ok" }
+`,
+			want: `primary key typed by alias "Key"`,
 		},
 		"type model field": {
 			src: `blueprint "x" { version "1.0" port 3000 runtime node database postgres }
@@ -294,6 +302,106 @@ GET /api/x { -> 200 "ok" }
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %q should contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestPython_AliasModelFieldUsesScalarColumnAndAliasAnnotation(t *testing.T) {
+	outDir := buildPython(t, declsHeader+`alias Code = string min(3)
+model thing {
+  id   uuid primary
+  code Code required
+}
+GET /api/things {
+  -> 200 "ok"
+}
+`)
+	schema := readPy(t, outDir, "src/models/schema.py")
+	if !strings.Contains(schema, "code: Mapped[str] = mapped_column(String(), nullable=False)") {
+		t.Errorf("alias model field should store as its scalar:\n%s", schema)
+	}
+	if strings.Contains(schema, "src.models.types") {
+		t.Errorf("schema.py does not need the alias import:\n%s", schema)
+	}
+	pyd := readPy(t, outDir, "src/models/pydantic.py")
+	if !strings.Contains(pyd, "from src.models.types import Code") || !strings.Contains(pyd, "    code: Code\n") {
+		t.Errorf("read model should use the alias annotation:\n%s", pyd)
+	}
+	readPy(t, outDir, "src/models/types.py")
+}
+
+func TestPython_TypedJSONOverDeclaredTypeIsAClassInput(t *testing.T) {
+	outDir := buildPython(t, `blueprint "x" { version "1.0" port 3000 runtime node }
+type Address {
+  street string required
+}
+POST /api/address/json {
+  <- payload json<Address> required
+  -> 200 { street: payload.street }
+}
+`)
+	routes := readPy(t, outDir, "src/routes/address.py")
+	for _, want := range []string{
+		"from src.models.types import Address",
+		"payload: Address = Body(..., embed=True)",
+		`jsonable_encoder({"street": payload.street})`,
+	} {
+		if !strings.Contains(routes, want) {
+			t.Errorf("route missing %q:\n%s", want, routes)
+		}
+	}
+}
+
+func TestPython_ScalarAliasModelFieldsImportTheirTypes(t *testing.T) {
+	outDir := buildPython(t, declsHeader+`alias Stamp = timestamp
+alias Owner = uuid
+model thing {
+  id      uuid primary
+  owner   Owner required
+  created Stamp required
+}
+GET /api/things {
+  -> 200 "ok"
+}
+`)
+	schema := readPy(t, outDir, "src/models/schema.py")
+	for _, want := range []string{"import uuid", "from datetime import datetime", "owner: Mapped[uuid.UUID]", "created: Mapped[datetime]"} {
+		if !strings.Contains(schema, want) {
+			t.Errorf("schema.py missing %q:\n%s", want, schema)
+		}
+	}
+}
+
+func TestPython_InlineEnumModelColumnIsNamed(t *testing.T) {
+	outDir := buildPython(t, declsHeader+`model job {
+  id   uuid primary
+  kind enum(a, b) default(a)
+}
+GET /api/jobs {
+  -> 200 "ok"
+}
+`)
+	schema := readPy(t, outDir, "src/models/schema.py")
+	// Postgres cannot compile an unnamed ENUM; the name follows Node's pgEnum rule.
+	if !strings.Contains(schema, `Enum("a", "b", name="jobkind")`) {
+		t.Errorf("inline enum column must be named:\n%s", schema)
+	}
+}
+
+func TestPython_MemberNamesThatBreakAtRuntimeAreRejected(t *testing.T) {
+	cases := map[string]string{
+		"enum member mro":            `blueprint "x" { version "1.0" port 3000 runtime node }` + "\nenum Mode { mro fast }\nGET /api/x { -> 200 \"ok\" }\n",
+		"type field with underscore": `blueprint "x" { version "1.0" port 3000 runtime node }` + "\ntype T { _secret string required }\nGET /api/x { -> 200 \"ok\" }\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			file, errs := parser.ParseFile("t.bp", []byte(src))
+			if len(errs) > 0 {
+				t.Fatalf("parse errors: %v", errs)
+			}
+			if err := python.New().Generate(file, t.TempDir()); err == nil {
+				t.Fatalf("expected a rejection")
 			}
 		})
 	}

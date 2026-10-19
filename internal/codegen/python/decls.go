@@ -77,6 +77,19 @@ func (g *Generator) namedKind(name string) string {
 	return ""
 }
 
+// pythonMemberNameReason rejects names that are valid identifiers but break
+// at import or silently lose data: `mro` is reserved by Enum, and a leading
+// underscore makes a Pydantic field private, so its value is dropped.
+func pythonMemberNameReason(name string) string {
+	if strings.HasPrefix(name, "_") {
+		return "a leading underscore makes the Python attribute private"
+	}
+	if name == "mro" {
+		return "`mro` is reserved by Python's enum module"
+	}
+	return ""
+}
+
 // pyClassName is the Python class name for a Blueprint declaration.
 func pyClassName(name string) string { return common.PascalCase(name) }
 
@@ -331,6 +344,8 @@ func (g *Generator) declFeatures(b ast.TopLevel) []string {
 		for _, v := range n.Variants {
 			if !validPythonIdentifier(v.Name) {
 				out = append(out, fmt.Sprintf("enum %s variant %q that is not a valid Python identifier", n.Name, v.Name))
+			} else if reason := pythonMemberNameReason(v.Name); reason != "" {
+				out = append(out, fmt.Sprintf("enum %s variant %q: %s", n.Name, v.Name, reason))
 			}
 		}
 	case *ast.TypeDecl:
@@ -338,6 +353,8 @@ func (g *Generator) declFeatures(b ast.TopLevel) []string {
 		for _, f := range n.Fields {
 			if !validPythonIdentifier(f.Name) {
 				out = append(out, fmt.Sprintf("%s field %q that is not a valid Python identifier", owner, f.Name))
+			} else if reason := pythonMemberNameReason(f.Name); reason != "" {
+				out = append(out, fmt.Sprintf("%s field %q: %s", owner, f.Name, reason))
 			}
 			if reason := g.typeDeclFeature(f.Type); reason != "" {
 				out = append(out, fmt.Sprintf("%s: %s", owner, reason))
@@ -586,15 +603,37 @@ func mergeBoundArgs(args []string) []string {
 }
 
 // modelFieldTypeFeature reports a model field type the SQLAlchemy and Pydantic
-// emitters cannot map faithfully. Declared enums are supported directly.
-// Aliases and `type` classes are not yet, because Node stores them as text and
-// the Python column would silently differ. json<T> over a declared type would
-// lose its shape, and named types inside list or map columns have no mapping.
-func (g *Generator) modelFieldTypeFeature(f *ast.Field) string {
+// emitters cannot map faithfully. Declared enums are supported directly, and
+// aliases over a scalar store as that scalar with the alias on the read model.
+// `type` classes are not yet: Node stores them as text and the Python column
+// would silently differ. json<T> over a declared type would lose its shape, and
+// named types inside list or map columns have no mapping.
+func (g *Generator) modelFieldTypeFeature(m *ast.Model, f *ast.Field) string {
 	switch v := f.Type.(type) {
+	case *ast.EnumInline:
+		// The inline column's Postgres type name must not reuse a declared enum's.
+		name := inlineEnumTypeName(m, f)
+		for _, e := range g.declaredEnums() {
+			if pgEnumTypeName(e.Name) == name {
+				return fmt.Sprintf("inline enum column type name %q collides with enum %s", name, e.Name)
+			}
+		}
 	case *ast.NamedType:
-		if kind := g.namedKind(v.Name); kind != "enum" {
-			return fmt.Sprintf("%s-typed model field %q (only declared enums can type a model field yet)", kind, v.Name)
+		switch g.namedKind(v.Name) {
+		case "enum":
+		case "alias":
+			// An alias over a scalar stores as that scalar. A primary-key alias is
+			// rejected: the uuid4 default keys on the primitive type.
+			if _, scalar := g.resolveAlias(v).(*ast.PrimitiveType); !scalar {
+				return fmt.Sprintf("alias %q over a non-scalar type (only scalar aliases can type a model field yet)", v.Name)
+			}
+			for _, c := range f.Constraints {
+				if c.Kind == "primary" {
+					return fmt.Sprintf("primary key typed by alias %q", v.Name)
+				}
+			}
+		default:
+			return fmt.Sprintf("type-typed model field %q (only declared enums and scalar aliases can type a model field yet)", v.Name)
 		}
 	case *ast.TypedJSONType:
 		if inner, ok := v.Inner.(*ast.NamedType); ok && g.namedKind(inner.Name) != "" {

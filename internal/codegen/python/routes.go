@@ -53,6 +53,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsAnnotated := false
 	needsFormats := false
 	needsLiteral := false
+	needsCache := false
+	needsRateLimit := false
+	needsRequest := false
 	namedImports := newImportSet()
 	userFnCalls := map[string]bool{}
 	middlewares := map[string]bool{}
@@ -63,6 +66,13 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 		}
 		if endpointHasGuards(ep) {
 			needsGuard = true
+		}
+		if endpointCacheValue(ep) != "" {
+			needsCache = true
+		}
+		if _, _, ok := endpointRateLimit(ep); ok {
+			needsRateLimit = true
+			needsRequest = true
 		}
 		if endpointHasPaginatedQuery(ep) {
 			needsPaginate = true
@@ -155,6 +165,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	if needsHeader {
 		fastapiImports = append(fastapiImports, "Header")
 	}
+	if needsRequest {
+		fastapiImports = append(fastapiImports, "Request")
+	}
 	if needsDB || needsGuard {
 		fastapiImports = append(fastapiImports, "Depends")
 	}
@@ -210,6 +223,12 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	}
 	if needsLiteral {
 		b.WriteString("from typing import Literal\n")
+	}
+	if needsCache {
+		b.WriteString("from src.lib.http_cache import cache_control\n")
+	}
+	if needsRateLimit {
+		b.WriteString("from src.lib import rate_limit\n")
 	}
 	if needsFormats {
 		b.WriteString("from src.lib import formats\n")
@@ -414,7 +433,31 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 	}
 	fnName := handlerName(ep.Method, ep.Path)
 
-	fmt.Fprintf(b, "@router.%s(%q)\n", method, fastapiPath)
+	if tags := endpointTags(ep); len(tags) > 0 {
+		quoted := make([]string, len(tags))
+		for i, tag := range tags {
+			quoted[i] = fmt.Sprintf("%q", tag)
+		}
+		fmt.Fprintf(b, "@router.%s(%q, tags=[%s])\n", method, fastapiPath, strings.Join(quoted, ", "))
+	} else {
+		fmt.Fprintf(b, "@router.%s(%q)\n", method, fastapiPath)
+	}
+	// `limit` runs first in the handler, after FastAPI has validated inputs,
+	// so a 429 answers only requests that would otherwise be handled. The
+	// request object is the first parameter because every later parameter has
+	// a default and Python requires non-default parameters to come first.
+	limitPreamble := ""
+	if limit, window, ok := endpointRateLimit(ep); ok {
+		if params != "" {
+			params = "bp_request: Request, " + params
+		} else {
+			params = "bp_request: Request"
+		}
+		limitPreamble = fmt.Sprintf(
+			"    if (_limited := rate_limit.check(bp_request, %d, %d)) is not None:\n        return _limited\n",
+			limit, window)
+	}
+	cacheValue := endpointCacheValue(ep)
 	// Sync `def` for DB-touching handlers so sync SQLAlchemy doesn't block
 	// an event loop; `async def` for everything else so FastAPI doesn't pay
 	// a threadpool hop on static responses.
@@ -423,6 +466,7 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 		keyword = "def"
 	}
 	fmt.Fprintf(b, "%s %s(%s):\n", keyword, fnName, params)
+	b.WriteString(limitPreamble)
 
 	if hasSteps {
 		g.emitBody(b, ep)
@@ -438,14 +482,14 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 		}
 	}
 	if out == nil {
-		b.WriteString("    return Response(status_code=204)\n")
+		fmt.Fprintf(b, "    return %s\n", wrapCacheReturn("Response(status_code=204)", cacheValue))
 		return
 	}
 	status := out.Status
 	if status == "" {
 		status = "200"
 	}
-	emitOutputReturn(b, status, out.Value)
+	emitOutputReturn(b, status, out.Value, cacheValue)
 }
 
 // findMiddleware looks up a declared middleware by name, or returns nil.
@@ -639,23 +683,22 @@ func handlerName(method, path string) string {
 // emitOutputReturn writes the `return ...` line for an endpoint's output.
 // For 204 the body is dropped. For string outputs we use PlainTextResponse.
 // For object outputs we build a dict literal so FastAPI serialises it as JSON.
-func emitOutputReturn(b *strings.Builder, status string, value ast.Expr) {
+func emitOutputReturn(b *strings.Builder, status string, value ast.Expr, cacheValue string) {
 	if status == "204" {
-		fmt.Fprintf(b, "    return Response(status_code=204)\n")
+		fmt.Fprintf(b, "    return %s\n", wrapCacheReturn("Response(status_code=204)", cacheValue))
 		return
 	}
 
+	var expr string
 	switch v := value.(type) {
 	case *ast.StringLit:
-		fmt.Fprintf(b, "    return PlainTextResponse(%s, status_code=%s)\n",
-			pyStringLiteral(v.Value), status)
+		expr = fmt.Sprintf("PlainTextResponse(%s, status_code=%s)", pyStringLiteral(v.Value), status)
 	case *ast.BlockExpr:
-		body := blockExprToPyDict(v)
-		fmt.Fprintf(b, "    return JSONResponse(jsonable_encoder(%s), status_code=%s)\n", body, status)
+		expr = fmt.Sprintf("JSONResponse(jsonable_encoder(%s), status_code=%s)", blockExprToPyDict(v), status)
 	default:
-		fmt.Fprintf(b, "    return JSONResponse(jsonable_encoder(%s), status_code=%s)\n",
-			exprToPy(value), status)
+		expr = fmt.Sprintf("JSONResponse(jsonable_encoder(%s), status_code=%s)", exprToPy(value), status)
 	}
+	fmt.Fprintf(b, "    return %s\n", wrapCacheReturn(expr, cacheValue))
 }
 
 // blockExprToPyDict renders `{ k: v, ... }` Blueprint output as a Python dict

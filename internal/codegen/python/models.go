@@ -51,10 +51,22 @@ func (g *Generator) schemaImports(models []*ast.Model) []string {
 	hasOptional := false
 
 	enumImports := newImportSet()
+	needsMappedDatetime := false
+	needsMappedUUID := false
 	for _, m := range models {
 		for _, f := range m.Fields {
-			ct := g.sqlAlchemyColumnType(f.Type)
+			ct := g.columnTypeFor(m, f)
 			colTypes[ct.importName] = true
+			// Mapped[...] annotations name datetime and uuid.UUID for these
+			// scalars, including through an alias, so the modules must be imported.
+			if pt, ok := g.resolveAlias(f.Type).(*ast.PrimitiveType); ok {
+				switch pt.Name {
+				case "timestamp":
+					needsMappedDatetime = true
+				case "uuid":
+					needsMappedUUID = true
+				}
+			}
 			typeRefs(f.Type, func(ref string) {
 				if g.namedKind(ref) == "enum" {
 					enumImports.add(pyEnumsModule, pyClassName(ref))
@@ -92,10 +104,10 @@ func (g *Generator) schemaImports(models []*ast.Model) []string {
 	} else if len(cols) > 0 {
 		set["from sqlalchemy import "+strings.Join(cols, ", ")] = true
 	}
-	if needsUUIDDefault {
+	if needsUUIDDefault || needsMappedUUID {
 		set["import uuid"] = true
 	}
-	if needsDateTimeDefault {
+	if needsDateTimeDefault || needsMappedDatetime {
 		set["from datetime import datetime"] = true
 	}
 	if hasOptional {
@@ -124,12 +136,30 @@ func (g *Generator) emitSQLAlchemyModel(b *strings.Builder, m *ast.Model) {
 	fmt.Fprintf(b, "    __tablename__ = %q\n\n", tableName)
 
 	for _, f := range m.Fields {
-		g.emitSQLAlchemyField(b, f)
+		g.emitSQLAlchemyField(b, m, f)
 	}
 }
 
-func (g *Generator) emitSQLAlchemyField(b *strings.Builder, f *ast.Field) {
+// columnTypeFor is sqlAlchemyColumnType with the owning model in scope. An
+// inline enum column must be named: Postgres cannot create or compile an
+// unnamed ENUM. The name follows Node's rule, lowercase(model + Field), so both
+// targets create the same type for the same column.
+func (g *Generator) columnTypeFor(m *ast.Model, f *ast.Field) colType {
 	ct := g.sqlAlchemyColumnType(f.Type)
+	if _, inline := f.Type.(*ast.EnumInline); inline {
+		ct.constructor = strings.TrimSuffix(ct.constructor, ")") +
+			fmt.Sprintf(", name=%q)", inlineEnumTypeName(m, f))
+	}
+	return ct
+}
+
+// inlineEnumTypeName is the Postgres type name for an inline enum model column.
+func inlineEnumTypeName(m *ast.Model, f *ast.Field) string {
+	return strings.ToLower(common.PascalCase(m.Name) + common.PascalCase(f.Name))
+}
+
+func (g *Generator) emitSQLAlchemyField(b *strings.Builder, m *ast.Model, f *ast.Field) {
+	ct := g.columnTypeFor(m, f)
 	pyType := g.sqlAlchemyMappedAnnotation(f.Type, f.Constraints)
 
 	var args []string
@@ -197,6 +227,11 @@ type colType struct {
 }
 
 func (g *Generator) sqlAlchemyColumnType(t ast.TypeExpr) colType {
+	// An alias over a scalar stores as that scalar; the alias only changes the
+	// Python annotation on the read model.
+	if named, ok := t.(*ast.NamedType); ok && g.namedKind(named.Name) == "alias" {
+		t = g.resolveAlias(t)
+	}
 	switch v := t.(type) {
 	case *ast.NamedType:
 		// A declared enum uses the Postgres type name Drizzle's pgEnum uses on
@@ -265,6 +300,9 @@ func (g *Generator) pythonAnnotationForField(t ast.TypeExpr, cs []*ast.Constrain
 // inside src/models/schema.py.
 func (g *Generator) sqlAlchemyMappedAnnotation(t ast.TypeExpr, cs []*ast.Constraint_) string {
 	base := "str"
+	if named, ok := t.(*ast.NamedType); ok && g.namedKind(named.Name) == "alias" {
+		t = g.resolveAlias(t)
+	}
 	switch v := t.(type) {
 	case *ast.NamedType:
 		base = pyClassName(v.Name)
@@ -379,8 +417,11 @@ func (g *Generator) genPydanticPy(models []*ast.Model) codegen.OutputFile {
 	for _, m := range models {
 		for _, f := range m.Fields {
 			typeRefs(f.Type, func(ref string) {
-				if g.namedKind(ref) == "enum" {
+				switch g.namedKind(ref) {
+				case "enum":
 					enumImports.add(pyEnumsModule, pyClassName(ref))
+				case "alias":
+					enumImports.add(pyTypesModule, pyClassName(ref))
 				}
 			})
 		}
