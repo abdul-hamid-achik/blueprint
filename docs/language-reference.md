@@ -1387,8 +1387,7 @@ with these differences:
   serving. A guard in `on_connect` sends the error and closes with `1008`.
 - A path input must be `string`, `int`, or `uuid`. A value that fails the type
   answers `400` before the upgrade, with no body, as on Node.
-- `|> close` closes with code `1000`, and so does Node's `ws.close()` to the
-  client; both sides send an empty reason.
+- `|> close` closes with code `1000` and an empty reason, as on Node.
 - `BP_WS_MAX_BUFFERED_BYTES` (default 1 MiB) has the same meaning. Python counts
   the bytes it has queued for a socket, Node counts `bufferedAmount`, and both
   drop a stalled reader with `1013 slow consumer` once the limit is passed. Direct

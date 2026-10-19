@@ -76,6 +76,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Node: `|> close` in a WS handler sent a close frame with no status code,
+  which clients read as `1005`. It now closes with `1000`, as the Python
+  target and the language reference do.
 - Python: `.count` on a collection read an attribute that does not exist. It
   is now `len(x)`, including inside string interpolation.
 - Python: `map rows: update <same model> { ... }` mutated an undefined name

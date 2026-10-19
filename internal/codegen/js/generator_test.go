@@ -4148,7 +4148,7 @@ WS /ws/chat {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(string(route), "ws.close(); return;"); got != 2 {
+	if got := strings.Count(string(route), "ws.close(1000); return;"); got != 2 {
 		t.Errorf("block and inline |> close must both close the socket (got %d); route:\n%s", got, route)
 	}
 	if strings.Contains(string(route), " close;") {

@@ -1129,8 +1129,10 @@ func camelKeys(raw map[string]bool) map[string]bool {
 
 // emitArrowStmts generates JavaScript for a sequence of arrow statements.
 // wsCloseJS is what `|> close` emits in a WS handler: close this connection
-// and end the handler, since nothing after it can reach the client.
-const wsCloseJS = "ws.close(); return;"
+// and end the handler, since nothing after it can reach the client. The code
+// is explicit: a bare ws.close() sends a close frame with no status, which the
+// client reads as 1005, and the Python target closes with 1000.
+const wsCloseJS = "ws.close(1000); return;"
 
 // isWsClose reports whether e is the `close` built-in inside a WS handler.
 func isWsClose(e ast.Expr, ctx emitCtx) bool {
