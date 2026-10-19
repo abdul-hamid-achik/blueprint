@@ -1,0 +1,46 @@
+blueprint "python-auth" {
+  version "1.0.0"
+  runtime python
+  database postgres
+}
+
+secret DATABASE_URL required
+secret JWT_SECRET required
+secret API_TOKEN required
+secret WEBHOOK_KEY required
+
+model note {
+  id      uuid      primary
+  owner   string    required
+  body    string    required  min(1)  max(500)
+  created timestamp default(now)
+}
+
+@ "Read the caller's identity from the verified JWT"
+GET /api/me {
+  auth jwt using(secret.JWT_SECRET)
+  -> 200 { sub: claims.sub, role: claims.role }
+}
+
+@ "Create a note owned by the JWT subject"
+POST /api/notes {
+  auth jwt using(secret.JWT_SECRET)
+  <- body string required min(1) max(500)
+  |> note = save note { owner: claims.sub, body: body }
+  -> 201 { id: note.id, owner: note.owner }
+}
+
+@ "Fetch a note with a static bearer token"
+GET /api/notes/:id {
+  auth bearer using(secret.API_TOKEN)
+  <- id uuid required
+  |> note = fetch note(id)
+  |> guard note -> 404 "Note not found"
+  -> 200 { id: note.id, body: note.body }
+}
+
+@ "Receive a signed webhook"
+POST /hooks/events {
+  auth webhook_sig using(secret.WEBHOOK_KEY)
+  -> 200 { received: data.type, items: data.items }
+}

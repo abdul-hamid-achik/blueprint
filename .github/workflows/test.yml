@@ -245,12 +245,13 @@ jobs:
         # Python Phase 4 emits a pytest contract suite backed by
         # testcontainers[postgres]; the hosted runner has Docker. hello-world
         # covers a spec without a database (no container), the others a real
-        # Postgres, hyphenated paths, and a NotImplementedError stub (500).
+        # Postgres, hyphenated paths, a NotImplementedError stub (500), and
+        # enforced jwt/bearer/webhook_sig auth with claims and data reads.
         run: |
           rm -rf /tmp/py-hello-gt
           ./bin/bp build examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests
           ./bin/bp diff examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests --no-color --exit-code
-          for src in examples/hello-world.bp examples/todo-api.bp testdata/valid/where_predicates.bp testdata/valid/include_basic.bp testdata/valid/pipe_in_endpoint.bp; do
+          for src in examples/hello-world.bp examples/todo-api.bp testdata/valid/where_predicates.bp testdata/valid/include_basic.bp testdata/valid/pipe_in_endpoint.bp testdata/valid/python_auth.bp; do
             name=$(basename "$src" .bp)
             echo "=== bp test --target python: $src ==="
             ./bin/bp test "$src" --target python --out "/tmp/py-test-$name"
