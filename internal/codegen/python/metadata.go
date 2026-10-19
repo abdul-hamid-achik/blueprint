@@ -208,6 +208,8 @@ func pythonMetaFeature(meta *ast.EndpointMeta) (reason string, handled bool) {
 			return "endpoint `cache` metadata: " + err.Error(), true
 		}
 		return "", true
+	case "auth":
+		return pythonAuthFeature(meta), true
 	case "limit":
 		if _, ok := meta.Value.(*ast.RateLit); !ok {
 			return "endpoint `limit` metadata that is not a rate such as 60/min", true

@@ -196,6 +196,9 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("from fastapi import FastAPI\n")
+	if hasEnforcedAuth(endpoints) {
+		b.WriteString("from src.lib.auth import Unauthorized, unauthorized_handler\n")
+	}
 	for _, r := range resources {
 		fmt.Fprintf(&b, "from src.routes import %s\n", pyModuleName(r))
 	}
@@ -213,6 +216,11 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 		version = "0.1.0"
 	}
 	fmt.Fprintf(&b, "app = FastAPI(title=%q, version=%q)\n\n", bp.Name, version)
+	if hasEnforcedAuth(endpoints) {
+		// Auth failures raise Unauthorized so the body is exactly {"error": ...}
+		// rather than FastAPI's {"detail": ...}.
+		b.WriteString("app.add_exception_handler(Unauthorized, unauthorized_handler)\n")
+	}
 	for _, r := range resources {
 		fmt.Fprintf(&b, "app.include_router(%s.router)\n", pyModuleName(r))
 	}

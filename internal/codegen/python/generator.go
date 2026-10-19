@@ -190,6 +190,9 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	if usesEndpointMeta(endpoints, "limit") {
 		out = append(out, g.genRateLimitPy())
 	}
+	if hasEnforcedAuth(endpoints) {
+		out = append(out, g.genAuthPy())
+	}
 	out = append(out, g.genAppPy(bp, endpoints))
 
 	// Named enum / type / alias declarations live in src/models/ next to the

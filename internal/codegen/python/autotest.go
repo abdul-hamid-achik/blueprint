@@ -42,7 +42,10 @@ func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, models []*ast.Model,
 		emptyInit("tests/__init__.py", g.sourceFile),
 		emptyInit("tests/_harness/__init__.py", g.sourceFile),
 	)
-	files = append(files, g.genConftestPy(models, secrets, hasDB))
+	files = append(files, g.genConftestPy(models, secrets, hasDB, enforcedAuthSecrets(endpoints)))
+	if hasEnforcedAuth(endpoints) {
+		files = append(files, g.genAuthHarnessPy())
+	}
 
 	groups := map[string][]*ast.Endpoint{}
 	var order []string
@@ -76,7 +79,7 @@ func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, models []*ast.Model,
 // values via monkeypatch (a session-scoped fixture) so src/lib/env.py's
 // import-time validation passes without a real .env file. Required secrets
 // the user didn't seed default to "test".
-func (g *Generator) genConftestPy(models []*ast.Model, secrets []*ast.Secret, hasDB bool) codegen.OutputFile {
+func (g *Generator) genConftestPy(models []*ast.Model, secrets []*ast.Secret, hasDB bool, authSecrets map[string]bool) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 
@@ -112,11 +115,18 @@ def _seed_env() -> None:
 `)
 	// Extra secrets the user declared — required ones get default "test".
 	seen := map[string]bool{"DATABASE_URL": true}
+	// Secrets that enforced auth verifies get one fixed test-only value, set
+	// unconditionally so a developer's real exported secret is never used.
+	// Other secrets keep setdefault so a real value is not overwritten.
 	for _, s := range secrets {
 		if seen[s.Name] {
 			continue
 		}
 		seen[s.Name] = true
+		if authSecrets[s.Name] {
+			fmt.Fprintf(&b, "    os.environ[%q] = %q\n", s.Name, authTestSecretValue)
+			continue
+		}
 		fmt.Fprintf(&b, "    os.environ.setdefault(%q, \"test\")\n", s.Name)
 	}
 	b.WriteString("\n\n")
@@ -262,6 +272,9 @@ func (g *Generator) genContractTestFile(resource string, eps []*ast.Endpoint, mo
 	if needSchemaImport {
 		b.WriteString("from src.models import schema\n")
 	}
+	if hasEnforcedAuth(eps) {
+		b.WriteString("from tests._harness.auth import auth_headers\n")
+	}
 	b.WriteString("from fastapi.testclient import TestClient\n")
 	if needSchemaImport {
 		b.WriteString("from sqlalchemy.orm import Session\n")
@@ -316,6 +329,8 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, model
 	_ = pathInputs
 
 	url := buildRequestPathPy(ep.Path, seedParamVar)
+	// The unauthenticated case needs no seed data: auth answers before the handler.
+	bareURL := buildRequestPathPy(ep.Path, nil)
 	if len(queryInputs) > 0 {
 		qs := make([]string, 0, len(queryInputs))
 		for _, inp := range queryInputs {
@@ -345,6 +360,10 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, model
 		}
 		callArgs = append(callArgs, "json={"+strings.Join(kvs, ", ")+"}")
 	}
+	ea, enforced := endpointEnforcedAuthMeta(ep.Meta)
+	if enforced {
+		callArgs = append(callArgs, fmt.Sprintf("headers=auth_headers(%q, %q)", ea.Strategy, ea.Secret))
+	}
 	fmt.Fprintf(b, "%sres = client.%s(%s)\n", indent, strings.ToLower(method), strings.Join(callArgs, ", "))
 
 	// Status containment.
@@ -361,8 +380,82 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, model
 	}
 
 	b.WriteString("\n\n")
+	if enforced {
+		emitUnauthenticatedTestPy(b, ep, bareURL)
+	}
 	return seeded
 }
+
+// emitUnauthenticatedTestPy writes the negative case for an endpoint with
+// enforced auth: the same request without credentials must be rejected with 401.
+func emitUnauthenticatedTestPy(b *strings.Builder, ep *ast.Endpoint, url string) {
+	fmt.Fprintf(b, "def %s_rejects_without_credentials(client: TestClient) -> None:\n", contractTestName(ep))
+	fmt.Fprintf(b, "    res = client.%s(%s)\n", strings.ToLower(ep.Method), url)
+	b.WriteString("    assert res.status_code == 401\n\n\n")
+}
+
+// authTestSecretValue is the fixed value the generated suite gives every secret
+// that enforced auth verifies. It is test-only and never a real credential.
+const authTestSecretValue = "bp-test-secret"
+
+// enforcedAuthSecrets returns the secret NAMEs that enforced auth declarations
+// verify across the endpoints.
+func enforcedAuthSecrets(endpoints []*ast.Endpoint) map[string]bool {
+	out := map[string]bool{}
+	for _, ep := range endpoints {
+		if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+			out[ea.Secret] = true
+		}
+	}
+	return out
+}
+
+// genAuthHarnessPy emits tests/_harness/auth.py: the credential builder used by
+// contract tests of endpoints that enforce auth. Secret values come from
+// src.lib.env, so the tests send exactly what the app verifies.
+func (g *Generator) genAuthHarnessPy() codegen.OutputFile {
+	return codegen.OutputFile{Path: "tests/_harness/auth.py", Content: []byte(fileHeader(g.sourceFile) + authHarnessPySource)}
+}
+
+const authHarnessPySource = `"""Credentials for the generated contract tests of endpoints that enforce auth."""
+
+import base64
+import hashlib
+import hmac
+import json
+
+
+def secret_value(name: str) -> str:
+    # Imported lazily: src.lib.env validates required secrets on import, and the
+    # conftest seeds them first.
+    from src.lib.env import env
+
+    return getattr(env, name) or ""
+
+
+def sign_test_jwt(secret: str, claims: dict | None = None) -> str:
+    """Return a compact HS256 token signed with secret."""
+
+    def encode(value: object) -> str:
+        raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    signing_input = encode({"alg": "HS256", "typ": "JWT"}) + "." + encode(claims or {"sub": "test"})
+    digest = hmac.new(secret.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest()
+    return signing_input + "." + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def auth_headers(strategy: str, name: str) -> dict[str, str]:
+    """Return request headers that satisfy an endpoint's enforced auth."""
+    secret = secret_value(name)
+    if strategy == "bearer":
+        return {"Authorization": "Bearer " + secret}
+    if strategy == "jwt":
+        return {"Authorization": "Bearer " + sign_test_jwt(secret)}
+    if strategy == "api_key":
+        return {"X-API-Key": secret}
+    return {"Authorization": "Basic " + base64.b64encode(secret.encode("utf-8")).decode("ascii")}
+`
 
 // contractTestName builds a pytest-style function name from the endpoint.
 //

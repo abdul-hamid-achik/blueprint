@@ -152,7 +152,7 @@ GET /api/x {
   -> 200 "ok"
 }
 `,
-			want: `endpoint metadata "auth"`,
+			want: "endpoint `auth jwt` without `using(secret.NAME)`",
 		},
 		"sub-second cache": {
 			src: `blueprint "x" { version "1.0" port 3000 runtime node }

@@ -55,6 +55,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsLiteral := false
 	needsCache := false
 	needsRateLimit := false
+	needsAuth := false
 	needsRequest := false
 	namedImports := newImportSet()
 	userFnCalls := map[string]bool{}
@@ -73,6 +74,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 		if _, _, ok := endpointRateLimit(ep); ok {
 			needsRateLimit = true
 			needsRequest = true
+		}
+		if _, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+			needsAuth = true
 		}
 		if endpointHasPaginatedQuery(ep) {
 			needsPaginate = true
@@ -168,7 +172,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	if needsRequest {
 		fastapiImports = append(fastapiImports, "Request")
 	}
-	if needsDB || needsGuard {
+	if needsDB || needsGuard || needsAuth {
 		fastapiImports = append(fastapiImports, "Depends")
 	}
 	if needsGuard {
@@ -230,6 +234,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	if needsRateLimit {
 		b.WriteString("from src.lib import rate_limit\n")
 	}
+	if needsAuth {
+		b.WriteString("from src.lib.auth import require_auth as _bp_require_auth\n")
+	}
 	if needsFormats {
 		b.WriteString("from src.lib import formats\n")
 	}
@@ -244,7 +251,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	}
 	// `use <middleware>` requires Depends + the middleware module import.
 	if len(middlewares) > 0 {
-		if !needsDB && !needsGuard {
+		if !needsDB && !needsGuard && !needsAuth {
 			// fastapi import line didn't include Depends yet; add a separate line.
 			b.WriteString("from fastapi import Depends\n")
 		}
@@ -433,15 +440,27 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 	}
 	fnName := handlerName(ep.Method, ep.Path)
 
+	// Route-level dependencies run before the endpoint's parameters, so an
+	// enforced auth check answers 401 before body validation (422) and before
+	// `use` middleware. Declared 401 responses document that in OpenAPI.
+	var decoArgs []string
 	if tags := endpointTags(ep); len(tags) > 0 {
 		quoted := make([]string, len(tags))
 		for i, tag := range tags {
 			quoted[i] = fmt.Sprintf("%q", tag)
 		}
-		fmt.Fprintf(b, "@router.%s(%q, tags=[%s])\n", method, fastapiPath, strings.Join(quoted, ", "))
-	} else {
-		fmt.Fprintf(b, "@router.%s(%q)\n", method, fastapiPath)
+		decoArgs = append(decoArgs, fmt.Sprintf("tags=[%s]", strings.Join(quoted, ", ")))
 	}
+	if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+		decoArgs = append(decoArgs,
+			fmt.Sprintf("dependencies=[%s]", requireAuthDependency(ea, g.blueprintNameForAuth())),
+			`responses={401: {"description": "Unauthorized"}}`)
+	}
+	suffix := ""
+	if len(decoArgs) > 0 {
+		suffix = ", " + strings.Join(decoArgs, ", ")
+	}
+	fmt.Fprintf(b, "@router.%s(%q%s)\n", method, fastapiPath, suffix)
 	// `limit` runs first in the handler, after FastAPI has validated inputs,
 	// so a 429 answers only requests that would otherwise be handled. The
 	// request object is the first parameter because every later parameter has
