@@ -1,0 +1,33 @@
+blueprint "python-schedule" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model job {
+  id      uuid      primary
+  name    string    required
+  status  string    default(queued)
+  created timestamp default(now)
+}
+
+@ "Count jobs in a given status"
+GET /api/jobs {
+  <- wanted string default("queued")
+  |> jobs = query job where(status == wanted)
+  -> 200 { status: wanted, count: jobs.count }
+}
+
+@ "Expire stale queued jobs and delete finished ones every minute"
+schedule sweep_jobs {
+  cron "* * * * *"
+
+  |> stale = query job where(status == "queued", created < 1.minutes.ago)
+  |> map stale: update job { status: "expired" }
+  |> finished = query job where(status == "done")
+  |> delete finished
+  |> log "Expired {stale.count} stale jobs, deleted {finished.count} finished jobs"
+}

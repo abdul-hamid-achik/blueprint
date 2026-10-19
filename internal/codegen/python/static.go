@@ -30,7 +30,7 @@ func emptyInit(path, source string) codegen.OutputFile {
 // genPyProjectTOML emits pyproject.toml for uv. SQLAlchemy + psycopg + alembic
 // are added when the spec declares a database; otherwise the lighter Phase 1
 // dep set is used so projects without a DB don't pull in unused libraries.
-func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStream, hasStorage bool) codegen.OutputFile {
+func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStream, hasStorage, hasSchedule bool) codegen.OutputFile {
 	name := bp.Name
 	version := blueprintEntry(bp, "version")
 	if version == "" {
@@ -49,6 +49,10 @@ func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStre
 			`"psycopg[binary]>=3.2"`,
 			`"alembic>=1.14"`,
 		)
+	}
+	if hasSchedule {
+		// In-process cron for `schedule` declarations; src/lib/scheduler.py.
+		deps = append(deps, `"apscheduler>=3.10,<4"`)
 	}
 	if hasCache || hasStream {
 		// Redis client. src/lib/cache.py uses the sync interface; STREAM fan-out
@@ -210,16 +214,23 @@ func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache, hasStorage 
 
 // genAppPy emits the FastAPI app entry. Each route module is imported and
 // included via include_router. Endpoint resources are listed deterministically.
-func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codegen.OutputFile {
+func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint, hasSchedules bool) codegen.OutputFile {
 	resources := orderedResources(endpoints)
 	streamResources := g.orderedStreamResources()
 	wsResources := g.orderedWsResources()
 
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
+	if hasSchedules {
+		b.WriteString("import asyncio\n")
+		b.WriteString("from contextlib import asynccontextmanager\n")
+	}
 	b.WriteString("from fastapi import FastAPI, Request\n")
 	b.WriteString("from fastapi.responses import JSONResponse\n")
 	b.WriteString("from starlette.exceptions import HTTPException as StarletteHTTPException\n")
+	if hasSchedules {
+		b.WriteString("from src.lib import scheduler\n")
+	}
 	guarded := g.withRealtimeEndpoints(endpoints)
 	if hasEnforcedAuth(guarded) {
 		b.WriteString("from src.lib.auth import Unauthorized, unauthorized_handler\n")
@@ -246,7 +257,20 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 	if version == "" {
 		version = "0.1.0"
 	}
-	fmt.Fprintf(&b, "app = FastAPI(title=%q, version=%q)\n\n", bp.Name, version)
+	lifespanArg := ""
+	if hasSchedules {
+		// The scheduler runs for the life of the app: started before the first
+		// request, stopped after the last (waiting for a run in progress).
+		b.WriteString("\n@asynccontextmanager\n")
+		b.WriteString("async def lifespan(app: FastAPI):\n")
+		b.WriteString("    scheduler.start()\n")
+		b.WriteString("    try:\n")
+		b.WriteString("        yield\n")
+		b.WriteString("    finally:\n")
+		b.WriteString("        await asyncio.to_thread(scheduler.stop)\n\n\n")
+		lifespanArg = ", lifespan=lifespan"
+	}
+	fmt.Fprintf(&b, "app = FastAPI(title=%q, version=%q%s)\n\n", bp.Name, version, lifespanArg)
 	// Guards raise HTTPException. Answer {"error": ...} as Node does instead of
 	// FastAPI's {"detail": ...}; registering on Starlette's class also covers
 	// the framework's own 404 and 405.

@@ -147,6 +147,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	var fns []*ast.Fn
 	var pipes []*ast.Pipe
 	var mws []*ast.Middleware
+	var schedules []*ast.Schedule
 	for _, b := range g.file.Blocks {
 		switch n := b.(type) {
 		case *ast.Endpoint:
@@ -165,6 +166,8 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 			pipes = append(pipes, n)
 		case *ast.Middleware:
 			mws = append(mws, n)
+		case *ast.Schedule:
+			schedules = append(schedules, n)
 		}
 	}
 	// Models imply the PostgreSQL data layer even when the optional blueprint
@@ -175,7 +178,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	hasStorage := blueprintEntry(bp, "storage") != ""
 
 	var out []codegen.OutputFile
-	out = append(out, g.genPyProjectTOML(bp, hasDB, hasCache, len(streams) > 0 || len(wss) > 0, hasStorage))
+	out = append(out, g.genPyProjectTOML(bp, hasDB, hasCache, len(streams) > 0 || len(wss) > 0, hasStorage, len(schedules) > 0))
 	out = append(out, g.genReadme(bp, hasDB))
 	out = append(out, emptyInit("src/__init__.py", g.sourceFile))
 	out = append(out, emptyInit("src/lib/__init__.py", g.sourceFile))
@@ -206,7 +209,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	if usesRealtime(wss) {
 		out = append(out, g.genRealtimePy())
 	}
-	out = append(out, g.genAppPy(bp, endpoints))
+	out = append(out, g.genAppPy(bp, endpoints, len(schedules) > 0))
 
 	// Named enum / type / alias declarations live in src/models/ next to the
 	// SQLAlchemy and Pydantic modules, so the package is needed even without
@@ -255,6 +258,16 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 	if len(mws) > 0 {
 		out = append(out, g.genMiddlewares(mws)...)
+	}
+	// Phase 5b: schedule declarations. Each body becomes src/schedules/<name>.py;
+	// src/lib/scheduler.py registers them on APScheduler and the app lifespan
+	// starts and stops it.
+	if len(schedules) > 0 {
+		out = append(out, emptyInit("src/schedules/__init__.py", g.sourceFile))
+		out = append(out, g.genSchedulerPy(schedules))
+		for _, s := range schedules {
+			out = append(out, g.genSchedulePy(s))
+		}
 	}
 
 	groups := map[string][]*ast.Endpoint{}
@@ -425,7 +438,9 @@ func (g *Generator) unsupportedFeatures() []string {
 		case *ast.Worker:
 			add("`worker` declarations")
 		case *ast.Schedule:
-			add("`schedule` declarations")
+			for _, reason := range g.scheduleFeatures(n) {
+				add(reason)
+			}
 		case *ast.Subscribe:
 			add("`subscribe` declarations")
 		case *ast.External:

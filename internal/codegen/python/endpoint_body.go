@@ -921,9 +921,9 @@ func emitMap(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx, i
 		mutateTarget := target
 		if alias, has := innerCtx.fkAliases["item."+target]; has {
 			mutateTarget = alias
-		} else if _, isModel := ctx.varModel[target]; !isModel {
-			// `target` may be a model name without an FK; fall back to
-			// the alias lookup (already handled above for FK case).
+		} else if itemModel, ok := innerCtx.varModel["item"]; ok && itemModel == target {
+			// `map rows: update <same model> { ... }` mutates the loop element itself.
+			mutateTarget = "item"
 		}
 
 		if len(bodyFn.Args) >= 2 {
@@ -1346,6 +1346,10 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 		if ctx != nil && ctx.webhookData && isFieldChainRootedAt(v, "data") {
 			return dictFieldChainPy("data", v)
 		}
+		// `.count` on a collection binding is its length (Node reads .length).
+		if base, ok := v.Base.(*ast.Ident); ok && v.Field == "count" && ctx != nil && ctx.cardinality[base.Name] == resolve.CollectionCard {
+			return "len(" + base.Name + ")"
+		}
 		// N.days.ago → datetime.now(timezone.utc) - timedelta(days=N)
 		// Handles the "ago" suffix on N.duration_unit patterns.
 		if v.Field == "ago" {
@@ -1484,6 +1488,12 @@ func pyStringLiteralWithCtx(s string, ctx *bodyCtx) string {
 	out := s
 	if ctx.inRecover {
 		out = strings.ReplaceAll(out, "{error.message}", "{str(error)}")
+	}
+	// `{rows.count}` interpolates the length of a collection binding.
+	for name, card := range ctx.cardinality {
+		if card == resolve.CollectionCard {
+			out = strings.ReplaceAll(out, "{"+name+".count}", "{len("+name+")}")
+		}
 	}
 	if len(ctx.fkAliases) == 0 {
 		return pyStringLiteral(out)
