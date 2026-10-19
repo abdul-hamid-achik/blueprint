@@ -240,8 +240,9 @@ to overwrite it unless explicitly forced.
 Generated code is a starting point, not an infrastructure security boundary.
 Review these behaviors before scaling beyond one process:
 
-- On Node, `auth bearer`, `jwt` (HS256), `api_key`, and `basic` with
-  `using(secret.NAME)` compare the request against one shared secret. They do
+- On Node, and on Python REST endpoints, `auth bearer`, `jwt` (HS256),
+  `api_key`, and `basic` with `using(secret.NAME)` compare the request against
+  one shared secret. They do
   not look up users, rotate keys, or check JWT issuer or audience. Bare metadata
   such as `auth session` (no `using`) verifies nothing. Generated webhook HMAC
   verification is also implemented. STREAM and WS endpoints accept the

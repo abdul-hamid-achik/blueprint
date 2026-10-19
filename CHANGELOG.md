@@ -51,6 +51,14 @@ All notable changes to this project will be documented in this file.
   target other than `connection(id)` (use `broadcast` for rooms), a `whisper`
   with no data block, and a WS path parameter, binding, or `inject` alias named
   `connection`. `connection` and `whisper` outside WS handlers are C035.
+- Python target: endpoint `auth bearer`, `auth jwt` (HS256), `auth api_key`,
+  and `auth basic` with `using(secret.NAME)` are enforced on REST endpoints by
+  `src/lib/auth.py`, a FastAPI route dependency that runs before `use`
+  middleware and input validation. Failures answer 401
+  `{"error":"Unauthorized"}` with the same challenges as Node. Credentials are
+  read from headers only. A body that is not JSON at all still gets 422 first,
+  because FastAPI parses it before dependencies run. OpenAPI documents the 401,
+  and `--gen-tests` suites send credentials and add a 401 case.
 
 ### Changed
 
@@ -64,6 +72,9 @@ All notable changes to this project will be documented in this file.
 - Lint `unenforceable-ws-auth` now warns only about WS `auth` lines with no
   `using(secret.NAME)`. `examples/realtime-chat.bp` uses
   `auth jwt using(secret.JWT_SECRET)` on its WS endpoint.
+- Python target: `auth webhook_sig` and `auth` lines without `using(...)`
+  still fail the build, now with a message that names the supported
+  `using(secret.NAME)` form, in place of the generic `endpoint metadata "auth"`.
 
 ### Fixed
 
