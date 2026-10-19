@@ -399,10 +399,14 @@ Prep work (must precede the Python generator):
     `1013 slow consumer`. Verified against Node with one client script, a
     two-instance Redis run, and a slow-consumer run. Unsupported forms fail closed.
     _(shipped 2026-10-19)_
-  - [ ] Phase 5b (WS follow-ups): `use` middleware on WS endpoints, `auth
-    webhook_sig` on WS, `try/recover` inside WS handlers, inline `when`, and
-    `header`/`env` reads in WS handlers; a pytest case for the WS refusal (the
-    generated suite skips WS endpoints today).
+  - [x] Phase 5b (`use` on realtime): `use` middleware on STREAM (before the
+    stream opens) and WS (in the handshake, after `auth`) with the REST subset;
+    event payload, frame, and WS room keys camel-cased as on Node; guard
+    failures answer `{"error": ...}` on every Python route. _(shipped 2026-10-19)_
+  - [ ] Phase 5b (WS follow-ups): `auth webhook_sig` on WS, `try/recover` inside
+    WS handlers, inline `when`, and `header`/`env` reads in WS handlers; a
+    pytest case for the WS refusal (the generated suite skips WS endpoints
+    today).
   - [ ] Phase 5b (remaining): the rest of the `pipe` body surface,
     `worker` + `schedule` via APScheduler, `storage s3` → boto3, and
     `payload.X` → `payload["X"]` for fn returns typed `json`.
