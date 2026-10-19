@@ -22,6 +22,21 @@ All notable changes to this project will be documented in this file.
   `{"error": "Invalid signature"}` and 400 `{"error": "Invalid payload"}`
   bodies as Node. The parsed body is bound to `data`. Bare `auth webhook_sig`
   still fails the build.
+- Python target: `STREAM` (Server-Sent Events) endpoints. Event frames and
+  headers match Node's, including `where` filters, `on timeout` frames,
+  `?token=` and `?api_key=` auth on STREAM, `claims`, `limit`, and pre-stream
+  guards that answer `{"error": ...}` before the stream opens. The pre-stream
+  statements use a short-lived database session, not one held for the life
+  of the stream. Backpressure honors `BP_SSE_MAX_PENDING` with Node's grace
+  period, hard cap, and slow-consumer warning. Invalid inputs answer `422`,
+  as on Python REST. STREAM bodies with `use` middleware or other
+  untranslated forms still fail the build, and generated contract tests skip
+  STREAM endpoints.
+- Python target: the `emit` step in REST handlers delivers to STREAM
+  listeners in the same process. When `REDIS_URL` is set, it also publishes on
+  `bp:stream:<event>` for other instances, and no listener receives an event
+  twice. Payload keys stay as written in the `.bp`, so Node and Python
+  instances do not share events through Redis.
 - Python target: `min` and `max` on model fields become pydantic `Field`
   bounds in `src/models/pydantic.py`. They bound the length of `string`,
   `text`, lists, and maps, and the value of `int`, `float`, and `money`. Node

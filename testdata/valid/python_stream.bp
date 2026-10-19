@@ -1,0 +1,42 @@
+blueprint "python-stream" {
+  version  "1.0.0"
+  runtime  python
+  database postgres
+}
+
+secret DATABASE_URL required
+
+secret JWT_SECRET required
+
+model room {
+  id      uuid      primary
+  name    string    required
+  created timestamp default(now)
+}
+
+@ "Post a message to a room"
+POST /api/rooms/:id/messages {
+  <- id   uuid    required
+  <- body string  required
+  |> emit new_message { room_id: id, body: body }
+  -> 200 { ok: true }
+}
+
+@ "Stream messages for one room"
+STREAM /api/rooms/:id/live {
+  tags ["rooms", "streaming"]
+  auth jwt using(secret.JWT_SECRET)
+
+  <- id uuid required
+  |> room = fetch room(id)
+  |> guard room -> 404 "Room not found"
+
+  stream {
+    |> on event(new_message) where(room_id == id) {
+      -> { body: event.body }
+    }
+    |> on timeout(2s) {
+      -> { type: "ping" }
+    }
+  }
+}
