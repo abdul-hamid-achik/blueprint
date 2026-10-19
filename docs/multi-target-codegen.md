@@ -207,7 +207,7 @@ camelCase `fkAccessInfo` via `toFKAccessInfo`). Keep the IR naming-neutral.
 Anything genuinely target-specific (JS `await` sets, Python sync-vs-async route
 selection) stays in the target package.
 
-## Target parity for 0.16 through 0.19 features
+## Target parity for 0.16 through 0.20 features
 
 Checked against the Node and Python output for the same `.bp` source. Node is
 the reference; each Python row is a translation, not a copy of the Node
@@ -221,6 +221,7 @@ behavior.
 | `min`/`max` on model fields | Not carried into model Zod schemas or tables (endpoint inputs, `type` fields, and aliases are enforced) | pydantic `Field(min_length/max_length/ge/le)` in `src/models/pydantic.py`; a violation raises `ValidationError` when the model is built |
 | `use` middleware variables on STREAM/WS | Typed like REST (`c.get('auth')` has the injected row type) | Not supported: STREAM and WS `use` fail closed |
 | STREAM endpoints (SSE) | `streamSSE`: `event:`/`data:` frames for each `on event` and `on timeout`, `text/event-stream`, pre-stream guards answer `{"error"}` before the stream opens | Same frames and headers from `src/lib/events.py`; `StreamingResponse`, no keepalive comments; pre-stream guards answer `{"error"}`; input errors answer `422` |
+| `claims` on `auth jwt` endpoints | Verified token payload in REST, STREAM, and WS handlers; `claims.org.id` reads nested keys as written; a missing key is `undefined` | `claims: dict[str, Any]` dependency (first REST handler parameter); `claims.<field>` renders as `claims.get("<field>")`; a missing key is `None` |
 | `auth` on STREAM | `?token=` (bearer, jwt) and `?api_key=` (api_key) as a fallback to the header; basic is header-only | Same fallback, opt-in on STREAM only (`require_auth(..., allow_query=True)`); REST is header-only |
 | STREAM event fan-out | Redis `bp:stream:<event>` channels when `REDIS_URL` is set | Same channel names and delivery rule (no double delivery); `redis.asyncio` subscriber per instance; payload keys keep their `.bp` spelling, so a Node and a Python instance on one Redis would see mismatched keys; run one runtime per deployment |
 | STREAM backpressure | `BP_SSE_MAX_PENDING` (default 256) messages per client, 5s grace, hard cap at 16x, one `slow consumer` warning | Same knobs and log text; the queue counts messages, as Node's does; neither counts socket bytes |
