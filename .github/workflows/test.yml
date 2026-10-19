@@ -157,7 +157,7 @@ jobs:
         # idempotency. Canonical examples with semantics the target cannot yet
         # preserve must fail before any partial project is presented as valid.
         run: |
-          for pair in "examples/hello-world.bp /tmp/py-hello-all" "examples/todo-api.bp /tmp/py-todo"; do
+          for pair in "examples/hello-world.bp /tmp/py-hello-all" "examples/todo-api.bp /tmp/py-todo" "examples/realtime-chat.bp /tmp/py-chat"; do
             src="${pair% *}"; dir="${pair#* }"
             echo "=== --target python: $src -> $dir ==="
             rm -rf "$dir"
@@ -190,11 +190,6 @@ jobs:
             exit 1
           fi
           echo "$output" | grep -q 'dictionary-backed input "payment"'
-          if output=$(./bin/bp build examples/realtime-chat.bp --out /tmp/py-chat --target python 2>&1); then
-            echo "realtime-chat unexpectedly built despite unsupported WS semantics"
-            exit 1
-          fi
-          echo "$output" | grep -q '`WS` endpoints'
           echo "Supported Python examples build + parse + idempotent; unsupported semantics fail closed"
 
       - name: Build and run the Effect health scaffold
@@ -251,7 +246,7 @@ jobs:
           rm -rf /tmp/py-hello-gt
           ./bin/bp build examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests
           ./bin/bp diff examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests --no-color --exit-code
-          for src in examples/hello-world.bp examples/todo-api.bp testdata/valid/where_predicates.bp testdata/valid/include_basic.bp testdata/valid/pipe_in_endpoint.bp testdata/valid/python_auth.bp testdata/valid/python_stream.bp; do
+          for src in examples/hello-world.bp examples/todo-api.bp examples/realtime-chat.bp testdata/valid/where_predicates.bp testdata/valid/include_basic.bp testdata/valid/pipe_in_endpoint.bp testdata/valid/python_auth.bp testdata/valid/python_stream.bp; do
             name=$(basename "$src" .bp)
             echo "=== bp test --target python: $src ==="
             ./bin/bp test "$src" --target python --out "/tmp/py-test-$name"
