@@ -289,9 +289,12 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			// WS built-in: join room(id) — add this connection to a room.
 			// Subscribes to a Redis pub/sub channel when the first local
 			// member joins, so broadcasts from other instances are forwarded.
+			// The pending subscription is kept in _roomSubs so a broadcast
+			// right after the join waits for it instead of publishing to a
+			// channel this instance does not receive yet.
 			if len(v.Args) >= 1 {
 				arg := resolveWsRoomArg(v.Args[0], ctx)
-				return fmt.Sprintf("(async () => { const _set = (_rooms.get(%s) ?? _rooms.set(%s, new Set()).get(%s))!; const _first = _set.size === 0; _set.add(ws); if (_first) { await _ensureRedis(); if (_redisSub?.isOpen) { _redisSub.subscribe(`room:${%s}`, (_msg: string) => _fanOut(%s, _msg)); } } })()", arg, arg, arg, arg, arg)
+				return fmt.Sprintf("(async () => { const _set = (_rooms.get(%s) ?? _rooms.set(%s, new Set()).get(%s))!; const _first = _set.size === 0; _set.add(ws); if (_first) { await _ensureRedis(); if (_redisSub?.isOpen) { _roomSubs.set(%s, _redisSub.subscribe(`room:${%s}`, (_msg: string) => _fanOut(%s, _msg)).catch((e: any) => { console.error('Redis room subscribe failed:', e); })); } } })()", arg, arg, arg, arg, arg, arg)
 			}
 			return "/* join room: missing argument */"
 		case "leave":
@@ -300,7 +303,7 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			// member leaves.
 			if len(v.Args) >= 1 {
 				arg := resolveWsRoomArg(v.Args[0], ctx)
-				return fmt.Sprintf("(async () => { _rooms.get(%s)?.delete(ws); if (_rooms.get(%s)?.size === 0) { _rooms.delete(%s); if (_redisSub?.isOpen) { _redisSub.unsubscribe(`room:${%s}`); } } })()", arg, arg, arg, arg)
+				return fmt.Sprintf("(async () => { _rooms.get(%s)?.delete(ws); if (_rooms.get(%s)?.size === 0) { _rooms.delete(%s); _roomSubs.delete(%s); if (_redisSub?.isOpen) { _redisSub.unsubscribe(`room:${%s}`); } } })()", arg, arg, arg, arg, arg)
 			}
 			return "/* leave room: missing argument */"
 		case "broadcast":
@@ -312,11 +315,11 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 			if len(v.Args) >= 2 {
 				arg := resolveWsRoomArg(v.Args[0], ctx)
 				data := exprToJSWithCtx(v.Args[1], ctx)
-				return fmt.Sprintf("(async () => { await _ensureRedis(); const _d = JSON.stringify(%s); if (_redisPub?.isOpen) { _redisPub.publish(`room:${%s}`, _d); } else { _fanOut(%s, _d); } })()", data, arg, arg)
+				return fmt.Sprintf("(async () => { await _ensureRedis(); await _roomSubs.get(%s); const _d = JSON.stringify(%s); if (_redisPub?.isOpen) { _redisPub.publish(`room:${%s}`, _d); } else { _fanOut(%s, _d); } })()", arg, data, arg, arg)
 			}
 			if len(v.Args) >= 1 {
 				arg := resolveWsRoomArg(v.Args[0], ctx)
-				return fmt.Sprintf("(async () => { await _ensureRedis(); if (_redisPub?.isOpen) { _redisPub.publish(`room:${%s}`, '{}'); } else { _fanOut(%s, '{}'); } })()", arg, arg)
+				return fmt.Sprintf("(async () => { await _ensureRedis(); await _roomSubs.get(%s); if (_redisPub?.isOpen) { _redisPub.publish(`room:${%s}`, '{}'); } else { _fanOut(%s, '{}'); } })()", arg, arg, arg)
 			}
 			return "/* broadcast: missing arguments */"
 		case "whisper":

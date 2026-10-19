@@ -2127,7 +2127,7 @@ WS /ws/rooms/:id {
 		t.Fatalf("expected an onClose handler, got:\n%s", routeStr)
 	}
 	onCloseBody := routeStr[onCloseIdx:]
-	if !strings.Contains(onCloseBody, "for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) { _rooms.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }") {
+	if !strings.Contains(onCloseBody, "for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) { _rooms.delete(k); _roomSubs.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }") {
 		t.Errorf("onClose should auto-evict the socket from every room, got:\n%s", onCloseBody)
 	}
 	// Eviction must run before the try block wrapping the user's own on_disconnect statements.

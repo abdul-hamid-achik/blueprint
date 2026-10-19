@@ -71,6 +71,12 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Node: with `REDIS_URL` set, a WS `broadcast` right after the first `join`
+  of a room on an instance could publish before that instance's Redis
+  subscription was active. Local members, including the client that just
+  joined, then missed it: in a check, the joiner received its own `joined`
+  in 4 of 20 cases. Broadcasts now wait for the room's pending subscription,
+  and the same check delivers 20 of 20.
 - The generated Python pytest suite (`bp test --target python`, `--gen-tests`)
   now runs. The Postgres container uses the psycopg 3 driver the project
   installs (it asked for psycopg2 before), the dev dependency names the

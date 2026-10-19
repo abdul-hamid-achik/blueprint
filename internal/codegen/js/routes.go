@@ -1234,6 +1234,8 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	// plus Redis pub/sub for multi-instance broadcast.
 	b.WriteString("  // Room management for join/leave/broadcast (multi-instance via Redis pub/sub)\n")
 	b.WriteString("  const _rooms = new Map<string, Set<any>>();\n")
+	b.WriteString("  // Pending or settled Redis subscription per room this instance has members in.\n")
+	b.WriteString("  const _roomSubs = new Map<string, Promise<unknown>>();\n")
 	b.WriteString("  let _redisSub: any = null;\n")
 	b.WriteString("  let _redisPub: any = null;\n")
 	b.WriteString("  let _redisInit: Promise<void> | null = null;\n")
@@ -1258,7 +1260,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	// through _fanOut, which applies the slow-consumer limit to each socket.
 	b.WriteString("  // Remove a socket from every room; used on disconnect and when it is a slow consumer.\n")
 	b.WriteString("  function _evictSocket(_w: any) {\n")
-	b.WriteString("    for (const [k, s] of _rooms) { s.delete(_w); if (s.size === 0) { _rooms.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }\n")
+	b.WriteString("    for (const [k, s] of _rooms) { s.delete(_w); if (s.size === 0) { _rooms.delete(k); _roomSubs.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }\n")
 	if usesWhisper {
 		b.WriteString("    unregisterWsSocket(_w);\n")
 	}
@@ -1518,7 +1520,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		if usesWhisper {
 			b.WriteString("      unregisterWsSocket(ws);\n")
 		}
-		b.WriteString("      for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) { _rooms.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }\n")
+		b.WriteString("      for (const [k, s] of _rooms) { s.delete(ws); if (s.size === 0) { _rooms.delete(k); _roomSubs.delete(k); if (_redisSub?.isOpen) _redisSub.unsubscribe(`room:${k}`); } }\n")
 		b.WriteString("      try {\n")
 		if len(ep.OnDisconnect) > 0 {
 			onDisconnectCtx := baseCtx
