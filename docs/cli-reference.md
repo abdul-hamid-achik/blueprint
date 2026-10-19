@@ -365,9 +365,11 @@ Blueprint `test`, `test_group`, and `fixture` declarations are not translated,
 the Python generator rejects a source file containing them instead of silently
 dropping the tests.
 
-If the generated project has no test files to run (for example, a spec with
-only `STREAM` or `WS` endpoints), `bp test` prints a `No tests generated`
-message and exits 0 without running the test runner.
+If the generated project has no test files to run (for example, a spec whose
+only `STREAM` or `WS` endpoints have no auth, typed path input, or header guard
+to refuse), `bp test` prints a `No tests generated` message and exits 0 without
+running the test runner. A `STREAM` or `WS` endpoint with one of those gets
+refusal tests; see [testing-guide.md](testing-guide.md#stream-and-ws-refusal-tests).
 
 **Flags:**
 

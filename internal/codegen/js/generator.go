@@ -981,7 +981,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// tests; the long-standing --gen-tests mode remains contract-only.
 	// STREAM and WS endpoints contribute refusal tests only (see autotest.go).
 	var realtime []realtimeTestEndpoint
-	if g.genTests {
+	if g.genTests || g.propertyTests {
 		realtime = g.realtimeRefusalViews(streams, ws)
 	}
 	if (g.genTests || g.propertyTests) && (len(endpoints) > 0 || len(realtime) > 0) {

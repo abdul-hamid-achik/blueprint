@@ -29,7 +29,7 @@
 
 - `--out <dir>`: output directory (default `./generated`).
 - `--target`: `node` (default), `python`, or `effect`. `test` and `migrate` accept only node and python; `deploy` uses its own `docker|fly`.
-- `--gen-tests`: contract suite (node, python). `bp test` enables it.
+- `--gen-tests`: contract suite (node, python): REST contracts, plus refusal tests for STREAM and WS endpoints (auth, malformed declared path inputs, `use` header guards). `bp test` enables it.
 - `--gen-property-tests`: Node only. Implies `--gen-tests`.
 - `--no-color` or `NO_COLOR=1`: plain output.
 

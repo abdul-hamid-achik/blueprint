@@ -1577,7 +1577,8 @@ func cmdTestWithPropertyTests(filename, outDir, target string, force, propertyTe
 	}
 	copyProjectEnv(filename, outDir)
 
-	// A spec with only STREAM/WS endpoints (or none) generates no test files.
+	// A spec with no REST endpoints and no STREAM/WS refusal to test (or no
+	// endpoints at all) generates no test files.
 	// vitest and pytest both fail on an empty suite, which would report a
 	// false failure, so report the skip and exit 0 instead.
 	if !hasGeneratedTests(outDir, target) {
