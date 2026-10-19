@@ -18,7 +18,7 @@ POST /hooks/stripe {
 }
 POST /hooks/echo {
   auth webhook_sig using(secret.WEBHOOK_KEY)
-  -> 200 { kind: data.type }
+  -> 200 { kind: data.type, items: data.items, customer: data.customer.id }
 }
 `
 
@@ -33,8 +33,7 @@ func TestPython_WebhookSigEmitsVerifierAndDataParam(t *testing.T) {
 		"if not secret:\n            raise InvalidWebhook(401, \"Invalid signature\")",
 		`request.headers.get("X-Webhook-Signature", "")`,
 		`HEX_RE = re.compile(r"(?:[0-9a-fA-F]{2})*")`,
-		"object_hook=WebhookPayload",
-		"def __getattr__(self, name: str) -> Any:",
+		`json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)`,
 		`raise InvalidWebhook(400, "Invalid payload")`,
 		`return JSONResponse({"error": exc.message}, status_code=exc.status_code)`,
 	} {
@@ -47,7 +46,9 @@ func TestPython_WebhookSigEmitsVerifierAndDataParam(t *testing.T) {
 	for _, want := range []string{
 		`@router.post("/hooks/stripe")`,
 		`async def post_hooks_stripe(data: Any = Depends(_bp_webhook_signature("WEBHOOK_KEY"))):`,
-		`return JSONResponse(jsonable_encoder({"kind": data.type}), status_code=200)`,
+		// Payload reads are dict lookups: keys stay verbatim even when they name
+		// a dict method (items), and a missing nested object reads as None.
+		`{"kind": data.get("type"), "items": data.get("items"), "customer": (data.get("customer") or {}).get("id")}`,
 		"from src.lib.webhook import require_webhook_signature as _bp_webhook_signature",
 		"from typing import Any",
 	} {

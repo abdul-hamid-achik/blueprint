@@ -405,9 +405,9 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 	}
 
 	var inputs []*ast.InputStmt
-	// An auth jwt endpoint always takes the body emitter, which renders
-	// `claims` reads with dict lookups; the fast path would not.
-	hasSteps := endpointHasComplexBody(ep) || endpointJwtClaims(ep.Meta)
+	// An auth jwt or webhook_sig endpoint always takes the body emitter, which
+	// renders `claims` and `data` reads with dict lookups; the fast path would not.
+	hasSteps := endpointHasComplexBody(ep) || endpointJwtClaims(ep.Meta) || endpointHasWebhookSig(ep.Meta)
 	for _, s := range ep.Stmts {
 		if v, ok := s.(*ast.InputStmt); ok {
 			inputs = append(inputs, v)

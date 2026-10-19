@@ -36,6 +36,13 @@ func endpointWebhookSecretMeta(meta []*ast.EndpointMeta) (string, bool) {
 	return "", false
 }
 
+// endpointHasWebhookSig reports whether the endpoint verifies a webhook
+// signature and so binds the parsed payload to `data`.
+func endpointHasWebhookSig(meta []*ast.EndpointMeta) bool {
+	_, ok := endpointWebhookSecretMeta(meta)
+	return ok
+}
+
 // hasWebhookSig reports whether any endpoint verifies a webhook signature,
 // which is the condition for emitting src/lib/webhook.py.
 func hasWebhookSig(endpoints []*ast.Endpoint) bool {
@@ -91,20 +98,6 @@ async def invalid_webhook_handler(request: Request, exc: InvalidWebhook) -> JSON
     return JSONResponse({"error": exc.message}, status_code=exc.status_code)
 
 
-class WebhookPayload(dict):
-    """Parsed webhook JSON. Keys also read as attributes, so data.event.type works as on Node.
-
-    Dict methods win over keys of the same name (data.items is the method), so a
-    key such as "items" is read as data["items"]. Serialization stays intact.
-    """
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-
 def _reject_constant(name: str) -> None:
     raise ValueError("non-finite JSON number " + name)
 
@@ -116,7 +109,7 @@ def require_webhook_signature(secret_name: str):
     every request, and an unset or empty secret fails closed with 401.
     """
 
-    async def dependency(request: Request) -> WebhookPayload:
+    async def dependency(request: Request) -> Any:
         raw = await request.body()
         secret = getattr(env, secret_name, None)
         if not secret:
@@ -129,7 +122,7 @@ def require_webhook_signature(secret_name: str):
         if not hmac.compare_digest(presented, expected):
             raise InvalidWebhook(401, "Invalid signature")
         try:
-            return json.loads(raw.decode("utf-8"), object_hook=WebhookPayload, parse_constant=_reject_constant)
+            return json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
         except (ValueError, RecursionError):
             raise InvalidWebhook(400, "Invalid payload")
 

@@ -123,12 +123,18 @@ func endpointJwtClaims(meta []*ast.EndpointMeta) bool {
 
 // isClaimsAccess reports whether expr is a field chain rooted at claims.
 func isClaimsAccess(expr ast.Expr) bool {
+	return isFieldChainRootedAt(expr, "claims")
+}
+
+// isFieldChainRootedAt reports whether expr is a field chain such as a.b.c
+// whose root identifier is name.
+func isFieldChainRootedAt(expr ast.Expr, name string) bool {
 	for {
 		switch v := expr.(type) {
 		case *ast.FieldAccess:
 			expr = v.Base
 		case *ast.Ident:
-			return v.Name == "claims"
+			return v.Name == name
 		default:
 			return false
 		}
@@ -141,9 +147,16 @@ func isClaimsAccess(expr ast.Expr) bool {
 // (claims.get("org") or {}).get("id"). The checker guarantees the root is the
 // claims parameter of an auth jwt endpoint.
 func claimsFieldPy(v *ast.FieldAccess) string {
-	base := "claims"
+	return dictFieldChainPy("claims", v)
+}
+
+// dictFieldChainPy renders a field chain rooted at the dict variable root as
+// .get lookups, the way claimsFieldPy does. A key reads verbatim even when it
+// names a dict method, such as items, as it does on Node.
+func dictFieldChainPy(root string, v *ast.FieldAccess) string {
+	base := root
 	if inner, ok := v.Base.(*ast.FieldAccess); ok {
-		base = "(" + claimsFieldPy(inner) + " or {})"
+		base = "(" + dictFieldChainPy(root, inner) + " or {})"
 	}
 	return base + ".get(" + pyStringLiteral(v.Field) + ")"
 }

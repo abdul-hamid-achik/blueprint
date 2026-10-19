@@ -64,11 +64,16 @@ type bodyCtx struct {
 	// jwtClaims is set on an auth jwt endpoint, where `claims` is the handler's
 	// verified payload (see claimsFieldPy).
 	jwtClaims bool
+
+	// webhookData is set on an auth webhook_sig endpoint, where `data` is the
+	// verified JSON payload; data.<field> reads render as dict lookups.
+	webhookData bool
 }
 
 func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
 	c := &bodyCtx{
 		jwtClaims:     endpointJwtClaims(ep.Meta),
+		webhookData:   endpointHasWebhookSig(ep.Meta),
 		cacheValue:    endpointCacheValue(ep),
 		path:          ep.Path,
 		inputs:        map[string]bool{},
@@ -1186,6 +1191,9 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 	case *ast.FieldAccess:
 		if ctx != nil && ctx.jwtClaims && isClaimsAccess(v) {
 			return claimsFieldPy(v)
+		}
+		if ctx != nil && ctx.webhookData && isFieldChainRootedAt(v, "data") {
+			return dictFieldChainPy("data", v)
 		}
 		// N.days.ago → datetime.now(timezone.utc) - timedelta(days=N)
 		// Handles the "ago" suffix on N.duration_unit patterns.

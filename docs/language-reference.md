@@ -1013,9 +1013,10 @@ runs before input validation, so an unsigned request gets `401` even when its
 body is malformed. The exception is an endpoint with a `<-` body input, when the
 request is sent as `application/json`: FastAPI parses that body before the check,
 so an unparseable JSON body gets `422` first. Node's body validator also runs
-before the signature check. The verified payload is bound to `data`: read fields as `data.field` or
-`data["field"]`. A key named like a dict method, such as `items`, must be read
-as `data["items"]`. Bare `auth webhook_sig` fails the Python build.
+before the signature check. The verified payload is bound to `data`. A field read such as `data.items` or
+`data.customer.id` returns that key as on Node, even when the key names a dict
+method, and a missing key or a missing nested object reads as `None`. Bare
+`auth webhook_sig` fails the Python build.
 
 ### Input Sources
 
