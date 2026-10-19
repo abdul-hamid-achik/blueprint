@@ -257,7 +257,7 @@ jobs:
           rm -rf /tmp/py-hello-gt
           ./bin/bp build examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests
           ./bin/bp diff examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests --no-color --exit-code
-          for src in examples/hello-world.bp examples/todo-api.bp examples/realtime-chat.bp testdata/valid/where_predicates.bp testdata/valid/include_basic.bp testdata/valid/pipe_in_endpoint.bp testdata/valid/python_auth.bp testdata/valid/python_stream.bp testdata/valid/python_stream_ws_use.bp testdata/valid/python_realtime_surface.bp testdata/valid/python_schedule.bp; do
+          for src in examples/hello-world.bp examples/todo-api.bp examples/realtime-chat.bp testdata/valid/where_predicates.bp testdata/valid/include_basic.bp testdata/valid/pipe_in_endpoint.bp testdata/valid/python_auth.bp testdata/valid/python_stream.bp testdata/valid/python_stream_ws_use.bp testdata/valid/python_realtime_surface.bp testdata/valid/python_schedule.bp testdata/valid/python_worker.bp; do
             name=$(basename "$src" .bp)
             echo "=== bp test --target python: $src ==="
             ./bin/bp test "$src" --target python --out "/tmp/py-test-$name"
