@@ -275,6 +275,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	if needsEmit {
 		b.WriteString("from src.lib.events import emit as bp_emit\n")
 	}
+	if usesEnqueue(eps) {
+		b.WriteString("from src.lib.queue import enqueue_job\n")
+	}
 	// `use <middleware>` requires Depends + the middleware module import.
 	if len(middlewares) > 0 {
 		if !needsDB && !needsGuard && !needsAuth && !needsWebhook {
@@ -532,7 +535,7 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 	// an event loop; `async def` for everything else so FastAPI doesn't pay
 	// a threadpool hop on static responses.
 	keyword := "async def"
-	if endpointTouchesDB(ep) || endpointUsesStorage(ep) {
+	if endpointTouchesDB(ep) || endpointUsesStorage(ep) || endpointEnqueues(ep) {
 		keyword = "def"
 	}
 	fmt.Fprintf(b, "%s %s(%s):\n", keyword, fnName, params)

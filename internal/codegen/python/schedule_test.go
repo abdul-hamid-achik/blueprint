@@ -50,13 +50,14 @@ func TestPython_ScheduleEmitsBodyRunnerAndLifespan(t *testing.T) {
 	for _, want := range []string{
 		"from src.schedules.sweep_jobs import run_sweep_jobs\n",
 		`("sweep_jobs", "* * * * *", run_sweep_jobs),`,
-		"CronTrigger.from_crontab(cron)",
-		"if latest is not None and not latest.running() and not latest.done():",
-		"skipping this tick",
-		"ThreadPoolExecutor(max_workers=1",
+		"await _queue.upsertJobScheduler(",
+		`{"pattern": cron},`,
+		`{"attempts": 3, "backoff": {"type": "exponential", "delay": 1000}},`,
+		`SCHEDULER_QUEUE = "__bp_scheduler"`,
+		`Worker(SCHEDULER_QUEUE, _process, {"connection": connection_options()})`,
+		"if scheduler[\"key\"] not in declared:",
 		`if "pytest" in sys.modules`,
-		"_executor.shutdown(wait=True, cancel_futures=True)",
-		"MAX_ATTEMPTS = 3",
+		"raise Exception(f\"Unknown scheduled job: {job.name}\")",
 	} {
 		if !strings.Contains(sched, want) {
 			t.Errorf("scheduler module missing %q:\n%s", want, sched)
@@ -67,8 +68,8 @@ func TestPython_ScheduleEmitsBodyRunnerAndLifespan(t *testing.T) {
 	app := readPy(t, out, "src/app.py")
 	for _, want := range []string{
 		"from src.lib import scheduler\n",
-		"async def lifespan(app: FastAPI):\n    scheduler.start()\n",
-		"        await asyncio.to_thread(scheduler.stop)\n",
+		"async def lifespan(app: FastAPI):\n    bp_queue.bind_loop()\n    await scheduler.start()\n",
+		"        await scheduler.stop()\n",
 		`app = FastAPI(title="x", version="1.0", lifespan=lifespan)`,
 	} {
 		if !strings.Contains(app, want) {
@@ -77,8 +78,14 @@ func TestPython_ScheduleEmitsBodyRunnerAndLifespan(t *testing.T) {
 	}
 
 	pyproject := readPy(t, out, "pyproject.toml")
-	if !strings.Contains(pyproject, `"apscheduler>=3.10,<4",`) {
-		t.Errorf("pyproject.toml should pin APScheduler 3.x when a schedule exists:\n%s", pyproject)
+	if !strings.Contains(pyproject, `"bullmq>=3.4,<4",`) {
+		t.Errorf("pyproject.toml should pin the official bullmq 3.4.x client when a schedule exists:\n%s", pyproject)
+	}
+	if strings.Contains(pyproject, "apscheduler") {
+		t.Errorf("pyproject.toml must not depend on APScheduler:\n%s", pyproject)
+	}
+	if env := readPy(t, out, "src/lib/env.py"); !strings.Contains(env, "REDIS_URL: str\n") {
+		t.Errorf("env.py should require REDIS_URL when a schedule exists:\n%s", env)
 	}
 }
 
@@ -141,8 +148,8 @@ func TestPython_NoScheduleLeavesSchedulerOut(t *testing.T) {
 	if strings.Contains(app, "lifespan") || strings.Contains(app, "scheduler") {
 		t.Errorf("app.py should not wire a scheduler without a schedule:\n%s", app)
 	}
-	if strings.Contains(readPy(t, outDir, "pyproject.toml"), "apscheduler") {
-		t.Errorf("pyproject.toml should not depend on APScheduler without a schedule")
+	if strings.Contains(readPy(t, outDir, "pyproject.toml"), "bullmq") {
+		t.Errorf("pyproject.toml should not depend on bullmq without a schedule or worker")
 	}
 }
 

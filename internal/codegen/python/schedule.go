@@ -70,7 +70,7 @@ func (g *Generator) genSchedulePy(s *ast.Schedule) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	usesDB := stmtsTouchDB(s.Stmts)
-	writeScheduleImports(&b, s.Stmts, usesDB, g.userFnNames(), g.pipeNames())
+	writeScheduleImports(&b, s.Stmts, usesDB, g.userFnNames(), g.pipeNames(), false)
 	b.WriteString("\n")
 
 	if s.Intent != nil {
@@ -109,7 +109,9 @@ func (g *Generator) genSchedulePy(s *ast.Schedule) codegen.OutputFile {
 // writeScheduleImports emits exactly the imports a schedule body uses, the
 // schedule-side counterpart of writeRouteImports (which is keyed on endpoints
 // and their request inputs, neither of which a schedule has).
-func writeScheduleImports(b *strings.Builder, stmts []ast.ArrowStmt, usesDB bool, userFns, pipes map[string]bool) {
+// A worker body (worker=true) logs its guard failures and returns instead of
+// raising HTTPException, so it imports the logger rather than FastAPI.
+func writeScheduleImports(b *strings.Builder, stmts []ast.ArrowStmt, usesDB bool, userFns, pipes map[string]bool, worker bool) {
 	needsNow, needsTimedelta, needsLog, needsEnv := false, false, false, false
 	userCalls := map[string]bool{}
 	walkEndpointExprs(&ast.Endpoint{Stmts: stmts}, func(e ast.Expr) {
@@ -134,6 +136,10 @@ func writeScheduleImports(b *strings.Builder, stmts []ast.ArrowStmt, usesDB bool
 		}
 	})
 	needsGuard := stmtsHaveGuards(stmts)
+	if worker && needsGuard {
+		needsLog = true
+		needsGuard = false
+	}
 
 	if usesDB {
 		sqlImports := []string{"select"}
@@ -181,33 +187,32 @@ func writeScheduleImports(b *strings.Builder, stmts []ast.ArrowStmt, usesDB bool
 	}
 }
 
-// genSchedulerPy emits src/lib/scheduler.py. Every schedule is registered with
-// APScheduler's cron trigger. A tick starts its run on one worker thread, so
-// runs never overlap, and at most one tick waits behind the run in progress:
-// a further tick is skipped with a warning, as the Node target's repeat job
-// keeps a single pending run. A failing run is retried with the same budget as
-// the Node target (3 attempts, exponential backoff from 1s) and each failure is
-// logged.
+// genSchedulerPy emits src/lib/scheduler.py. Every schedule becomes a BullMQ
+// job scheduler on the __bp_scheduler queue (the same Lua scripts as the Node
+// target), so each tick runs once across all instances sharing Redis. A
+// single Worker on that queue dispatches by job name; a failing run is retried
+// by BullMQ (3 attempts, exponential backoff from 1s), as on Node. Schedulers
+// whose id is no longer declared are removed at startup. start() is a no-op
+// under pytest.
 func (g *Generator) genSchedulerPy(schedules []*ast.Schedule) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
-	b.WriteString(`"""Runs the schedule declarations in-process on APScheduler 3.x.
+	b.WriteString(`"""Runs the schedule declarations as BullMQ job schedulers on Redis.
 
-Schedules use the process-local timezone, as the Node target does. A tick that
-is more than APScheduler's default one-second grace late is skipped, with no
-catch-up, as on the Node target. start() is a no-op under pytest (the Node
-target skips its scheduler under Vitest the same way), so importing the app in
-a test never starts background runs.
+Schedules are registered on the __bp_scheduler queue with the process-local
+timezone, as the Node target does. Registration is idempotent at startup, and
+a schedule removed from the source has its scheduler removed on the next start.
+start() is a no-op under pytest (the Node target skips its scheduler under
+Vitest the same way), so importing the app in a test never starts background runs.
 """
+import asyncio
 import sys
-import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
+from bullmq import Queue, Worker
 
-from src.lib.log import logger
+from src.lib.queue import connection_options
 `)
 	for _, s := range schedules {
 		fmt.Fprintf(&b, "from src.schedules.%s import run_%s\n", pyModuleName(s.Name), s.Name)
@@ -218,59 +223,50 @@ from src.lib.log import logger
 		fmt.Fprintf(&b, "    (%q, %q, run_%s),\n", s.Name, s.Cron, s.Name)
 	}
 	b.WriteString("]\n\n")
-	b.WriteString(`MAX_ATTEMPTS = 3
-RETRY_BASE_SECONDS = 1.0
+	b.WriteString(`SCHEDULER_QUEUE = "__bp_scheduler"
 
-_scheduler: BackgroundScheduler | None = None
-_executor: ThreadPoolExecutor | None = None
-# The newest run submitted for each schedule. A run that is still waiting
-# (not started, not done) is the one pending run; a new tick is skipped behind it.
-_latest: dict[str, Future[None]] = {}
+_queue: Queue | None = None
+_worker: Worker | None = None
 
 
-def _run(name: str, run: Callable[[], None]) -> None:
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            run()
+async def _process(job: Any, token: str) -> None:
+    for name, _, run in SCHEDULES:
+        if name == job.name:
+            await asyncio.to_thread(run)
             return
-        except Exception:
-            logger.exception("schedule %s failed (attempt %d of %d)", name, attempt, MAX_ATTEMPTS)
-            if attempt < MAX_ATTEMPTS:
-                time.sleep(RETRY_BASE_SECONDS * 2 ** (attempt - 1))
+    raise Exception(f"Unknown scheduled job: {job.name}")
 
 
-def _tick(name: str, run: Callable[[], None]) -> None:
-    if _executor is None:
+async def start() -> None:
+    """Register every schedule, drop stale ones, and start the Worker (no-op under pytest)."""
+    global _queue, _worker
+    if "pytest" in sys.modules or _worker is not None:
         return
-    latest = _latest.get(name)
-    if latest is not None and not latest.running() and not latest.done():
-        logger.warning("schedule %s: a run is already waiting; skipping this tick", name)
-        return
-    _latest[name] = _executor.submit(_run, name, run)
+    _queue = Queue(SCHEDULER_QUEUE, {"connection": connection_options()})
+    declared = {name for name, _, _ in SCHEDULES}
+    for name, cron, _ in SCHEDULES:
+        await _queue.upsertJobScheduler(
+            name,
+            {"pattern": cron},
+            name,
+            {},
+            {"attempts": 3, "backoff": {"type": "exponential", "delay": 1000}},
+        )
+    for scheduler in await _queue.getJobSchedulers():
+        if scheduler["key"] not in declared:
+            await _queue.removeJobScheduler(scheduler["key"])
+    _worker = Worker(SCHEDULER_QUEUE, _process, {"connection": connection_options()})
 
 
-def start() -> None:
-    """Register every schedule and start the scheduler (no-op under pytest)."""
-    global _scheduler, _executor
-    if "pytest" in sys.modules or _scheduler is not None:
-        return
-    _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bp-schedule")
-    _latest.clear()
-    _scheduler = BackgroundScheduler()
-    for name, cron, run in SCHEDULES:
-        _scheduler.add_job(_tick, CronTrigger.from_crontab(cron), args=[name, run], id=name)
-    _scheduler.start()
-
-
-def stop() -> None:
-    """Stop ticking and wait for the run in progress. Queued runs that have not started are dropped."""
-    global _scheduler, _executor
-    if _scheduler is None or _executor is None:
-        return
-    _scheduler.shutdown(wait=False)
-    _executor.shutdown(wait=True, cancel_futures=True)
-    _scheduler = None
-    _executor = None
+async def stop() -> None:
+    """Stop the Worker (waiting for a run in progress), then close the queue."""
+    global _queue, _worker
+    if _worker is not None:
+        await _worker.close()
+        _worker = None
+    if _queue is not None:
+        await _queue.close()
+        _queue = None
 `)
 	return codegen.OutputFile{Path: "src/lib/scheduler.py", Content: []byte(b.String())}
 }

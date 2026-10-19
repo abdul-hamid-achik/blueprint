@@ -1034,7 +1034,7 @@ func TestBuildPythonRejectsUnsupportedSpec(t *testing.T) {
 	src := filepath.Join(dir, "unsupported.bp")
 	body := `blueprint "x" { version "1.0" port 3000 runtime node storage s3 }
 pipe validate { <- v string  -> v }
-worker process { trigger "job"  |> log "doing work" }
+worker process { trigger "job"  |> log "doing work"  -> 200 "ok" }
 GET /api/x { -> 200 "ok" }
 `
 	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {

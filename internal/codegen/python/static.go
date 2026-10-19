@@ -30,7 +30,7 @@ func emptyInit(path, source string) codegen.OutputFile {
 // genPyProjectTOML emits pyproject.toml for uv. SQLAlchemy + psycopg + alembic
 // are added when the spec declares a database; otherwise the lighter Phase 1
 // dep set is used so projects without a DB don't pull in unused libraries.
-func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStream, hasStorage, hasSchedule bool) codegen.OutputFile {
+func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStream, hasStorage, hasQueue bool) codegen.OutputFile {
 	name := bp.Name
 	version := blueprintEntry(bp, "version")
 	if version == "" {
@@ -50,9 +50,10 @@ func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStre
 			`"alembic>=1.14"`,
 		)
 	}
-	if hasSchedule {
-		// In-process cron for `schedule` declarations; src/lib/scheduler.py.
-		deps = append(deps, `"apscheduler>=3.10,<4"`)
+	if hasQueue {
+		// Official BullMQ client for workers, enqueue and schedules; it runs the
+		// same Lua scripts as the Node target, so both share one Redis.
+		deps = append(deps, `"bullmq>=3.4,<4"`)
 	}
 	if hasCache || hasStream {
 		// Redis client. src/lib/cache.py uses the sync interface; STREAM fan-out
@@ -145,7 +146,7 @@ uv run pytest
 // fields. When the spec declares a database, DATABASE_URL is added as a
 // required field even if the .bp source didn't declare it as a secret
 // (Alembic and db.py both need it).
-func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache, hasStorage bool) codegen.OutputFile {
+func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache, hasStorage, hasQueue bool) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	hasRequired := false
@@ -188,7 +189,11 @@ func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache, hasStorage 
 	if hasDB && !declared["DATABASE_URL"] {
 		b.WriteString("    DATABASE_URL: str\n")
 	}
-	if hasCache && !declared["REDIS_URL"] {
+	if hasQueue && !declared["REDIS_URL"] {
+		// Workers, enqueue and schedules connect to Redis unconditionally, as on
+		// Node, so the URL is required.
+		b.WriteString("    REDIS_URL: str\n")
+	} else if hasCache && !declared["REDIS_URL"] {
 		// `cache redis` doesn't require the user to declare REDIS_URL as a
 		// secret — we add it with a localhost default so `uv run` works out
 		// of the box against a local Redis.
@@ -204,7 +209,7 @@ func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache, hasStorage 
 		b.WriteString("    AWS_SECRET_ACCESS_KEY: Optional[str] = None\n")
 		b.WriteString("    AWS_SESSION_TOKEN: Optional[str] = None\n")
 	}
-	if len(secrets) == 0 && !hasDB && !hasCache && !hasStorage {
+	if len(secrets) == 0 && !hasDB && !hasCache && !hasStorage && !hasQueue {
 		b.WriteString("    pass\n")
 	}
 
@@ -214,22 +219,25 @@ func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache, hasStorage 
 
 // genAppPy emits the FastAPI app entry. Each route module is imported and
 // included via include_router. Endpoint resources are listed deterministically.
-func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint, hasSchedules bool) codegen.OutputFile {
+func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint, hasSchedules, hasWorkers bool) codegen.OutputFile {
 	resources := orderedResources(endpoints)
 	streamResources := g.orderedStreamResources()
 	wsResources := g.orderedWsResources()
 
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
-	if hasSchedules {
-		b.WriteString("import asyncio\n")
+	if hasSchedules || hasWorkers {
 		b.WriteString("from contextlib import asynccontextmanager\n")
+		b.WriteString("from src.lib import queue as bp_queue\n")
 	}
 	b.WriteString("from fastapi import FastAPI, Request\n")
 	b.WriteString("from fastapi.responses import JSONResponse\n")
 	b.WriteString("from starlette.exceptions import HTTPException as StarletteHTTPException\n")
 	if hasSchedules {
 		b.WriteString("from src.lib import scheduler\n")
+	}
+	if hasWorkers {
+		b.WriteString("from src.lib import workers\n")
 	}
 	guarded := g.withRealtimeEndpoints(endpoints)
 	if hasEnforcedAuth(guarded) {
@@ -258,16 +266,29 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint, hasSc
 		version = "0.1.0"
 	}
 	lifespanArg := ""
-	if hasSchedules {
-		// The scheduler runs for the life of the app: started before the first
-		// request, stopped after the last (waiting for a run in progress).
+	if hasSchedules || hasWorkers {
+		// Workers and the scheduler run for the life of the app: started before
+		// the first request, and stopped after the last, waiting for jobs in
+		// progress. Producer queues are closed last.
 		b.WriteString("\n@asynccontextmanager\n")
 		b.WriteString("async def lifespan(app: FastAPI):\n")
-		b.WriteString("    scheduler.start()\n")
+		b.WriteString("    bp_queue.bind_loop()\n")
+		if hasSchedules {
+			b.WriteString("    await scheduler.start()\n")
+		}
+		if hasWorkers {
+			b.WriteString("    await workers.start()\n")
+		}
 		b.WriteString("    try:\n")
 		b.WriteString("        yield\n")
 		b.WriteString("    finally:\n")
-		b.WriteString("        await asyncio.to_thread(scheduler.stop)\n\n\n")
+		if hasWorkers {
+			b.WriteString("        await workers.stop()\n")
+		}
+		if hasSchedules {
+			b.WriteString("        await scheduler.stop()\n")
+		}
+		b.WriteString("        await bp_queue.close_all()\n\n\n")
 		lifespanArg = ", lifespan=lifespan"
 	}
 	fmt.Fprintf(&b, "app = FastAPI(title=%q, version=%q%s)\n\n", bp.Name, version, lifespanArg)

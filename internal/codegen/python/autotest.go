@@ -54,6 +54,11 @@ func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, realtime []realtimeT
 	groups := map[string][]*ast.Endpoint{}
 	var order []string
 	for _, ep := range endpoints {
+		// An enqueueing endpoint needs the running app's BullMQ loop, which the
+		// contract suite does not start; it is covered by the worker runtime check.
+		if endpointEnqueues(ep) {
+			continue
+		}
 		r := common.ExtractResource(ep.Path)
 		if _, ok := groups[r]; !ok {
 			order = append(order, r)
@@ -154,6 +159,10 @@ def _seed_env() -> None:
 		seen["DATABASE_URL"] = true
 	} else {
 		b.WriteString("    \"\"\"\n")
+	}
+	if g.hasQueueRuntime() && !seen["REDIS_URL"] {
+		b.WriteString("    os.environ.setdefault(\"REDIS_URL\", \"redis://localhost:6379/0\")\n")
+		seen["REDIS_URL"] = true
 	}
 	// Extra secrets the user declared — required ones get default "test".
 	// Secrets that enforced auth verifies get one fixed test-only value, set

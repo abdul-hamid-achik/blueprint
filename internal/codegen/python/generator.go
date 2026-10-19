@@ -176,14 +176,15 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	hasDB := blueprintEntry(bp, "database") != "" || len(models) > 0
 	hasCache := blueprintEntry(bp, "cache") != ""
 	hasStorage := blueprintEntry(bp, "storage") != ""
+	hasQueue := g.hasQueueRuntime()
 
 	var out []codegen.OutputFile
-	out = append(out, g.genPyProjectTOML(bp, hasDB, hasCache, len(streams) > 0 || len(wss) > 0, hasStorage, len(schedules) > 0))
+	out = append(out, g.genPyProjectTOML(bp, hasDB, hasCache, len(streams) > 0 || len(wss) > 0, hasStorage, hasQueue))
 	out = append(out, g.genReadme(bp, hasDB))
 	out = append(out, emptyInit("src/__init__.py", g.sourceFile))
 	out = append(out, emptyInit("src/lib/__init__.py", g.sourceFile))
 	out = append(out, emptyInit("src/routes/__init__.py", g.sourceFile))
-	out = append(out, g.genEnvPy(secrets, hasDB, hasCache, hasStorage))
+	out = append(out, g.genEnvPy(secrets, hasDB, hasCache, hasStorage, hasQueue))
 	out = append(out, g.genLogPy())
 	if g.usesFormats(models, endpoints) {
 		out = append(out, g.genFormatsPy())
@@ -209,7 +210,7 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	if usesRealtime(wss) {
 		out = append(out, g.genRealtimePy())
 	}
-	out = append(out, g.genAppPy(bp, endpoints, len(schedules) > 0))
+	out = append(out, g.genAppPy(bp, endpoints, len(schedules) > 0, len(g.workers()) > 0))
 
 	// Named enum / type / alias declarations live in src/models/ next to the
 	// SQLAlchemy and Pydantic modules, so the package is needed even without
@@ -268,6 +269,19 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		for _, s := range schedules {
 			out = append(out, g.genSchedulePy(s))
 		}
+	}
+
+	// Workers and the scheduler: a shared producer module, one module per worker
+	// (run_/on_fail_ bodies), and the registry that starts the Workers.
+	if hasQueue {
+		out = append(out, g.genQueuePy())
+	}
+	if workers := g.workers(); len(workers) > 0 {
+		out = append(out, emptyInit("src/workers/__init__.py", g.sourceFile))
+		for _, w := range workers {
+			out = append(out, g.genWorkerPy(w))
+		}
+		out = append(out, g.genWorkersRegistryPy(workers))
 	}
 
 	groups := map[string][]*ast.Endpoint{}
@@ -339,6 +353,9 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 func (g *Generator) unsupportedFeatures() []string {
 	seen := map[string]bool{}
 	add := func(name string) { seen[name] = true }
+	for _, reason := range g.queueFeatures() {
+		add(reason)
+	}
 
 	if g.file.Blueprint != nil {
 		entryNames := map[string]bool{}
@@ -373,6 +390,10 @@ func (g *Generator) unsupportedFeatures() []string {
 			case "cache":
 				if value := blueprintEntry(g.file.Blueprint, "cache"); value != "redis" {
 					add(fmt.Sprintf("cache backend %q (Python currently emits Redis)", value))
+				}
+			case "queue":
+				if value := blueprintEntry(g.file.Blueprint, "queue"); value != "redis" {
+					add(fmt.Sprintf("queue backend %q (Python currently emits BullMQ on Redis only)", value))
 				}
 			case "storage":
 				// Node emits only S3 for any storage value, so gcs/local stay rejected.
@@ -441,7 +462,9 @@ func (g *Generator) unsupportedFeatures() []string {
 				add(reason)
 			}
 		case *ast.Worker:
-			add("`worker` declarations")
+			for _, reason := range g.workerFeatures(n) {
+				add(reason)
+			}
 		case *ast.Schedule:
 			for _, reason := range g.scheduleFeatures(n) {
 				add(reason)
@@ -1311,6 +1334,8 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 		return nil
 	case "emit":
 		return emitStepFeatures(fn)
+	case "enqueue":
+		return enqueueFeatures(fn)
 	case "upload", "download":
 		return g.storageStepFeatures(fn)
 	case "sum":

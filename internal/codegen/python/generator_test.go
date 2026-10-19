@@ -202,8 +202,8 @@ GET /api/x { -> 200 "ok" }
 pipe validate { <- v string  |> row = fetch item(v)  -> row }
 GET /api/x { -> 200 "ok" }
 `,
-		"worker declaration": `blueprint "x" { version "1.0" port 3000 runtime node }
-worker process { trigger "job"  |> log "doing work" }
+		"worker response output": `blueprint "x" { version "1.0" port 3000 runtime node }
+worker process { trigger "job"  |> log "doing work"  -> 200 "ok" }
 GET /api/x { -> 200 "ok" }
 `,
 		"storage backend other than s3": `blueprint "x" { version "1.0" port 3000 runtime node storage gcs }

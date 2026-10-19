@@ -1,0 +1,61 @@
+blueprint "python-worker" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+  database postgres
+  queue    redis
+}
+
+secret DATABASE_URL required
+secret REDIS_URL required
+
+model job {
+  id      uuid      primary
+  name    string    required
+  status  string    default(queued)
+  created timestamp default(now)
+}
+
+@ "Queue a job; the worker marks it done"
+POST /api/jobs {
+  <- name string required
+  |> job = save job { name: name, status: "queued" }
+  |> enqueue "jobs" { job_id: job.id, name: name }
+  |> enqueue "notify" { name: name }
+  -> 202 { id: job.id, status: "queued" }
+}
+
+@ "Count finished jobs"
+GET /api/jobs/done {
+  |> rows = query job where(status == "done")
+  -> 200 { done: rows.count }
+}
+
+worker process_job {
+  trigger queue("jobs")
+  retry 2 backoff(fixed, base: 1s)
+  timeout 30s
+
+  <- job_id uuid
+  |> row = fetch job(job_id)
+  |> update row { status: "done" }
+  on_fail {
+    |> log "job failed"
+  }
+}
+
+worker notify {
+  trigger queue("notify")
+  retry 2 backoff(exponential, base: 1s, max: 5s)
+
+  <- name string
+  |> log "notified {name}"
+}
+
+@ "Report finished jobs every minute"
+schedule report_jobs {
+  cron "* * * * *"
+
+  |> rows = query job where(status == "done")
+  |> log "done jobs: {rows.count}"
+}

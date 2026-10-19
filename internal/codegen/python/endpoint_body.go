@@ -92,6 +92,14 @@ type bodyCtx struct {
 	// is set when the body references header.X; a read then renders as
 	// headersVar.get("x"), which is None when the header is absent.
 	headersVar string
+
+	// worker is set while emitting a worker's run or on_fail body. A guard
+	// there logs its message and returns, as the Node worker does, instead of
+	// raising HTTPException.
+	worker bool
+
+	// enqueueOpts maps each enqueued queue name to its producer job options.
+	enqueueOpts map[string]string
 }
 
 func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
@@ -108,6 +116,7 @@ func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
 		models:        g.models(),
 		userFns:       g.userFnNames(),
 		touchesDB:     endpointTouchesDB(ep),
+		enqueueOpts:   g.enqueueOptions(),
 	}
 	for _, s := range ep.Stmts {
 		if in, ok := s.(*ast.InputStmt); ok {
@@ -273,6 +282,8 @@ func emitStep(b *strings.Builder, s *ast.StepStmt, ctx *bodyCtx, indent string) 
 		emitLog(b, fn, ctx, indent)
 	case "emit":
 		emitEmit(b, fn, ctx, indent)
+	case "enqueue":
+		emitEnqueue(b, fn, ctx, indent)
 	case "sum":
 		emitSum(b, s.Binding, fn, ctx, indent)
 	case "upload", "download":
@@ -1198,6 +1209,12 @@ func emitGuard(b *strings.Builder, s *ast.GuardStmt, ctx *bodyCtx, indent string
 		// JavaScript truthiness, and a WsGuardError the WS helper turns into a frame.
 		fmt.Fprintf(b, "%sif not js_truthy(%s):\n", indent, cond)
 		fmt.Fprintf(b, "%s    raise WsGuardError(%s, %s)\n", indent, status, pyStringLiteral(s.Message))
+		return
+	}
+	if ctx != nil && ctx.worker {
+		fmt.Fprintf(b, "%sif not (%s):\n", indent, cond)
+		fmt.Fprintf(b, "%s    logger.error(%s)\n", indent, pyStringLiteral(s.Message))
+		fmt.Fprintf(b, "%s    return\n", indent)
 		return
 	}
 	fmt.Fprintf(b, "%sif not (%s):\n", indent, cond)
