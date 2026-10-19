@@ -403,13 +403,21 @@ Prep work (must precede the Python generator):
     stream opens) and WS (in the handshake, after `auth`) with the REST subset;
     event payload, frame, and WS room keys camel-cased as on Node; guard
     failures answer `{"error": ...}` on every Python route. _(shipped 2026-10-19)_
-  - [ ] Phase 5b (WS follow-ups): `auth webhook_sig` on WS, `try/recover` inside
-    WS handlers, inline `when`, and `header`/`env` reads in WS handlers; a
-    pytest case for the WS refusal (the generated suite skips WS endpoints
-    today).
-  - [ ] Phase 5b (remaining): the rest of the `pipe` body surface,
-    `worker` + `schedule` via APScheduler, `storage s3` → boto3, and
+  - [x] Phase 5b (WS follow-ups): `try/recover` inside WS handlers, inline
+    `when`, `header`/`env` reads and fn calls in WS and STREAM bodies, and
+    generated STREAM/WS refusal tests on both targets. _(shipped 2026-10-19)_
+  - [x] Phase 5b: `storage s3` → boto3 (`upload`/`download`, same `s3://` URL
+    as Node) and `schedule` on APScheduler 3.x, in-process (one run per tick
+    per process). _(shipped 2026-10-19)_
+  - [ ] Phase 5b (remaining): `worker` (needs a design decision: BullMQ queue
+    semantics vs an in-process executor, and a cross-target producer
+    contract); `auth webhook_sig` on WS (Node hashes the empty handshake
+    body, so it is one fixed value, not a per-message signature; decide the
+    contract first); the rest of the `pipe` body surface; and
     `payload.X` → `payload["X"]` for fn returns typed `json`.
+  - [ ] Python generated tests import `starlette.testclient` through httpx,
+    which Starlette now deprecates in favor of `httpx2`; move the dev
+    dependency before a Starlette release drops httpx.
 
 ## Later
 

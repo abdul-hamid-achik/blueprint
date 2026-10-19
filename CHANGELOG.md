@@ -6,6 +6,33 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `bp lint` rule `webhook-sig-without-body` (warning): `auth webhook_sig` on
+  a `GET`, STREAM, or WS endpoint, where the signed body is empty. A `GET`
+  answers `400` for every correctly signed request, because an empty body is
+  not JSON; on STREAM and WS (Node) every valid request carries the same
+  signature, so anyone who sees one can replay it.
+- Python target: `schedule` declarations run on APScheduler 3.x. Each body
+  becomes `src/schedules/<name>.py` and runs on a short-lived database
+  session; `src/lib/scheduler.py` registers a cron trigger per schedule, and
+  the app lifespan starts and stops it. Runs share one worker thread and
+  retry 3 times with 1s and 2s backoff. A tick that finds one run already
+  waiting is skipped with a warning, and ticks missed while the app was down
+  are not replayed. The scheduler runs in-process, so each process runs each
+  tick (Node runs one per tick across instances through Redis). The scheduler
+  does not start under pytest. `apscheduler` is added only when a schedule is
+  declared.
+- Python target: WS handlers and STREAM bodies translate `header.X` and
+  `env.X` reads, an inline `|> when cond: <step>` (WS), `try`/`recover` (in WS
+  handlers and before the STREAM block), and calls to declared functions.
+  Header values are read once, from the handshake (WS) or the request
+  (STREAM), and an absent header drops its key from an object frame, as on
+  Node. `auth webhook_sig` on WS stays rejected.
+- Generated tests (`--gen-tests`, `bp test`) cover STREAM and WS endpoints on
+  both targets. They check only what is refused before a stream or handshake
+  starts: `401` without credentials under enforced `auth`, a malformed
+  declared `uuid` or `int` path input (Node `400`; Python STREAM `422` and WS
+  `400`), and the status of a `use` middleware whose first step is a header
+  guard. They never read a stream body, and each has a deadline.
 - Python target: `storage s3` with boto3. `upload(body, bucket)` stores the
   body under a random UUID key with `application/octet-stream` and returns
   `{ url: "s3://<bucket>/<key>", key }`, as Node does; `download(url)`
@@ -49,6 +76,10 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Python: `.count` on a collection read an attribute that does not exist. It
+  is now `len(x)`, including inside string interpolation.
+- Python: `map rows: update <same model> { ... }` mutated an undefined name
+  instead of the loop element.
 - Node `storage s3`: `download(url)` called the helper with the URL as a
   bucket and no key, and did not await it, so the rejection crashed the
   process. `download` now takes the `s3://` URL that `upload` returns (or a
