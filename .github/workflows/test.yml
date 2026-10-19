@@ -234,6 +234,17 @@ jobs:
           npm test
           echo "generated contract + property tests execute successfully"
 
+      - name: Build and run generated Node STREAM and WS refusal tests
+        run: |
+          rm -rf /tmp/chat-gentests
+          ./bin/bp build examples/realtime-chat.bp --out /tmp/chat-gentests --gen-tests
+          test -f /tmp/chat-gentests/test/generated/rooms-realtime.test.ts || (echo "missing STREAM refusal test" && exit 1)
+          test -f /tmp/chat-gentests/test/generated/ws-realtime.test.ts || (echo "missing WS refusal test" && exit 1)
+          cd /tmp/chat-gentests
+          npm install
+          npm test
+          echo "generated realtime refusal tests execute successfully"
+
       - uses: astral-sh/setup-uv@v10.2.0
 
       - name: Run generated Python contract tests (pytest + Postgres testcontainer)
@@ -246,7 +257,7 @@ jobs:
           rm -rf /tmp/py-hello-gt
           ./bin/bp build examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests
           ./bin/bp diff examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests --no-color --exit-code
-          for src in examples/hello-world.bp examples/todo-api.bp examples/realtime-chat.bp testdata/valid/where_predicates.bp testdata/valid/include_basic.bp testdata/valid/pipe_in_endpoint.bp testdata/valid/python_auth.bp testdata/valid/python_stream.bp testdata/valid/python_stream_ws_use.bp; do
+          for src in examples/hello-world.bp examples/todo-api.bp examples/realtime-chat.bp testdata/valid/where_predicates.bp testdata/valid/include_basic.bp testdata/valid/pipe_in_endpoint.bp testdata/valid/python_auth.bp testdata/valid/python_stream.bp testdata/valid/python_stream_ws_use.bp testdata/valid/python_realtime_surface.bp testdata/valid/python_schedule.bp; do
             name=$(basename "$src" .bp)
             echo "=== bp test --target python: $src ==="
             ./bin/bp test "$src" --target python --out "/tmp/py-test-$name"
