@@ -100,7 +100,7 @@ GET /api/search {
 	store := readPy(t, outDir, "src/lib/rate_limit.py")
 	for _, want := range []string{
 		`JSONResponse({"error": "Rate limit exceeded"}, status_code=429)`,
-		`request.headers.get("x-forwarded-for") or "unknown"`,
+		`client = request.client.host if request.client else "unknown"`,
 		`key = f"{client}:{request.url.path}"`,
 		"threading.Lock()",
 	} {

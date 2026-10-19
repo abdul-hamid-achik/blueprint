@@ -275,7 +275,9 @@ def cache_control(response: Response, value: str) -> Response:
 }
 
 // genRateLimitPy emits src/lib/rate_limit.py, an in-process fixed-window limiter
-// keyed by x-forwarded-for (or "unknown") and the request path, as on Node.
+// keyed by the client address and the request path, as on Node. The address is
+// request.client, which uvicorn already resolves through FORWARDED_ALLOW_IPS, so
+// X-Forwarded-For is only honored from trusted proxies.
 // Handlers run in a threadpool when they are sync, so the store is locked.
 func (g *Generator) genRateLimitPy() codegen.OutputFile {
 	content := fileHeader(g.sourceFile) + `"""In-process fixed-window rate limit for endpoints declared with ` + "`limit`" + `."""
@@ -299,7 +301,7 @@ def check(request: Request, limit: int, window_ms: int) -> JSONResponse | None:
     """
     global _last_sweep
     now = time.monotonic() * 1000
-    client = request.headers.get("x-forwarded-for") or "unknown"
+    client = request.client.host if request.client else "unknown"
     key = f"{client}:{request.url.path}"
     with _lock:
         if now - _last_sweep >= _SWEEP_INTERVAL_MS:

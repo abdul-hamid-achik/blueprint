@@ -474,6 +474,9 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 	if needsHTTPCache {
 		b.WriteString("import { httpCache } from '../lib/http-cache.js';\n")
 	}
+	if needsRateLimit {
+		b.WriteString("import { clientIp } from '../lib/client-ip.js';\n")
+	}
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
 	if len(enqueueQueues) > 0 {
 		b.WriteString("import { Queue } from 'bullmq';\n")
@@ -588,7 +591,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 				rateLimit, rateWindowMS := parseRateLimit(rateStr)
 				fmt.Fprintf(&b, "  // rate limit: %s\n", rateStr)
 				// rate limit store is at module scope (see needsRateLimit above)
-				b.WriteString("  const _clientIp = c.req.header('x-forwarded-for') || 'unknown';\n")
+				b.WriteString("  const _clientIp = clientIp(c);\n")
 				b.WriteString("  const _now = Date.now();\n")
 				b.WriteString("  const _rateKey = `${_clientIp}:${c.req.path}`;\n")
 				b.WriteString("  const _rateEntry = _rateLimitStore.get(_rateKey);\n")
@@ -835,6 +838,9 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 	}
 
 	b.WriteString("import { BpError } from '../lib/errors.js';\n")
+	if needsRateLimit {
+		b.WriteString("import { clientIp } from '../lib/client-ip.js';\n")
+	}
 	if needsWebhookAuth {
 		b.WriteString("import { createHmac, timingSafeEqual } from 'node:crypto';\n")
 	}
@@ -930,7 +936,7 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 				rateStr := exprToJS(meta.Value)
 				rateLimit, rateWindowMS := parseRateLimit(rateStr)
 				fmt.Fprintf(&b, "  // rate limit: %s\n", rateStr)
-				b.WriteString("  const _clientIp = c.req.header('x-forwarded-for') || 'unknown';\n")
+				b.WriteString("  const _clientIp = clientIp(c);\n")
 				b.WriteString("  const _now = Date.now();\n")
 				b.WriteString("  const _rateKey = `${_clientIp}:${c.req.path}`;\n")
 				b.WriteString("  const _rateEntry = _rateLimitStore.get(_rateKey);\n")
@@ -1191,6 +1197,9 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 	if needsRequireAuth {
 		b.WriteString("import { requireAuth as _requireAuth } from '../lib/auth.js';\n")
 	}
+	if needsRateLimit {
+		b.WriteString("import { clientIp } from '../lib/client-ip.js';\n")
+	}
 	// WS handler bodies may read env.NAME; env.ts is always generated.
 	ic.needsEnv = true
 	ic.writeImports(&b, g.hasStorage)
@@ -1313,7 +1322,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 					rateStr := exprToJS(meta.Value)
 					rateLimit, rateWindowMS := parseRateLimit(rateStr)
 					fmt.Fprintf(&b, "  // rate limit: %s\n", rateStr)
-					b.WriteString("  const _clientIp = c.req.header('x-forwarded-for') || 'unknown';\n")
+					b.WriteString("  const _clientIp = clientIp(c);\n")
 					b.WriteString("  const _now = Date.now();\n")
 					b.WriteString("  const _rateKey = `${_clientIp}:${c.req.path}`;\n")
 					b.WriteString("  const _rateEntry = _rateLimitStore.get(_rateKey);\n")

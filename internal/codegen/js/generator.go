@@ -896,6 +896,10 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	if len(streams) > 0 || len(ws) > 0 {
 		files = append(files, g.genBackpressureLib())
 	}
+	// src/lib/client-ip.ts — the client address behind endpoint `limit`
+	if hasRateLimitEndpoints(endpoints, streams, ws) {
+		files = append(files, g.genClientIPLib())
+	}
 	// src/lib/ws-connections.ts — the connection registry behind whisper
 	if len(ws) > 0 && fileHasCall(g.file, "whisper") {
 		files = append(files, g.genWsConnectionsLib())
