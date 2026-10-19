@@ -1153,7 +1153,7 @@ code without parsing command-specific output:
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Validation error — parse/semantic errors from `bp check`/`bp build`/etc., lint errors, `bp fmt --check` on an unformatted file, a failed test run, an undocumented `bp explain <code>` |
+| `1` | Validation error — parse/semantic errors from `bp check`/`bp build`/etc., lint errors, `bp fmt --check` on an unformatted file, a failed test run, an undocumented `bp explain <code>`. Also `bp` with no command, or a command run without its required argument (for example `bp check` with no path): usage is printed and the exit code is `1` |
 | `2` | Environment or file error — the input file couldn't be read, an unknown/malformed `--target` or flag, a value flag with no value, an unexpected extra argument, a path argument of `bp check`/`bp lint`/`bp fmt` that doesn't exist or is a directory with no `.bp` files, `bp fmt` on several files without `--write`/`--check`, `bp diff --force` without `--apply`, a required external tool is missing (`docker`, `uv`), an output-directory safety check failed (see `--force` on `bp build`) |
 | `3` | Formatter bug — `bp fmt` produced output that does not re-parse or changes the syntax tree, so it refused to format the file. Report it; the file is unchanged |
 | `4` | Codegen error — the AST parsed and checked cleanly, but the target generator itself failed (e.g. an unsupported construct for `--target python`/`--target effect`) |

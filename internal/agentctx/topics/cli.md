@@ -37,7 +37,7 @@
 | Code | Meaning |
 |---|---|
 | 0 | Success. |
-| 1 | Validation failure: check, lint, `fmt --check`, a failed test, `diff --exit-code` with changes, undocumented `bp explain` code. |
+| 1 | Validation failure: check, lint, `fmt --check`, a failed test, `diff --exit-code` with changes, undocumented `bp explain` code. Also `bp` with no command, or a command without its required argument (usage is printed). |
 | 2 | Usage or environment: unknown flag, flag with no value, extra argument, missing file or directory with no `.bp`, `fmt` on several files without `--write`/`--check`, `diff --force` without `--apply`, missing `docker` or `uv`, unsafe `--out`. |
 | 3 | `bp fmt` refused: the formatter produced output that changed the syntax tree. Report it. |
 | 4 | Codegen error: the file checks, but the target cannot generate it (for example Python with STREAM/WS). |

@@ -430,8 +430,7 @@ How `format` is enforced depends on the target:
 On Python, each of these is a `str` subclass, so the parsed value is still a
 plain `str`. A value that fails the check answers `422`, FastAPI's validation
 status. The generated module is stdlib only. Python applies `format` to endpoint
-inputs and model fields. Its model fields carry the format type but not the
-`min`/`max` bounds; endpoint inputs keep their bounds.
+inputs and model fields.
 
 ### Computed Fields
 

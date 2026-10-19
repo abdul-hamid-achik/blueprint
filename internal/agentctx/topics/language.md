@@ -61,15 +61,16 @@ GET /api/todos/:id {
 | `model name { field type constraints }` | Database table. |
 | `enum Name { one variant per line }` | Named enum. Inline form in a field: `enum(a, b)`. |
 | `type Name { field type }` / `alias Name = ...` | Structured type / alias. Python rejects both. |
-| `external "name" { ... }` | Service for `call` steps. |
+| `external "name" { ... }` | Service for `call` steps. Node `auth` is `bearer`, `jwt`, `basic`, or `api_key` with exactly one `secret.NAME` or `env.NAME` (sets `Authorization` or `X-API-Key`). `retry N` adds N immediate attempts for network/timeout failures and HTTP 408/429/5xx only. |
 | `middleware name { before { ... } after { ... } }` | Request middleware. |
 | `fn name { <- in type  -> type  impl node { module: "...", func: "..." } }` | Function; `impl` gives a user-owned scaffold. |
 | `pipe name { ... }` | Reusable pipeline. |
 | `GET\|POST\|PUT\|PATCH\|DELETE /path { ... }` | REST endpoint. |
+| `cache <duration>` (endpoint meta) | Node, GET only: `Cache-Control` on 2xx responses, `private` when the response can depend on the caller (`use`/`auth`/`limit`, global `use`, or header/cookie/session/auth reads), otherwise `public`. Other methods get no header (lint `cache-on-non-get`). Python rejects it. |
 | `STREAM /path { ... }` | SSE endpoint. Node only. |
 | `WS /path { on_connect { } on_message { } on_disconnect { } }` | WebSocket endpoint. Node only. |
 | `test name { ... }` | Authored Node test. Python rejects. |
-| `computed name type = expr` (in a model) | Read-only derived field. Node only. |
+| `computed name type = expr` (in a model) | Read-only, non-persisted field: `string`/`text`/`int`/`float`/`money`/`bool`, a pure expression over required fields and earlier computed fields. Calls, optional fields, forward refs, and use in `save`/`seed`/`update` keys or `where`/`order` are rejected. Node only. |
 
 **Intents:** `@ "text"` may precede any top-level declaration (checked: secret, model, enum, type, fn, middleware, endpoints) and any `|>` step (`|> @ "fetch it"`). Intents are documentation only. `bp lint` warns `intent-on-endpoints` for an endpoint without one.
 
@@ -105,15 +106,15 @@ Endpoint bodies, middleware `before`/`after`, and fn logic are `|>` steps. Outpu
 | Step | Meaning |
 |---|---|
 | `x = fetch M(id)` | One record by id. |
-| `x = query M [where(...)] [order(...)] [paginate(p, pp)] [first]` | Collection, page, or single row. |
+| `x = query M [where(...)] [with(rel)] [order(...)] [paginate(p, pp)] [first]` | Collection, page, or single row. `where` takes `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `or`, `and`, and text search. Node `with(author)` is a one-level LEFT JOIN through `author_id ref(target)`; aliases, self joins, nested joins, and `fetch ... with(...)` are rejected. |
 | `x = save M { col: expr }` / `update M { ... }` / `delete x` | Write. |
 | `guard expr -> 404 "msg"` | Stop with an HTTP error when falsy. |
 | `when cond { ... }` | Conditional block. |
-| `try { ... } recover { ... }` | `recover` sees `error`. On Node, a `try` with multiple writes is one transaction. |
+| `try { ... } recover { ... }` | `recover` sees `error`. A `try` with two or more writes rolls back as a unit (Node transaction, Python SAVEPOINT). External side effects are not rolled back; compensate in `recover`. |
 | `map coll: op` | For-each. |
 | `log "msg" level(info)` | Levels: debug, info, warn, error. Other levels are C051. |
 | `inject x as y` | Middleware: expose a value to the handler. |
-| `emit "event" { data }` / `enqueue "queue" { data }` | Event / BullMQ job. |
+| `emit "event" { data }` / `enqueue "queue" { data }` | Event / BullMQ job. With `REDIS_URL`, STREAM listeners on other instances receive emitted events; `subscribe` handlers stay local. |
 | `join room(id)` / `leave room(id)` / `broadcast room(id) { data }` | WS only. Need no `model room`. |
 | `close` | WS only: closes the connection and ends the handler. Anywhere else: C035. |
 | `call svc GET /path` / `sleep 5s` | External call / delay. |
