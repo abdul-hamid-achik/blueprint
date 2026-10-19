@@ -262,6 +262,9 @@ jobs:
             echo "=== bp test --target python: $src ==="
             ./bin/bp test "$src" --target python --out "/tmp/py-test-$name"
           done
+          # python_realtime_surface generates no tests, so bp test stops before
+          # installing it; import the app so its WS and STREAM translation runs.
+          (cd /tmp/py-test-python_realtime_surface && uv sync -q && uv run python -c "import src.app")
           echo "generated Python contract tests pass"
 
       - name: Lint examples
