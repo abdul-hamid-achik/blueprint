@@ -105,15 +105,16 @@ table and the CHANGELOG together.
 | 2 | Examples tsc clean | ✅ green | 2026-05-29 (CI) |
 | 2 | Examples pass `bp test` | 🟡 generated Node/Python harnesses are smoke-checked in CI; runners are not executed there | 2026-07-14 |
 | 2 | `bp build` idempotent | ✅ green (CI gate) | 2026-05-29 |
+| 2 | Declared input constraints enforced on Node: REST path `min`/`max`/type failures answer `400` before the handler runs; `format(email\|url\|uuid\|ip\|date)` is enforced with Zod. Python enforces the same constraints with `Path(...)` bounds and `src/lib/formats.py`, answering `422` | ✅ (Node); 🟡 (Python, advanced beta) | 2026-10-18 |
 | 2 | No `: any` in handler boundaries | ✅ Hono `Variables` typed from middleware-injected model (`typeof schema.M.$inferSelect` with `NonNullable` mapped fields); merged fn scaffolds typed from `fn.Inputs`/`Outputs` instead of `...args: any[]` | 2026-05-29 |
 | 2 | Relationship/computed target behavior | ✅ Node emits one-level LEFT JOINs and pure computed materializers; Python/Effect reject unsupported ASTs | 2026-07-14 |
 | 3 | Errors have `Hint:` on every kind | ✅ green; every checker diagnostic path supplies a hint | 2026-07-14 |
-| 3 | Structured error codes | ✅ green (L001, P001, C001–C052 documented + emitted; every checker error is coded; `bp explain` shipped) | 2026-05-29 |
-| 3 | `bp fmt --check` on all examples | ✅ green — column alignment shipped (v0.14.0); all 5 examples pass `bp fmt --check`; CI gate extended to all `examples/*.bp` | 2026-07-10 |
+| 3 | Structured error codes | ✅ green (L001, P001, C001–C052 documented + emitted; every checker error is coded; `bp explain` shipped) | 2026-10-18 |
+| 3 | `bp fmt --check` on all examples | ✅ green — column alignment shipped (v0.14.0); all 5 examples pass `bp fmt --check`; CI gate extended to all `examples/*.bp`; 0.16.0 and 0.17.0 fixed round-trip losses and added output verification | 2026-10-18 |
 | 3 | LSP feature depth | ✅ diagnostics, quick fixes, definition, references, open-document rename, hover, context-aware completion, formatting, outline, folding, local-workspace symbols, workspace-folder updates, and packaged configurable VS Code stdio client | 2026-10-18 |
 | 3 | Honest TypeScript import scaffold | ✅ static Drizzle/Hono plus transport-compatible `zValidator` facts only; nullable/type-changing Zod fields skip, Drizzle SQL/options loss warns, and all handlers are reported TODO/501 stubs | 2026-07-14 |
 | 3 | `bp doctor` checks every external dep | ✅ probes drizzle-kit, tsc, python3, uv, alembic, pytest in addition to bun/node/postgres/redis/git; version-parser fixed (Redis no longer reports as `redis-cli`, Docker no longer keeps trailing comma) | 2026-05-29 |
-| 3 | `bp lint` produces 0 warnings on every shipped example | ✅ green; two new rules ship in v0.10 (`where-predicate-self-equal`, `unused-input`) | 2026-05-29 |
+| 3 | `bp lint` produces 0 warnings on every shipped example | 🟡 CI lints `hello-world` and `todo-api`, both clean. `examples/realtime-chat.bp` has one `unenforceable-ws-auth` warning (bearer auth on WS, not enforced by codegen), and `ecommerce-api` and `realtime-chat` have `unpaginated-list` info notes. The 0.16.0 rule set (including `cache-on-non-get`) is in place | 2026-10-18 |
 | 4 | Self-contained `bp test` | 🟡 generated contract tests use in-memory PGlite; unsupported authored-test surfaces now fail preflight before build/install/Vitest rather than running a predictably incomplete suite | 2026-07-14 |
 | 4 | Deterministic property generation | ✅ opt-in Node fast-check suite uses stable seeds and 32 valid-request runs; DB state resets per run, and impossible path/email/URL domains, ref-backed writes, recursion, or unsupported/non-hermetic routes reject with no files | 2026-07-14 |
 | 4 | Authored tests compose with the harness | 🟡 the supported literal-path JSON/auth/assertion subset runs; cleanup, multipart/file fixtures, custom request entries, timing assertions, shared setup, and missing native assets are rejected with actionable diagnostics | 2026-07-14 |
@@ -141,7 +142,7 @@ phase-by-phase here so the work does not drift:
 | 3c | `order(...)`, FK access, `when` inline, `try`/`recover`, `map`, `log` | ✅ shipped | 2026-05-29 |
 | 3d/5 | Native `fn` decls + scaffold, `middleware` → FastAPI Depends, `sum()`, `now` | ✅ shipped; inline `fn logic` now fails closed | 2026-07-14 |
 | 5 | STREAM (SSE), WS, `cache redis` | 🟡 `cache redis` ships; STREAM/WS declarations now fail closed because lifecycle/event bodies are not translated yet | 2026-07-14 |
-| 3d | Non-`==` `where` (`or`/`and`/`in`/text-search/duration), bare-expression steps, partial-commit rollback | ✅ shipped — `or`/`and`/`in`/text-search/duration RHS shipped v0.13.0; bare BlockExpr steps shipped v0.14.0; `log` levels now emit `logger.<level>(...)` via `src/lib/log.py` | 2026-07-10 |
+| 3d | Non-`==` `where` (`or`/`and`/`in`/text-search/duration), bare-expression steps, partial-commit rollback | ✅ shipped — `or`/`and`/`in`/text-search/duration RHS shipped v0.13.0; bare BlockExpr steps shipped v0.14.0; `log` levels now emit `logger.<level>(...)` via `src/lib/log.py`; try/recover bodies with two or more writes roll back through `db.begin_nested()` (SAVEPOINT) | 2026-10-18 |
 | 4 | Middleware, fn/pipe (`impl python`), `bp test` with testcontainers | 🟡 `bp test --target python` now builds the pytest/testcontainers harness and runs `uv run pytest`; middleware supports `fetch`/`log`/declared-fn/`inject`/`guard` and rejects richer steps; authored Blueprint tests, inline fn logic, `pipe`, and full `impl python` parity remain open | 2026-07-14 |
 
 **The effect target is separate and much earlier.** `--target effect`

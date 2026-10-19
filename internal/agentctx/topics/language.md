@@ -1,148 +1,174 @@
 # Blueprint Language Reference
 
-The `.bp` DSL. Whitespace-significant blocks, `#`-prefix line comments, snake_case identifiers. Every file must open with a `blueprint "<name>" { ... }` block.
+The `.bp` DSL: whitespace-significant blocks, `#` line comments, snake_case fields and inputs, PascalCase enum names (C048). Every file opens with one `blueprint "<name>" { ... }` block. Full reference: `docs/language-reference.md`. Real specs: `examples/*.bp`.
 
-## File structure
+## Complete example
 
 ```bp
 blueprint "todo-api" {
-  port: 3000
-  database: postgres
-  cache: redis      # optional
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+
+secret DATABASE_URL required
+
+enum Priority {
+  low
+  high
 }
 
 model todo {
-  id      uuid       primary
-  title   string     required
-  done    bool       default(false)
-  created timestamp  default(now)
-  computed label string = title + "!"
+  id       uuid       primary
+  title    string     required min(1) max(200)
+  done     bool       default(false)
+  priority Priority   default(low)
+  score    int        min(0) max(100) default(0)
+  created  timestamp  default(now)
 }
 
+@ "List todos, one page at a time"
 GET /api/todos {
-  -> 200 [{ id: string, title: string, done: bool, created: timestamp }]
-  |> all = query todo
-  |> return all
+  <- page     int default(1) min(1)
+  <- per_page int default(20) min(1) max(100)
+  |> todos = query todo paginate(page, per_page)
+  -> 200 { items: todos.items, total: todos.total }
+}
+
+@ "Create a todo"
+POST /api/todos {
+  <- title string required
+  |> created = save todo { title: title }
+  -> 201 { id: created.id, title: created.title }
+  -> 400 "invalid"
+}
+
+@ "Get one todo"
+GET /api/todos/:id {
+  <- id uuid required
+  |> todo = fetch todo(id)
+  |> guard todo -> 404 "Todo not found"
+  -> 200 { id: todo.id, title: todo.title, done: todo.done }
 }
 ```
 
 ## Top-level declarations
 
-| Decl | Purpose |
+| Declaration | Notes |
 |---|---|
-| `blueprint "name" { ... }` | Required first block. Project metadata. |
-| `secret NAME required` | Declares an env-var dependency. Project fails to start if missing. |
-| `model X { fields }` | Database table. Generates schema + migration. |
-| `enum X { variant_a, variant_b }` | Named enum type. |
-| `type X { fields }` | Named structured type. Use `alias X = ...` for an alias. |
-| `external "name" { ... }` | Declares an external service for `call` steps; Node supports env-backed auth and bounded immediate retries. |
-| `middleware X { before { ... } after { ... } }` | Request middleware. |
-| `fn X(<-input ...) -> output { logic { ... } } [impl ...]` | Pure or impure function. `impl` can be `node`/`python`/`exec`/`http`. |
-| `pipe X { logic { ... } }` | Reusable pipeline. |
-| `METHOD /path { meta + inputs + steps + outputs }` | HTTP route (GET/POST/PUT/PATCH/DELETE). |
-| `cache <duration>` (endpoint meta) | Node: GET only; sets `Cache-Control` on 2xx responses, `private` when the response may depend on the caller (any `use`/`auth`/`limit`, global `use`, or header/cookie/session/auth reads), else `public`. Other methods emit no header (lint `cache-on-non-get`). Python rejects it. |
-| `STREAM /path { ... }` | SSE endpoint on Node; currently rejected by Python codegen. Declared `<-` inputs must name a `:param` in the path and are validated (400 before the stream opens). |
-| `WS /path { <- param ... on_connect { ... } on_message { ... } on_disconnect { ... } }` | WebSocket endpoint on Node; currently rejected by Python codegen. Path-param `<-` inputs are validated before the upgrade (400 refuses the handshake). |
-| `test name { ... }` | Authored Node/Vitest test; Python rejects authored test blocks. |
+| `blueprint "name" { version, port, runtime, database, cache }` | Required, first block, once per file. |
+| `secret NAME required` | Env var the service needs. |
+| `model name { field type constraints }` | Database table. |
+| `enum Name { one variant per line }` | Named enum. Inline form in a field: `enum(a, b)`. |
+| `type Name { field type }` / `alias Name = ...` | Structured type / alias. Python rejects both. |
+| `external "name" { ... }` | Service for `call` steps. Node `auth` is `bearer`, `jwt`, `basic`, or `api_key` with exactly one `secret.NAME` or `env.NAME` (sets `Authorization` or `X-API-Key`). `retry N` adds N immediate attempts for network/timeout failures and HTTP 408/429/5xx only. |
+| `middleware name { before { ... } after { ... } }` | Request middleware. |
+| `fn name { <- in type  -> type  impl node { module: "...", func: "..." } }` | Function; `impl` gives a user-owned scaffold. |
+| `pipe name { ... }` | Reusable pipeline. |
+| `GET\|POST\|PUT\|PATCH\|DELETE /path { ... }` | REST endpoint. |
+| `cache <duration>` (endpoint meta) | Node, GET only: `Cache-Control` on 2xx responses, `private` when the response can depend on the caller (`use`/`auth`/`limit`, global `use`, or header/cookie/session/auth reads), otherwise `public`. Other methods get no header (lint `cache-on-non-get`). Python rejects it. |
+| `STREAM /path { ... }` | SSE endpoint. Node only. |
+| `WS /path { on_connect { } on_message { } on_disconnect { } }` | WebSocket endpoint. Node only. |
+| `test name { ... }` | Authored Node test. Python rejects. |
+| `computed name type = expr` (in a model) | Read-only, non-persisted field: `string`/`text`/`int`/`float`/`money`/`bool`, a pure expression over required fields and earlier computed fields. Calls, optional fields, forward refs, and use in `save`/`seed`/`update` keys or `where`/`order` are rejected. Node only. |
 
-## Type system
+**Intents:** `@ "text"` may precede any top-level declaration (checked: secret, model, enum, type, fn, middleware, endpoints) and any `|>` step (`|> @ "fetch it"`). Intents are documentation only. `bp lint` warns `intent-on-endpoints` for an endpoint without one.
 
-Primitives: `uuid`, `string`, `text`, `int`, `float`, `bool`, `timestamp`, `json`, `json<T>`. Named: `enum(a, b, c)` (inline) or an `enum` decl referenced by name. `ref(<model>)` is a foreign key.
+## Types
+
+`string`, `text`, `int`, `float`, `bool`, `uuid`, `timestamp`, `json`, `json<T>`, `money`, `file`; `enum(a, b)` inline or a named enum; `ref(model)` for a foreign key.
 
 ## Field constraints
 
 | Constraint | Meaning |
 |---|---|
-| `primary` | Primary key. `uuid primary` gets `DEFAULT gen_random_uuid()`. |
-| `required` | NOT NULL. |
-| `optional` | Nullable (default unless constrained). |
-| `unique` | UNIQUE. |
-| `default(value)` | Column default. `default(now)` → `defaultNow()` / `func.now()`. |
-| `ref(model)` | FK to `model.id`. |
-| `auto` | Auto-bump on `update` (timestamp convention). |
-| `index` | Add an index. |
+| `primary`, `required`, `optional`, `unique`, `index`, `auto` | Key, NOT NULL, nullable, UNIQUE, index, auto-bump on update. |
+| `default(v)` | Column default. `default(now)` for timestamps. |
+| `ref(model)` | Foreign key to `model.id`. |
+| `min(n)`, `max(n)` | Bounds. Rules below. |
+| `format(kind)` | String validation: `email`, `url`, `uuid`, `ip`, `date`. |
 
-Computed model fields use
-`computed <name> <string|text|int|float|money|bool> = <pure expression>`. They
-may reference required supported persisted fields and earlier computed fields
-through type-compatible literals/unary/binary operators. They are read-only
-and non-persisted; calls, optional fields, forward refs, assignment, computed
-keys in `save`/`seed`/`update`, and computed `where`/`order` columns reject.
-Node materializes them after DB operations, while Python and Effect reject them.
+### Constraint values (C052)
+
+`bp check` rejects a value that cannot apply to the field's type. Every violation is C052.
+
+- `default(v)` must fit the type: int = whole number; float/money = number; bool = `true`/`false`; string = quoted string; uuid = quoted UUID; timestamp = `now` or a quoted ISO-8601 value; enum = one of its variants.
+- `min`/`max` on int, float, money: a number (or a size such as `10mb` / duration such as `5s` where allowed).
+- `min`/`max` on string, uuid, list: a whole, non-negative length, e.g. `max(255)`.
+- `min`/`max` on bool, enum, timestamp: not allowed.
+- `min(n) max(m)` with plain literals requires `n <= m`.
+- `format` only on string fields, with one of the five kinds above.
 
 ## Pipeline steps (`|>`)
 
-Every endpoint body, middleware `before`/`after`, and fn `logic` is a pipeline of `|>` steps.
+Endpoint bodies, middleware `before`/`after`, and fn logic are `|>` steps. Output lines (`-> status ...`) must come after all steps (C011).
 
-| Step | Shape | Meaning |
-|---|---|---|
-| `fetch <M>(id)` | Single record by id. |
-| `query <M> [where(...)] [with(...)] [order(...)] [paginate(p,pp)] [first]` | Collection / single / paginated. `where` supports `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `or`, `and`, and text-search shorthand. Node `with(author)` loads one level through `author_id ref(target)`. |
-| `save <M> { col: expr, ... }` | Insert. |
-| `update <M> { col: expr, ... }` | Update bound row or all matching. |
-| `delete <var-or-model>` | Delete row(s). |
-| `guard <expr> -> <status> "<msg>"` | Short-circuit with HTTP error. |
-| `when <cond> { ... }` / `when <cond>: <stmt>` | Conditional block / inline. |
-| `try { ... } recover { ... }` | Exception handling; `recover` sees `error`. In the node target, a `try` body with multiple writes runs in a DB transaction (partial writes roll back); external side effects are not rolled back — compensate in `recover`. |
-| `map <coll>: <op>` | For-each over a collection. |
-| `<var> = <op>` | Bind step result. |
-| `log "msg" [level(debug\|info\|warn\|error)]` | Log line; default level is info. Any other level is an error on Python. |
-| `inject <binding> as <name>` | (Middleware) Expose to handler context. |
-| `return <value>` | Explicit return. |
-| `emit "<event>" { data }` | Publish in-process event. With `REDIS_URL`, STREAM listeners on other instances also receive it; subscribe handlers do not. |
-| `enqueue "<queue>" { data }` | Enqueue a job to a BullMQ worker queue (multi-instance safe). |
-| `broadcast room(id) { data }` | (WS) Send to all connections in a room (multi-instance via Redis pub/sub). |
-| `join room(id)` / `leave room(id)` | (WS) Join/leave a room. |
-| `call <service> GET /path` | External service call. |
-| `sleep <duration>` | Delay execution. |
+| Step | Meaning |
+|---|---|
+| `x = fetch M(id)` | One record by id. |
+| `x = query M [where(...)] [with(rel)] [order(...)] [paginate(p, pp)] [first]` | Collection, page, or single row. `where` takes `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `or`, `and`, and text search. Node `with(author)` is a one-level LEFT JOIN through `author_id ref(target)`; aliases, self joins, nested joins, and `fetch ... with(...)` are rejected. |
+| `x = save M { col: expr }` / `update M { ... }` / `delete x` | Write. |
+| `guard expr -> 404 "msg"` | Stop with an HTTP error when falsy. |
+| `when cond { ... }` | Conditional block. |
+| `try { ... } recover { ... }` | `recover` sees `error`. A `try` with two or more writes rolls back as a unit (Node transaction, Python SAVEPOINT). External side effects are not rolled back; compensate in `recover`. |
+| `map coll: op` | For-each. |
+| `log "msg" level(info)` | Levels: debug, info, warn, error. Other levels are C051. |
+| `inject x as y` | Middleware: expose a value to the handler. |
+| `emit "event" { data }` / `enqueue "queue" { data }` | Event / BullMQ job. With `REDIS_URL`, STREAM listeners on other instances receive emitted events; `subscribe` handlers stay local. |
+| `join room(id)` / `leave room(id)` / `broadcast room(id) { data }` | WS only. Need no `model room`. |
+| `close` | WS only: closes the connection and ends the handler. Anywhere else: C035. |
+| `call svc GET /path` / `sleep 5s` | External call / delay. |
 
-For Node external services, `auth` supports `bearer`, `jwt`, `basic`, or
-`api_key` with exactly one declared `secret.NAME` or `env.NAME`; generated code
-sets `Authorization` or `X-API-Key`. `retry N` means N additional immediate
-attempts for network/timeout failures and HTTP 408/429/5xx, with a fresh timeout
-for each attempt. Other 4xx responses are not retried, and malformed config
-fails before files are returned.
+`whisper` is not implemented; the checker rejects it. There is no `return` step: end with `->` outputs.
 
-On Python routes, supported GET/DELETE inputs become FastAPI `Query`,
-POST/PUT/PATCH inputs become embedded `Body`, and `header.X-Name` becomes an
-aliased `Header` parameter. `env.FIELD` must be backed by a declared secret or
-generated infrastructure setting. The target remains fail-closed for its
-documented unsupported declarations and expression/middleware shapes. Bare
-`query model where(q)` is text search only for a string/text endpoint input;
-dynamic filter accumulators and other bound values there are rejected. Field
-access on JSON/map inputs or JSON-returning function results also fails closed
-until Python can emit dictionary indexing. Direct header/env expressions work,
-but raw interpolation of header/env or dictionary-backed values rejects.
+## REST endpoints
 
-Across Node and Python, declaring any model activates the full Postgres layer;
-`database postgres` with no models still emits an importable empty schema/Base.
-Blueprint settings are unique, and the checker validates the version/port and
-runtime/database/cache/storage value shapes before codegen.
+- Inputs come from the query string (GET, DELETE), the JSON body (POST, PUT, PATCH), `:param` path segments, or `header.X-Name`.
+- Path inputs are validated against their type and constraints. A bad segment answers `400` on Node (`{ success: false, error }`, before the handler) and `422` on Python.
+- Output values reference bindings or literals. A type name in a response (`-> 200 { id: string }`) is C035, an unbound identifier.
+- The same METHOD and path twice is C005. GET, STREAM, and WS on one path collide too, as do paths that differ only in `:param` names.
 
-Node relationship loading is a nullable one-level LEFT JOIN on `query` only.
-Aliases, self joins, repeated target models, nested eager loading, dynamic or
-duplicate relationship names, field collisions, legacy positional/block query
-arguments, and `fetch ... with(...)` reject. Python and Effect reject
-`with(...)` before output.
-
-## Endpoint inputs / outputs
+## Realtime (Node only)
 
 ```bp
-POST /api/todos {
-  <- title string required
-  <- done bool default(false)
-  -> 201 { id: string, title: string }
-  -> 400 { error: string }
-  |> created = save todo { title: title, done: done }
-  |> return { id: created.id, title: created.title }
+blueprint "chat" {
+  version "1.0.0"
+  port 3000
+  runtime node
+}
+
+@ "A chat room; room(...) needs no model"
+WS /ws/rooms/:id {
+  <- id uuid required
+  on_connect {
+    |> join room(id)
+    |> log "client joined" level(info)
+  }
+  on_message {
+    |> broadcast room(id) { type: "message" }
+    |> close
+  }
+  on_disconnect {
+    |> leave room(id)
+  }
+}
+
+@ "Live events for one room"
+STREAM /rooms/:id/events {
+  <- id uuid required
+  stream {
+    |> on timeout(30s) {
+      -> { online: 0 }
+    }
+  }
 }
 ```
 
-`<-` declares an input (parsed from path/query/body by HTTP method). `->` declares a possible response with a literal shape — these become the OpenAPI spec via `bp docs <file>.bp`.
+`:param` inputs on STREAM and WS are validated before the stream or upgrade starts (400 refuses the handshake). Python rejects both kinds of endpoint.
 
 ## See also
 
-- `bp context cli` — running the compiler
-- `bp context errors` — what `Cxxx` codes mean
-- `bp context examples` — see real specs
-- `bp context codegen` — what the generated project looks like
+- `bp context cli` — commands and flags
+- `bp context errors` — C-codes and `bp explain`
+- `bp context targets` — what each target accepts
+- `bp context examples` — real specs

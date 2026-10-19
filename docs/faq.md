@@ -225,6 +225,42 @@ Or use guards for complex validation:
 |> guard file.size < env.MAX_SIZE -> 413 "File too large"
 ```
 
+### Does bp validate path parameters?
+
+Yes. On the Node target, each REST path input (`:id`, `:name`, ...) is parsed
+against its declared type and constraints before the handler runs: string
+`min`/`max`, inline and named enums, and `int`/`float`/`bool`/`timestamp`
+coercion, plus `uuid`. A segment that fails answers `400` with
+`{ success: false, error }`. The Python target turns `min`/`max` on path inputs
+into FastAPI `Path(...)` bounds, so a violation answers `422`.
+
+```bp
+GET /codes/:code {
+  <- code string min(3) max(5)
+  -> 200 { code: code }
+}
+# GET /codes/ab    -> 400 (Node) / 422 (Python)
+```
+
+A constraint that cannot apply to its type (such as `max(3)` on a `bool`) now
+fails `bp check` with C052 instead of reaching generated code.
+
+### Which formats are supported?
+
+`format(...)` accepts five values: `email`, `url`, `uuid`, `ip`, and `date`.
+Any other name is a C052 error from `bp check`.
+
+- **Node:** all five are enforced with Zod (`.email()`, `.url()`, `.uuid()`,
+  `.ip()`, `.date()`) on inputs and model fields. Contract-test samples and
+  property tests generate values that satisfy them.
+- **Python:** all five are enforced on string endpoint inputs and model fields
+  through the generated `src/lib/formats.py`. A violation answers `422`. The
+  values stay plain `str`.
+
+```bp
+<- email string required format(email)
+```
+
 ### Why am I getting "unexpected token" errors?
 
 Common causes:
@@ -456,6 +492,28 @@ also receive emitted events; subscribe handlers run only where `emit` was called
 ---
 
 ## Troubleshooting
+
+### Why did bp fmt exit 3?
+
+Exit `3` means the formatter refused its own output, not that your file is
+wrong. Before it writes or prints anything, `bp fmt` re-parses the formatted
+text and compares it with the source: the syntax tree, the `#` comment count,
+and the `@` intent count. If any of these differ, `bp fmt` leaves the file
+unchanged and prints `bug in the formatter`. Report it at
+https://github.com/abdul-hamid-achik/blueprint/issues and include the file if you
+can share it. Use `bp fmt --check` in CI to catch unformatted files (exit `1`).
+
+Intents are kept on every declaration kind, including `secret` and `env`, so
+those files format normally. Exit `3` for those files was a 0.16.0 behavior.
+
+### Why does a command exit 2?
+
+Exit `2` is a usage or environment error: an unknown flag, a value flag with no
+value, an unexpected extra argument, a path that doesn't exist, or a missing
+external tool. Exit `1` is a validation failure. A command run without its
+required argument (for example `bp check` with no path) prints usage and exits
+`1`. Scripts can branch on the codes. See the
+[Exit Codes](./cli-reference.md#exit-codes) table.
 
 ### "Error: unexpected token" on a valid-looking file
 

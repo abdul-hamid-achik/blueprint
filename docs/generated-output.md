@@ -49,7 +49,7 @@ generated/
     │   ├── state.ts
     │   ├── cache.ts           # conditional: cache redis
     │   ├── http-cache.ts      # conditional: GET endpoints with `cache`
-    │   └── events.ts          # conditional: STREAM / WS / subscribe
+    │   └── events.ts          # conditional: subscribe, emit, or STREAM `on event(...)`
     ├── routes/
     │   └── <resource>.ts
     ├── functions/
@@ -64,14 +64,26 @@ generated/
     │   └── <event>.ts
     ├── saves/
     │   └── <name>.ts
-    └── schedules/
-        └── <name>.ts
+    ├── schedules/
+    │   └── <name>.ts
+    └── impl/
+        └── functions/
+            └── internal/
+                └── <name>.ts  # user-owned native scaffold, created once
 └── test/                    # opt-in generated tests
     ├── _harness/
     └── generated/
         ├── <resource>.test.ts
         └── <resource>.property.test.ts # --gen-property-tests
 ```
+
+The tree lists every file a feature can produce. A file appears only when the
+`.bp` source declares that feature. For example, `examples/hello-world.bp`
+builds to `package.json`, `Dockerfile`, `.env.example`, `frontend/`,
+`src/index.ts`, `src/lib/env.ts`, `src/lib/errors.ts`, `src/routes/`,
+`src/types/`, `src/validation/schemas.ts`, and `.blueprint/manifest.json`. It
+has no `drizzle.config.ts`, `src/lib/db.ts`, or `src/models/schema.ts`, because
+it declares no models.
 
 Tests are **opt-in**. When you build with `--gen-tests` (or run `bp test`), Blueprint also emits a PGlite-backed Vitest contract suite and a top-level `vitest.config.ts`. Node `--gen-property-tests` implies that suite and adds deterministic fast-check files:
 
@@ -96,7 +108,7 @@ generated/
 | Database ORM | Drizzle ORM | Type-safe, SQL-first |
 | Validation | Zod | Request/response schemas |
 | Background jobs | BullMQ | Redis-based job queue |
-| Testing | Vitest | Fast, ESM-native |
+| Testing | Vitest (`vitest ^5.0.5`) | Fast, ESM-native. Vitest 5 is pinned because `^4.1.10` breaks `npm install` under npm 10.9 |
 | Property generation (optional) | fast-check | Stable seeds; valid-request arbitraries |
 | File storage | `@aws-sdk/client-s3` | S3 and compatible APIs |
 | Migrations | Drizzle Kit | Pairs with Drizzle ORM |
@@ -555,6 +567,29 @@ export class NotFoundError extends BpError {
 }
 ```
 
+### `src/lib/http-cache.ts` (conditional: GET endpoints with `cache`)
+
+`httpCache(maxAgeSeconds, scope)` is attached to each GET endpoint that declares
+`cache <duration>`. After the handler runs, it sets `Cache-Control: <scope>,
+max-age=<n>` on a 2xx response that does not already carry the header. Error
+responses are left alone. STREAM and WS endpoints do not send the header, and
+the `cache-on-non-get` lint warns about `cache` on other methods.
+
+The scope is `private` when the endpoint or blueprint has `use`, `auth`, or
+`limit` metadata, or when the body reads caller-scoped state. Otherwise it is
+`public`. Check the header with two different callers before you rely on it
+behind a shared cache.
+
+### `src/lib/events.ts` (conditional: `subscribe`, `emit`, or STREAM `on event(...)`)
+
+The in-process event registry. `subscribe` handlers run only on the instance
+that emits the event. When the blueprint has STREAM endpoints, `events.ts` also
+carries the STREAM fan-out. With `REDIS_URL` set, each `emit` is published to
+`bp:stream:<event>`, and STREAM listeners on other instances receive it. Without
+`REDIS_URL`, listeners receive only events from their own instance. See
+[Deployment](./deployment.md#multi-instance-and-security-caveats) for the
+multi-replica caveats.
+
 ### `test/generated/<resource>.test.ts` (opt-in via `--gen-tests`)
 
 Tests are **not** emitted by a plain `bp build`. Add `--gen-tests` (or run `bp test`) and Blueprint generates a Vitest contract suite — **one file per resource**, not one per `test` block. Each suite mocks `src/lib/db` with a PGlite in-memory Postgres (see `test/_harness/db.ts`), resets it between tests, seeds path-param ids, and asserts each endpoint responds with one of the statuses its handler and guards can declare.
@@ -735,7 +770,7 @@ docker run -e DATABASE_URL=... -e STRIPE_KEY=... -p 3000:3000 my-service
 
 ### Environment Variables
 
-Copy `.env.example` and fill in all values. Required secrets cause a startup error if missing.
+Copy `.env.example` and fill in all values. Required secrets cause a startup error if missing. `DATABASE_URL` appears when the blueprint has models or `database postgres`. `REDIS_URL` appears when it declares `cache redis`, a queue, workers, or schedules. STREAM and WS fan-out read `REDIS_URL` from the environment and stay local when it is unset. Python builds do not emit `.env.example`; they emit `src/lib/env.py`.
 
 ```bash
 cp .env.example .env

@@ -74,7 +74,7 @@ bp deploy service.bp \
   --tag registry.example.com/team/service:1.4.0
 ```
 
-It performs these steps:
+`--tag` defaults to `blueprint-app:latest`. It performs these steps:
 
 1. Builds the **Node** target into the output directory.
 2. Runs `docker build` for that directory.
@@ -118,8 +118,9 @@ For a configured smoke test, run the resulting image explicitly with
 
 ## Runtime configuration and secrets
 
-Every build emits `.env.example` from declared `secret` and `env` values. Treat
-it as a schema/template, not as a production secret file.
+A Node build emits `.env.example` from declared `secret` and `env` values, plus
+the infrastructure variables its features need. Python builds do not emit it.
+Treat it as a schema/template, not as a production secret file.
 
 ```bash
 cp generated/.env.example production.env

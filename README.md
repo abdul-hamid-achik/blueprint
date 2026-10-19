@@ -19,6 +19,25 @@ can also produce a FastAPI + SQLAlchemy project.
 | `python` | FastAPI, SQLAlchemy, Pydantic, Alembic | Advanced beta; supported HTTP/data slices build, unsupported realtime and declaration semantics fail closed |
 | `effect` | Runnable Effect-TS health/config scaffold | Experimental; emits `GET /health`, typed secret/env config, and pinned dependencies; authored models/endpoints fail closed |
 
+## Highlights
+
+- **Structured diagnostics.** Checker errors carry codes C001–C052, and the
+  lexer and parser add L001 and P001. `bp explain <code>` prints the
+  documentation for a code, with worked examples in
+  [docs/error-codes.md](./docs/error-codes.md).
+- **Safe formatting.** `bp fmt` re-parses its output and compares the syntax
+  tree, comments, and `@` intents with the source. On a mismatch it leaves the
+  file untouched and exits `3`.
+- **Starter templates.** `bp init <name> --template default|minimal|crud|auth|worker`
+  scaffolds a project without overwriting existing files.
+- **Language server.** `bp lsp` provides diagnostics with quick fixes, hover,
+  go-to-definition, find-references, open-document rename, completion,
+  formatting, document outline, folding ranges, and workspace symbols.
+- **Validated inputs.** On the Node target, REST path parameters are checked
+  against their declared type and constraints and answer `400` on failure.
+  `format(email|url|uuid|ip|date)` is enforced on the Node and Python targets.
+  Python's `min`/`max` on path parameters become FastAPI bounds.
+
 ## From `.bp` to a running endpoint
 
 Save this as `hello.bp`:
@@ -26,13 +45,14 @@ Save this as `hello.bp`:
 ```bp
 @ "A small greeting service"
 blueprint "hello" {
-  version  "1.0.0"
-  port     3000
-  runtime  node
+  version "1.0.0"
+  port    3000
+  runtime node
 }
 
+@ "Greet a visitor by name"
 GET /hello/:name {
-  <- name string required
+  <- name  string  required
   -> 200 { message: "Hello, {name}!" }
 }
 ```
@@ -53,6 +73,8 @@ curl http://localhost:3000/hello/Ada
 
 `bp run` builds into `generated/`, installs dependencies when needed, and starts
 the service. Use `bp dev hello.bp` for rebuild-and-restart watch mode.
+`bp run`, `bp dev`, and `bp test` call [Bun](https://bun.sh) directly, so Bun
+must be on your `PATH` for them.
 
 To start from a fuller scaffold instead, run `bp init my-service --template crud`
 (or `default`, `minimal`, `auth`, `worker`; `bp init --list-templates` describes
@@ -322,12 +344,12 @@ feature:
 | Blueprint concept | Generated dependency | Version |
 |-------------------|----------------------|---------|
 | HTTP server | [Hono](https://hono.dev) + `@hono/node-server` | ^4.6 / ^1.13 |
-| Database ORM | [Drizzle ORM](https://orm.drizzle.team) + `pg` | ^0.36 / ^8.13 |
+| Database ORM | [Drizzle ORM](https://orm.drizzle.team) + `pg`; [drizzle-kit](https://orm.drizzle.team/kit-docs/overview) for migrations | ^0.45.2 / ^8.13 / ^0.31.10 |
 | Validation | [Zod](https://zod.dev) | ^3.23 |
 | Job queue | [BullMQ](https://bullmq.io) | ^5.30 |
 | Redis client | `redis` | ^5.0 |
 | File storage | `@aws-sdk/client-s3` | ^3.700 |
-| Testing | [Vitest](https://vitest.dev); optional [fast-check](https://fast-check.dev) properties | ^4.1 / ^3.23 |
+| Testing | [Vitest](https://vitest.dev); [PGlite](https://pglite.dev) for generated tests; optional [fast-check](https://fast-check.dev) properties | ^5.0.5 / ^0.2.0 / ^3.23.2 |
 
 The generated code is clean, idiomatic TypeScript with zero Blueprint runtime dependencies.
 
@@ -417,8 +439,10 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
   immediate retries for network/timeout failures and HTTP 408/429/5xx, with a
   fresh timeout each attempt; other 4xx responses fail immediately, and
   malformed configuration fails codegen.
-- Endpoint `cache <duration>` is currently metadata only. Endpoint rate limits
-  are in-process and per instance.
+- Node endpoint `cache <duration>` sets `Cache-Control` on 2xx GET responses:
+  `private` when the endpoint reads per-user state or has `use`, `auth`, or
+  `limit` metadata, and `public` otherwise. Endpoint rate limits are in-process
+  and per instance.
 - On both Node and Python, declaring a model implies the full Postgres data
   layer. `database postgres` with no models still emits an importable empty
   schema so migration tooling remains valid.
@@ -432,8 +456,9 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
   computed fields use a pure, total, read-only expression subset. Python and
   Effect fail closed on both features.
 - The Python target is an advanced beta for supported HTTP/data slices. It
-  emits FastAPI `Body`/`Query` validation and aliased header parameters, while
-  rejecting STREAM/WS handlers, undeclared env access, unsafe function config,
+  emits FastAPI `Body`/`Query`/`Path` validation, `format` checks through a
+  generated stdlib-only `src/lib/formats.py`, and aliased header parameters,
+  while rejecting STREAM/WS handlers, undeclared env access, unsafe function config,
   richer middleware steps, and other semantics it cannot preserve. The Effect
   target is a runnable, health-only experimental scaffold with typed Effect
   Config for secrets/env defaults; it rejects models/endpoints and test
@@ -460,9 +485,13 @@ go test ./...
 # Run with race detector
 go test -race ./...
 
-# Run fuzz tests (lexer and parser)
+# Run fuzz tests (lexer, parser, and the formatter round-trip guard)
 go test ./internal/lexer/ -fuzz=FuzzTokenize -fuzztime=10s
 go test ./internal/parser/ -fuzz=FuzzParseFile -fuzztime=10s
+go test ./internal/ast/ -fuzz=FuzzFormatRoundTrip -fuzztime=10s
+
+# Regenerate Node golden files after an intentional codegen change
+UPDATE_GOLDEN=1 go test ./internal/codegen/js/ -run TestGolden
 
 # Build binary
 go build -o bin/bp ./cmd/bp

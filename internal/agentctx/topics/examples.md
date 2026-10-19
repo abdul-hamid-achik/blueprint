@@ -1,42 +1,39 @@
 # Example Specs
 
-Five `.bp` files in `examples/`. Each compiles on both targets and is covered end-to-end by CI. Pick one close to your task and grep for the construct you need.
+Five `.bp` files in `examples/`. CI checks and builds all five for Node. Only `hello-world` and `todo-api` build for `--target python`; CI asserts the other three are rejected. Pick the one closest to your task and grep for the construct you need.
 
 ## `hello-world.bp` (smallest)
 
-Two static endpoints — no database. The minimum viable spec. Use it when you need to confirm a CLI flag works without spinning up Postgres.
-
-```bp
-endpoint GET /health { -> 200 { status: "ok" } |> return { status: "ok" } }
-endpoint GET /hello/:name { <- name string required ... }
-```
+No database. Two GET endpoints, one with a path parameter and a constant response. Use it to confirm a toolchain or CLI change without Postgres.
 
 ## `todo-api.bp` (canonical CRUD)
 
-Single model + 5 endpoints (list with pagination, create, get, update, delete). The most-used example. If you're learning the language, read this first.
+One model and five endpoints: paginated list, create, get, toggle, and delete. Start here when learning the language. It also builds on Python.
 
-Demonstrates: `model`, `endpoint`, `query / paginate`, `fetch`, `save`, `update`, `delete`, `guard`, declared `-> <status>` responses.
+Demonstrates: `model` with constraints, `query ... paginate(...)`, `save`, `fetch`, `update`, `delete`, `guard`, `->` responses, path parameters.
 
-## `auth-service.bp` (middleware + fn impl)
+## `auth-service.bp` (middleware and fn impl)
 
-Real-world auth. `secret` declarations for `JWT_SECRET` / `DATABASE_URL`. A `require_auth` middleware that runs before every protected route. Four `fn` declarations (`hashPassword`, `verifyPassword`, `signJwt`, `verifyJwt`) with `impl node { module: "./internal/auth", func: "..." }` — these emit a `UserOwned` scaffold the user fills in.
+Register, login, profile, password change, logout, and email verification. Two models (`user`, `session`), two secrets, four `fn` declarations that use `impl node { module, func }` for user-owned implementations, and a `require_auth` middleware.
 
-Demonstrates: `secret`, `middleware { before { ... } }`, `inject X as Y`, `fn ... impl native`, the merged-stub scaffold pattern, header-based auth (`header.Authorization`).
+Demonstrates: `middleware { before { ... } }`, `inject ... as ...`, header-based auth (`header.Authorization`), `fn` impl scaffolds.
 
-## `ecommerce-api.bp` (multi-model + FKs + transactions)
+## `ecommerce-api.bp` (multi-model and transactions)
 
-Product / cart / order / order_item with foreign keys. Checkout endpoint uses `try { ... } recover { ... }` around a multi-step transaction (decrement stock, charge stripe, save order, map line items). External `stripe` service for the charge step. Pagination, search, and FK-aware queries.
+Products, cart items, orders, and order items, with `ref(...)` foreign keys and an `OrderStatus` enum. The checkout path uses `try { ... } recover { ... }` around several writes, plus a `charge_stripe` fn that needs `STRIPE_KEY`.
 
-Demonstrates: `ref(<model>)` foreign keys, FK-access dereferencing (`item.product.stock`), `try / recover`, `sum()`, `map <coll>: save <M>`, `external "<name>" { ... }` for `call stripe.charge(...)`, `cache redis`.
+Demonstrates: `ref(model)`, `try`/`recover`, `enum`, admin endpoints, `guard`-based 404s.
 
-## `realtime-chat.bp` (streaming + WebSocket)
+## `realtime-chat.bp` (streaming and WebSocket)
 
-Room/message models plus three real-time surfaces: SSE for live updates (`stream GET /rooms/:id/events`), WebSocket for bidirectional chat (`ws /rooms/:id/ws`), and REST endpoints for room management. Uses `cache redis` for pub/sub.
+Rooms and messages, a WebSocket endpoint per room, and two STREAM endpoints for live events and presence. Uses `cache redis`.
 
-Demonstrates: `stream` endpoints (`first(timeout)`, `on event(name)`), `ws { on_connect / on_message / on_disconnect }`, `inject` in WS handshake, `broadcast`/`emit` to clients.
+Demonstrates: `WS` with `on_connect`/`on_message`/`on_disconnect`, `join`/`leave`/`broadcast room(...)`, `|> close`, `STREAM` with `stream { |> on event(...) }` and `on timeout(...)`, `emit`.
+
+Node only: `bp build --target python` rejects it.
 
 ## See also
 
-- `bp context language` — what every construct above means
-- `bp context codegen` — what the build of each example writes
-- `bp context cli` — flags for `bp build` + `bp test`
+- `bp context language` — what each construct means, with a complete example
+- `bp context targets` — which examples build on which target
+- `bp context cli` — flags for `bp build` and `bp test`

@@ -1,7 +1,7 @@
 {
   "name": "blueprint-language",
   "displayName": "Blueprint Language",
-  "description": "Blueprint language support: diagnostics, completion, hover, definitions, symbols, and syntax highlighting",
+  "description": "Blueprint language support: diagnostics, quick fixes, completion, hover, definitions, references, rename, formatting, symbols, folding, and syntax highlighting",
   "version": "0.2.0",
   "publisher": "abdul-hamid-achik",
   "license": "MIT",

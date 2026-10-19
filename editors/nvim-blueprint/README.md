@@ -9,6 +9,13 @@ Neovim syntax plugin for the [Blueprint](https://github.com/abdul-hamid-achik/bl
 - Comment support (`#`) — works with `gcc` / `gc` from vim-commentary
 - File type detection for `.bp` files
 
+This plugin does not start a language server. It provides no diagnostics,
+hover, go-to-definition, references, rename, completion, formatting, outline,
+or folding on its own. For those, run `bp lsp` from an LSP client (such as
+Neovim's built-in `vim.lsp` or a plugin that wraps it), or use the
+[VS Code extension](../vscode-blueprint/README.md). Formatting is available
+from the CLI with `bp fmt`.
+
 ## Installation
 
 ### lazy.nvim

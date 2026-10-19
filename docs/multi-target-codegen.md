@@ -207,6 +207,45 @@ camelCase `fkAccessInfo` via `toFKAccessInfo`). Keep the IR naming-neutral.
 Anything genuinely target-specific (JS `await` sets, Python sync-vs-async route
 selection) stays in the target package.
 
+## Target parity for 0.16 and 0.17 features
+
+Checked against the Node and Python output for the same `.bp` source. Node is
+the reference; each Python row is a translation, not a copy of the Node
+behavior.
+
+| Feature | Node | Python |
+|---------|------|--------|
+| REST path input `min`/`max` and type | Zod-validated before the handler runs; a failing segment answers `400` with the `{ success: false, error }` body | `Path(...)` bounds; a failing segment answers `422` |
+| `format(email\|url\|uuid\|ip\|date)` | Zod `.email()`, `.url()`, `.uuid()`, `.ip()`, `.date()` | `formats.Email`, `formats.Url`, `formats.Uuid`, `formats.IpAddress`, `formats.Date` from `src/lib/formats.py`; a violation answers `422` |
+| `use` middleware variables on STREAM/WS | Typed like REST (`c.get('auth')` has the injected row type) | Not supported: STREAM/WS endpoints fail closed |
+| STREAM event fan-out | Redis `bp:stream:<event>` channels when `REDIS_URL` is set | Not supported |
+| Endpoint `cache <duration>` | `Cache-Control` on GET 2xx responses | Rejected (`cache` metadata) |
+| `try/recover` with two or more writes | `db.transaction(...)` | `with db.begin_nested():` (a SAVEPOINT) |
+| `log` | `console.*` levels | stdlib `logging` through `src/lib/log.py` |
+| `pipe` declarations | `src/pipes/<name>.ts` | `src/pipes/<name>.py` for the inline subset only |
+
+`src/lib/formats.py` is emitted only when an endpoint input or model field uses
+`format(...)`. A Python build without formats has no such file. Unknown format
+kinds fail the checker (C052) on every target.
+
+### What Python still rejects
+
+`bp build --target python` fails with exit `4` and lists each reason. The
+reasons come from `unsupportedFeatures()` in
+`internal/codegen/python/generator.go`. For 0.17.0 they include:
+
+- inline `enum(...)` endpoint inputs, and named `enum` declarations
+- `type` and `alias` declarations
+- `STREAM` and `WS` endpoints
+- `schedule`, `worker`, `subscribe`, and `external` declarations
+- `env` declarations, and `env.X` reads outside endpoint and middleware bodies
+- `fn logic` bodies and `middleware after` bodies
+- endpoint `auth`, `cache`, `limit`, and `tags` metadata, and blueprint-level `use`
+- authored `test` blocks and fixtures
+
+The Effect target stays a scaffold. It emits `GET /health` and typed `Config`,
+and it rejects endpoints, models, and tests.
+
 ## Graceful degradation: `unsupportedFeatures`
 
 A target need not support every construct on day one. The Python generator's
@@ -295,8 +334,8 @@ is wrong even if it compiles:
 - **`try/recover`** is the only construct allowed two brace levels; it cannot
   nest. A `try` body that performs multiple writes should be **atomic** — the JS
   target wraps such bodies in a `db.transaction(...)` so partial writes roll back
-  on failure (the Python savepoint equivalent is in progress; see
-  [BACKLOG.md](https://github.com/abdul-hamid-achik/blueprint/blob/main/BACKLOG.md)). A new target should map `try/recover` onto its
+  on failure (Python wraps such bodies in `with db.begin_nested():`, a
+  SAVEPOINT). A new target should map `try/recover` onto its
   database's transaction primitive deliberately — `@effect/sql withTransaction`
   is a natural fit. External side effects inside the body are not rolled back;
   `recover` remains the place to compensate for those.

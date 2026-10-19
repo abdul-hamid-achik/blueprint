@@ -6,8 +6,7 @@ Editor and language-server support for the [Blueprint](https://github.com/abdul-
 
 - Full syntax highlighting for all Blueprint constructs
 - Parser and semantic diagnostics while you type
-- Quick fixes for "did you mean" suggestions on unknown names (models, model
-  fields, functions, types, middleware, and tests), offered as
+- Quick fixes for "did you mean" suggestions on unknown names, offered as
   `Change to "X"` in the lightbulb menu
 - Context-aware completion for declarations, types, constraints, models,
   middleware, steps, local values, environment names, and model fields
@@ -50,7 +49,7 @@ Build and install the extension package:
 
 ```bash
 cd editors/vscode-blueprint
-npm install
+npm ci
 npx @vscode/vsce package
 code --install-extension blueprint-language-0.2.0.vsix
 ```
@@ -59,7 +58,7 @@ code --install-extension blueprint-language-0.2.0.vsix
 
 ```bash
 cd editors/vscode-blueprint
-npm install
+npm ci
 ln -s "$(pwd)" \
   "$HOME/.vscode/extensions/blueprint-language"
 ```
@@ -70,7 +69,7 @@ Reload VS Code (`Ctrl+Shift+P` → **Developer: Reload Window**).
 
 ```bash
 cd editors/vscode-blueprint
-npm install
+npm ci
 cp -r . \
   "$HOME/.vscode/extensions/blueprint-language"
 ```

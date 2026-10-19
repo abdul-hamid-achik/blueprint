@@ -27,12 +27,13 @@ cmd/bp/             CLI entry point (check, build, frontend, diff, run, dev, tes
                     migrate, generate, import, docs, fmt, lint, init, eject, deploy,
                     completion, stats, explain, context, llms, doctor, lsp, version)
 internal/
-  lexer/            Tokenizer (~95 token kinds)
+  lexer/            Tokenizer (~100 token kinds)
   parser/           Recursive-descent parser with Pratt expressions
   ast/              AST node types + printer (bp fmt)
   checker/          Semantic validation (scopes, naming, refs)
   resolve/          Semantic facts (typed-IR): per-binding model + cardinality, FK access, async-ness
-  diag/             Shared diagnostic surface (source line + caret, error codes L/P/C/R/G###)
+  diag/             Shared diagnostic surface (source line + caret, error codes L###, P###, C###)
+  naming/           Target-neutral naming helpers (pluralization, case conversion) shared by checker and codegen
   codegen/
     common/         Path + string helpers shared across targets
     js/             JavaScript/TypeScript target (Hono + Drizzle + Zod) — the default
@@ -49,6 +50,7 @@ packages/
   runtime/          npm package for Blueprint runtime helpers
 editors/
   vscode-blueprint/ Packaged VS Code stdio client + TextMate grammar
+  nvim-blueprint/   Neovim syntax plugin
 ```
 
 `internal/codegen/codegen.go` defines the `Generator` interface and `OutputFile` type shared by all targets; `writer.go` defines `WriteOutputFiles`. See [Multi-Target Code Generation](./multi-target-codegen.md) for the authoritative target contract.
@@ -314,7 +316,7 @@ err := g.Generate(file, outDir) // build + persist via WriteOutputFiles
 | `genSchema` | `src/models/schema.ts` |
 | `genValidation` | `src/validation/schemas.ts` |
 | `genTypes` | `src/types.ts` |
-| `genDB`, `genErrors`, `genCache`, `genEnv`, ... | The `src/lib/*.ts` files (one generator per lib file: `db.ts`, `errors.ts`, `cache.ts`, `env.ts`, `storage.ts`, ...) |
+| `genDB`, `genErrors`, `genCache`, `genEnvTS`, ... | The `src/lib/*.ts` files (one generator per lib file: `db.ts`, `errors.ts`, `cache.ts`, `env.ts`, `storage.ts`, ...) |
 | `genRoute` | One `src/routes/<resource>.ts` |
 | `genMiddleware` | One `src/middleware/<name>.ts` |
 | `genWorker` | One `src/workers/<name>.ts` |
@@ -390,8 +392,8 @@ Generates an OpenAPI 3.1 JSON document from a checked `*ast.File`.
 ### Entry point
 
 ```go
-spec, err := docs.Generate(file)
-// spec is map[string]any, marshal to JSON
+out, err := docs.GenerateOpenAPI(file)
+// out is the OpenAPI 3.1 document, already marshaled to JSON
 ```
 
 ### Key functions
@@ -447,8 +449,7 @@ A style linter that checks for best-practice violations beyond what the semantic
 ### Entry point
 
 ```go
-l := linter.New()
-issues := l.Lint(file)
+issues := linter.Lint(file)
 ```
 
 ### Rules
@@ -462,6 +463,10 @@ issues := l.Lint(file)
 | `unused-function` | warning | `fn`, `pipe`, or `middleware` never called or applied elsewhere |
 | `fetch-without-guard` | warning | REST endpoint reads a `fetch` result before `guard <name>` |
 | `unpaginated-list` | info | `GET` endpoint returns every row of a `query` without `paginate` or `first` |
+| `cache-on-non-get` | warning | `cache` on a non-GET endpoint, which sends no `Cache-Control` (STREAM and WS included) |
+| `unenforceable-ws-auth` | warning | WS `auth` other than `webhook_sig`, which codegen does not enforce |
+| `unused-input` | warning | An endpoint input that the body never references |
+| `where-predicate-self-equal` | warning | A `where` predicate such as `x == x` where no input or binding named `x` is in scope |
 
 ### Adding a lint rule
 
@@ -493,7 +498,7 @@ updatedSource := generate.Apply(src, replacements)
 ### Configuration
 
 - Requires `ANTHROPIC_API_KEY` environment variable
-- Uses Claude as the default model
+- Uses the fixed model `claude-haiku-4-5-20251001` with a 256-token limit (in `internal/generate`)
 - Without `--write`, the CLI prints the updated `.bp` source; with `--write`,
   it rewrites that source file
 
@@ -531,8 +536,14 @@ line is incomplete. It does not implement completion resolve.
 `workspace/symbol` merges unsaved open documents with `.bp` files scanned from
 local workspace folders. Open text wins over disk; common VCS, dependency,
 generated, build, and virtual-environment directories are ignored. Remote
-workspace roots, rename, references, and incremental document
+workspace roots, cross-file rename, and incremental document
 sync/indexing are not implemented.
+
+Find-references and rename use the same scope-aware index as the checker and
+work within the open document. Renaming a path-parameter input also renames its
+`:param` segment, and a rename that would add a checker error is refused.
+Code actions offer did-you-mean fixes, formatting uses the `bp fmt` printer, and
+document symbols and folding ranges are served.
 
 `editors/vscode-blueprint` packages the TextMate grammar with
 `vscode-languageclient`. It starts `bp lsp`, watches `.bp` files, exposes

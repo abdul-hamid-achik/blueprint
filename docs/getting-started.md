@@ -52,7 +52,7 @@ This creates:
 ```
 my-service/
 ├── my-service.bp      # your Blueprint source file
-├── .gitignore         # ignores generated/, node_modules/, and .env files
+├── .gitignore         # ignores node_modules/, dist/, and .env files (generated/ is kept)
 └── README.md          # the next-step commands for this project
 ```
 
@@ -251,7 +251,8 @@ bp dev todo-api.bp --out generated
 
 ## Running Tests
 
-Write tests in your `.bp` file:
+Write tests in your `.bp` file (this one is checked with `bp check` against the
+`GET /api/todos` endpoint above):
 
 ```bp
 test list_todos {
@@ -269,6 +270,12 @@ Then run:
 ```bash
 bp test todo-api.bp
 ```
+
+`bp test` builds the service and runs the generated contract tests together with
+your authored tests. On Node it uses an in-process PGlite database, so it needs no
+`DATABASE_URL` or running Postgres. Use `--gen-property-tests` to also run
+deterministic fast-check properties, and `--target python` for the pytest suite
+(Docker required). See the [Testing Guide](./testing-guide.md).
 
 ## Next Steps
 

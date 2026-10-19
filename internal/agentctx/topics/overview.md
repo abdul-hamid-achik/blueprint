@@ -5,19 +5,14 @@ Blueprint is a Go-based compiler. Source files use the `.bp` DSL — a declarati
 ## The compile loop
 
 ```
-.bp source -> bp check (parse + semantics) -> bp build --out <dir> -> runnable project
+.bp source -> bp fmt -> bp check -> bp lint -> bp build --out <dir> -> bp test
 ```
 
-`bp build` is idempotent: running it twice in a row produces zero diff. `bp diff` shows what would change without writing; `bp diff --exit-code` is the CI gate.
+`bp build` is idempotent: a second build right after the first produces no diff. `bp diff --exit-code` is the CI gate. `bp context workflow` has the full loop.
 
 ## What goes where
 
-- `examples/*.bp` — five canonical specs that CI checks, builds, type-checks on
-  Node, and format-checks (hello-world, todo-api, auth-service, ecommerce-api,
-  realtime-chat). Python builds the supported HTTP/data subset and rejects
-  authored tests, realtime handlers, unsafe native implementation config,
-  richer middleware bodies, undeclared env access, or declarations it cannot
-  preserve. Read these first when learning the language.
+- `examples/*.bp` — five canonical specs (hello-world, todo-api, auth-service, ecommerce-api, realtime-chat). CI checks and builds all five for Node. Only hello-world and todo-api build for Python. Read them first when learning the language (`bp context examples`).
 - `internal/parser`, `internal/checker`, `internal/resolve` — the compiler frontend (lexer → parser → checker → typed IR).
 - `internal/codegen/{js,python,common}` — backends. `common` holds target-agnostic string/path helpers.
 - `internal/importer` — static TypeScript structure recovery for `bp import`;

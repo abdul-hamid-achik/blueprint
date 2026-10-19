@@ -1,71 +1,64 @@
 # Blueprint CLI
 
-`bp <command>`. Most commands take a `.bp` file as the first positional arg. The two most-used: `bp check` (validate) and `bp build` (compile).
+`bp <command>`. Most commands take a `.bp` file as the first argument. `check`, `lint`, and `fmt` also take several files or directories.
 
-## Common commands
+## Commands
 
 | Command | Purpose |
 |---|---|
-| `bp check <file.bp\|dir> [more ...] [--json]` | Parse + semantic check. Exit 0 = valid. A directory is checked recursively (skips node_modules, generated, dist, .blueprint, dot-dirs and included fragments); several files exit with the most severe per-file code. |
-| `bp build <file.bp> [--out <dir>] [--target node\|python\|effect]` | Compile to a target project. Idempotent; Effect is experimental. |
-| `bp diff <file.bp> [--out <dir>] [--exit-code] [--apply [--force]]` | Show pending changes. With `--exit-code`, exit 1 if anything differs — CI/idempotency gate. `--apply --force` writes into a non-empty `--out` directory without a Blueprint manifest (same as `bp build --force`). |
-| `bp fmt <file.bp\|dir> [more ...] [--write] [--check]` | Format. Round-trip safe: the output is re-parsed and compared with the source, and a formatter bug exits 3 with the file untouched. Several files or a directory need `--write` or `--check`. |
-| `bp lint <file.bp\|dir> [more ...] [--json]` | Stylistic lint. `--json` emits issues with file, rule, severity, line, column, message, hint. Includes `fetch-without-guard` (REST `fetch` read before `guard`), `unused-secret`/`unused-env`/`unused-function`, and `unpaginated-list` (info). |
-| `bp docs <file.bp> [--out file.json]` | Emit OpenAPI 3.1 spec from declared inputs/outputs. |
-| `bp run <file.bp>` | Build + start the server (Node default). |
-| `bp dev <file.bp>` | Watch + rebuild on change. |
-| `bp test <file.bp> [--target node\|python]` | Build with contract tests, then run Vitest + PGlite (node, default) or pytest + a Postgres testcontainer (python). |
-| `bp migrate <file.bp> generate\|push\|check [--target node\|python]` | Drizzle (node) or Alembic (python) migrations. |
-| `bp deploy <file.bp> [--target docker\|fly] [--tag <image>] [--no-run]` | Build + run Docker image; fly currently exits with "not implemented". |
-| `bp init [name] [--template <name>]` | Scaffold a new project from a starter template (`default`, `minimal`, `crud`, `auth`, `worker`); `bp init --list-templates` lists them. |
-| `bp import [path] --from ts [--out <file.bp>]` | Recover static Drizzle/Hono and transport-compatible `zValidator` structure as a review scaffold; every handler becomes TODO/501. |
-| `bp eject <dir>` | Strip Blueprint markers from a generated project (you take over). |
-| `bp explain <code>` | Print docs for an error code (e.g. `bp explain C001`). |
-| `bp context [topic] [--format md\|json]` | This command. Agent-facing language + CLI surface, by topic. |
-| `bp llms [--out <file>]` | The complete agent/LLM guide — every topic in one document (the `llms.txt` for bp). |
-| `bp doctor` | Check toolchain deps. |
-| `bp lsp` | Start the stdio language server: diagnostics with quick fixes, hover, definition, references, open-document rename, completion, local-workspace symbols, document formatting, document outline, and folding ranges. |
-| `bp stats <file.bp>` | Code stats. |
-| `bp version` | Print version. |
+| `bp check <file.bp\|dir>... [--json]` | Parse and check. Directories expand recursively to `*.bp`. |
+| `bp fmt <file.bp\|dir>... [--write] [--check]` | Format. Several paths or a directory need `--write` or `--check`. Output is re-parsed and compared with the source; a formatter bug exits 3 and leaves the file untouched. |
+| `bp lint <file.bp\|dir>... [--json]` | Lint. `--json` gives file, rule, severity, line, column, message, hint. |
+| `bp build <file.bp> [--out dir] [--target node\|python\|effect]` | Generate a project. Idempotent. |
+| `bp diff <file.bp> [--out dir] [--exit-code] [--apply [--force]]` | Show pending changes. `--exit-code` exits 1 on any change. `--apply --force` writes into a non-empty `--out` without a manifest. |
+| `bp test <file.bp> [--target node\|python]` | Build with contract tests and run them: Vitest + PGlite (node), or pytest + Docker Postgres (python). |
+| `bp run` / `bp dev <file.bp>` | Start the server / watch and rebuild. |
+| `bp docs <file.bp> [--out file.json]` | OpenAPI 3.1 from declared inputs and outputs. |
+| `bp migrate <file.bp> generate\|push\|check [--target node\|python]` | Drizzle or Alembic migrations. |
+| `bp init [name] [--template default\|minimal\|crud\|auth\|worker]` | Scaffold a `.bp`, `.gitignore`, and `README.md`. Never overwrites. `--list-templates` lists them. |
+| `bp explain <code>` | Docs for an error code, for example `bp explain C052`. |
+| `bp context [topic] [--format md\|json]` | Agent-facing topics (this surface). |
+| `bp llms [--out file]` | Every topic in one document. |
+| `bp lsp` | Language server over stdio: diagnostics with quick fixes, hover, definition, references, rename, completion, formatting, document outline, folding, and workspace symbols. |
+| `bp frontend <file.bp> [--out dir] [--react-query]` | Generate only the standalone frontend SDK package. |
+| `bp import [path] --from ts [--out file.bp]` | Scaffold a `.bp` from TypeScript structure. Every handler becomes a TODO/501 stub. |
+| `bp deploy`, `bp eject`, `bp generate`, `bp stats`, `bp doctor`, `bp completion`, `bp version` | Docker image, strip markers, resolve `@>` slots via LLM, code stats, toolchain check, shell completion, version. |
 
-## Common flags
+## Flags worth knowing
 
-- `--out <dir>` — where to write generated project (default `./generated`).
-- `--target {node,python,effect}` — codegen target. Default `node`. `build` + `diff` accept all three; `test` + `migrate` accept `node`/`python`. `deploy` uses a separate `docker|fly` target. `effect` is an experimental runnable health/config scaffold.
-- `--gen-tests` — emit an auto-generated contract suite with `build`/`diff` for Node/Python; Effect rejects the flag. `bp test` enables it automatically.
-- `--gen-property-tests` — Node-only on `build`/`diff`/`test`; implies contract tests and emits deterministic fast-check valid-request properties. Unsupported/non-hermetic routes reject the whole build.
-- `--exit-code` — make `diff` return 1 if anything would change (CI gate).
-- `--no-color` — disable ANSI color (`diff`, error rendering). Also honors `NO_COLOR=1`.
-- `--write` — `fmt --write` writes back; `generate --write` resolves @> slots.
+- `--out <dir>`: output directory (default `./generated`).
+- `--target`: `node` (default), `python`, or `effect`. `test` and `migrate` accept only node and python; `deploy` uses its own `docker|fly`.
+- `--gen-tests`: contract suite (node, python). `bp test` enables it.
+- `--gen-property-tests`: Node only. Implies `--gen-tests`.
+- `--no-color` or `NO_COLOR=1`: plain output.
 
-## Typical flows
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. |
+| 1 | Validation failure: check, lint, `fmt --check`, a failed test, `diff --exit-code` with changes, undocumented `bp explain` code. Also `bp` with no command, or a command without its required argument (usage is printed). |
+| 2 | Usage or environment: unknown flag, flag with no value, extra argument, missing file or directory with no `.bp`, `fmt` on several files without `--write`/`--check`, `diff --force` without `--apply`, missing `docker` or `uv`, unsafe `--out`. |
+| 3 | `bp fmt` refused: the formatter produced output that changed the syntax tree. Report it. |
+| 4 | Codegen error: the file checks, but the target cannot generate it (for example Python with STREAM/WS). |
+
+With several files, the exit code is the most severe per-file code, and a summary goes to stderr (`3 files checked, 1 failed`). `bp lint --json` and `bp check --json` wrap per-file results in one document.
+
+## Common flows
 
 ```bash
-# Validate then build
-bp check examples/todo-api.bp
+bp check examples/todo-api.bp examples/hello-world.bp
+bp check --json services/          # directory, recursive
+bp fmt --check services/           # CI formatting gate
+bp lint --json services/
 bp build examples/todo-api.bp --out /tmp/todo
-
-# Idempotency check (CI gate)
-bp build examples/todo-api.bp --out /tmp/todo
-bp diff  examples/todo-api.bp --out /tmp/todo --exit-code   # exit 0
-
-# Python target
-bp build examples/todo-api.bp --out /tmp/py-todo --target python
-cd /tmp/py-todo && uv sync && uv run uvicorn src.app:app
-
-# Auto-generated tests
-bp test examples/todo-api.bp                                # self-contained, no Postgres needed
-bp test examples/todo-api.bp --target python                # pytest + Docker-backed Postgres
-
-# Deterministic Node contract + property suites
-bp test examples/todo-api.bp --gen-property-tests
-
-# TypeScript migration starting point (never imports handler behavior)
-bp import ./src --from ts --out imported.bp
+bp diff examples/todo-api.bp --out /tmp/todo --exit-code   # 0 after a fresh build
+bp test examples/todo-api.bp       # Node, in-memory Postgres
+bp init my-api --template crud
 ```
 
 ## See also
 
-- `bp context targets` — node vs python
-- `bp context workflow` — agent-friendly compile loop
-- `bp context errors` — how diagnostics render
+- `bp context workflow` — the agent loop built on these commands
+- `bp context targets` — node, python, effect differences
+- `bp context errors` — diagnostics and codes

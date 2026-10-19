@@ -14,7 +14,7 @@ For implementation-sized work, see the repository
 | Surface | Status | Notes |
 |---|---|---|
 | Language frontend | Stable core | Lexer, parser, AST, formatter, linter, diagnostics, and resolver facts |
-| Node target | Mature reference target | Hono, Drizzle, Zod, frontend contracts, Vitest/PGlite plus opt-in fast-check properties, migrations, one-level relationships, computed fields, workers, schedules, STREAM, and WebSocket transport |
+| Node target | Mature reference target | Hono, Drizzle, Zod, frontend contracts, Vitest/PGlite plus opt-in fast-check properties, migrations, one-level relationships, computed fields, workers, schedules, STREAM and WebSocket transport (Redis fan-out when `REDIS_URL` is set), and typed realtime middleware variables |
 | Python target | Advanced beta | FastAPI, SQLAlchemy, Pydantic, Alembic, pytest/testcontainers for the supported HTTP/data subset; unsupported declarations fail closed |
 | Effect target | Experimental runnable scaffold | Pinned project, typed secret/env `Config`, and `GET /health`; model and endpoint emission are not implemented |
 | Developer tools | Available | `check`, `build`, `diff`, `fmt`, `lint`, `docs`, `test`, `migrate`, conservative TypeScript `import`, `doctor`, `stats`, `context`, `llms`, and LSP with a VS Code client |
@@ -88,6 +88,15 @@ review workflow that makes source changes easier to inspect before applying.
   structured logging.
 - Continue compile, syntax, idempotency, and runtime gates across all canonical
   examples.
+
+### Realtime
+
+- Backpressure on STREAM emit fan-out is not implemented yet.
+- `whisper` (delivery to a single connection) is not implemented. The checker
+  rejects it, and the language reference says so.
+- WS `auth bearer`, `jwt`, `api_key`, and `basic` are not enforced by codegen.
+  The `unenforceable-ws-auth` lint reports them, and only `auth webhook_sig`
+  is enforced automatically.
 
 ### Editor experience
 
