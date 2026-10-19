@@ -57,6 +57,14 @@ validation, imports, database wiring, and response contracts; they cannot infer
 all business rules. Add authored tests or hand-written tests for behavior that
 matters to your application.
 
+The happy-path request always uses valid path values. Node validates REST path
+inputs before the handler runs: a segment that fails its declared type or
+constraints (string `min`/`max`, inline or named enums, `int`/`float`/`bool`/
+`timestamp`, `uuid`) answers `400` with `{ success: false, error }`. Every
+generated Node contract case accepts `400` as a declared status, so the suite
+still passes when a route rejects a bad value. Python answers `422` for the same
+kind of violation (FastAPI's convention), and its contract cases accept `422`.
+
 ### Node harness
 
 ```text
@@ -73,7 +81,7 @@ generated/
 
 The harness mocks `src/lib/db` with PGlite and resets every table between
 tests. `bp test service.bp` therefore needs neither `DATABASE_URL` nor a live
-Postgres server.
+Postgres server. Generated projects pin `vitest ^5.0.5`.
 
 ### Python harness
 

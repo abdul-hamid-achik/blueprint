@@ -377,11 +377,10 @@ dropping the tests.
 **Example:**
 
 ```bash
-bp test my-service.bp
-# Built my-service.bp -> generated/
-# ✓ test/generated/todos.test.ts (5)
-# ✓ test/watermark-success.test.ts (1)
-# Test Files 2 passed (2)
+bp test examples/todo-api.bp
+# Installs dependencies if needed, then runs `vitest run`
+# Test Files  1 passed (1)
+#      Tests  5 passed (5)
 
 # Node contract tests plus deterministic valid-request properties
 bp test my-service.bp --gen-property-tests
@@ -438,6 +437,10 @@ bp migrate my-service.bp generate --target python
 # Python: apply migrations
 bp migrate my-service.bp push --target python
 ```
+
+`check` runs `drizzle-kit check` against the generated `drizzle.config.ts`, which
+only exists for services that declare `database`. On a service without a
+database it fails with a missing-config error.
 
 `--target python` requires `uv` on PATH. The generated project's `pyproject.toml`
 already pins `alembic`, so the first `uv run` will install it on demand.
@@ -569,7 +572,8 @@ bp fmt api services --check
 - Aligned field declarations
 - Normalized whitespace around arrows
 - Consistent quote style (double quotes)
-- Preserved `#` comments
+- Preserved `#` comments, including inside multi-line strings: a `#` in a string
+  that spans lines is text, and a comment after the closing quote stays a comment
 - Blank lines kept where the source had them (at most one in a row); none added
 - Output is re-parsed and compared with the source (syntax tree, `#` comment
   count, `@` intent count) before it is used; if it differs, `bp fmt` leaves
@@ -635,6 +639,7 @@ described in [Multiple files and directories](#multiple-files-and-directories).
 | `unused-env` | warning | An `env` that no `env.NAME` reads (same suppression as `unused-secret`) |
 | `unused-function` | warning | A `fn`, `pipe`, or `middleware` that nothing calls or applies. A self-call does not count (same suppression) |
 | `fetch-without-guard` | warning | A REST endpoint reads a `fetch` result before `guard <name>`. A missing row fails the request (500) instead of returning 404 |
+| `cache-on-non-get` | warning | A `cache` line on a non-GET endpoint (or a STREAM/WS endpoint). `Cache-Control` is only set on REST GET responses, so the line has no effect |
 | `unpaginated-list` | info | A `GET` endpoint returns every row of a `query` with no `paginate(...)` or `first` |
 
 **Example:**
@@ -770,11 +775,12 @@ bp eject <dir>
 
 ```bash
 bp eject ./generated
+#   ejected: frontend/src/api.ts
 #   ejected: src/index.ts
-#   ejected: src/routes/users.ts
-#   ejected: src/models/schema.ts
+#   ejected: src/lib/env.ts
 #   ...
-# Ejected 12 file(s). This code is now fully yours.
+# Ejected 4 file(s). This code is now fully yours.
+# You can safely delete your .bp source file and stop using Blueprint.
 ```
 
 After ejecting, you can delete your `.bp` source and maintain the TypeScript directly.
@@ -895,13 +901,20 @@ bp stats <file.bp> [--json]
 **Example:**
 
 ```bash
-bp stats my-service.bp
-# Models: 12
-# Endpoints: 45
-# Functions: 8
-# Pipes: 3
-# Lines of code: 1,247
+bp stats examples/todo-api.bp
+# Statistics for examples/todo-api.bp:
+#
+#   Lines of code:     64
+#   Complexity score:  26
+#
+#   Blocks:
+#     Models:      1
+#     Endpoints:   5
+#     Functions:   0
+#     ...
 ```
+
+`--json` prints the same counts as `{ "filename": ..., "stats": { "total_lines", "models", "endpoints", ... } }`.
 
 ---
 
@@ -927,11 +940,16 @@ Node.js plus npm for the default Node workflow.
 
 ```bash
 bp doctor
-# ✓ Go 1.25.5
-# ✓ Node.js 20.5.0
-# ✓ Bun 1.2.0
-# ✓ Docker 24.0.7
-# ⚠ PostgreSQL client not found (optional)
+# Blueprint Environment Check
+#
+# Dependencies:
+#   ✅ Go          (1.26.6)
+#   ✅ Node.js     (26.7.0)
+#   ✅ Bun         (1.4.2)
+#   ⚠️ tsc          - Optional
+#   ...
+# Environment Variables:
+#   ❌ ANTHROPIC_API_KEY   - Required for bp generate
 ```
 
 ---

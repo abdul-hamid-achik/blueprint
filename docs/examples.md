@@ -420,7 +420,7 @@ worker process_job_worker {
 
   on_fail {
     |> update job { status: "failed", error: "Max retries exceeded" }
-    |> emit job_failed { job_id: job.id }
+    |> emit job_failed { job_id: job_id }
   }
 }
 ```
@@ -468,11 +468,9 @@ STREAM /api/jobs/:id/progress {
     }
     |> on event(job_done) where(job_id == id) {
       -> { percent: 100, stage: "done", result: event.result }
-      |> close
     }
     |> on timeout(30s) {
       -> { error: "Timed out waiting for job" }
-      |> close
     }
   }
 }
