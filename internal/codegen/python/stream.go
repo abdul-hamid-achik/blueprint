@@ -42,6 +42,12 @@ func streamInputs(se *ast.StreamEndpoint) []*ast.InputStmt {
 	return inputs
 }
 
+// streamAllStmts returns every statement a STREAM endpoint's body holds: the
+// statements before the stream block, then each handler's condition and output.
+func streamAllStmts(se *ast.StreamEndpoint) []ast.ArrowStmt {
+	return append(append([]ast.ArrowStmt{}, se.Stmts...), bodyStmtsOfStream(se)...)
+}
+
 // streamBindings lists the names bound by top-level pre-stream steps, in source order.
 func streamBindings(se *ast.StreamEndpoint) []string {
 	var out []string
@@ -82,6 +88,8 @@ func (g *Generator) genStreamRouteFile(resource string, ses []*ast.StreamEndpoin
 	anyDB := false
 	anyGuard := false
 	anyUse, anyUseDB, anyUseHeaders, anyLimit := false, false, false, false
+	anyBodyHeaders, anyEnv := false, false
+	fnCalls := map[string]bool{}
 	for _, se := range ses {
 		ep := streamAsEndpoint(se)
 		eps = append(eps, ep)
@@ -99,7 +107,18 @@ func (g *Generator) genStreamRouteFile(resource string, ses []*ast.StreamEndpoin
 			anyUseDB = anyUseDB || u.touchesDB
 			anyUseHeaders = anyUseHeaders || len(u.headers) > 0
 		}
+		all := streamAllStmts(se)
+		anyBodyHeaders = anyBodyHeaders || readsDirect("header", all)
+		anyEnv = anyEnv || readsDirect("env", all)
+		for _, n := range g.userFnCallsIn(all) {
+			fnCalls[n] = true
+		}
 	}
+	var fnNames []string
+	for n := range fnCalls {
+		fnNames = append(fnNames, n)
+	}
+	sort.Strings(fnNames)
 
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
@@ -113,13 +132,17 @@ func (g *Generator) genStreamRouteFile(resource string, ses []*ast.StreamEndpoin
 	if anyUse && !anyGuard {
 		b.WriteString("from fastapi import HTTPException\n")
 	}
-	if anyUseHeaders && !anyLimit {
+	if (anyUseHeaders || anyBodyHeaders) && !anyLimit {
 		b.WriteString("from fastapi import Request\n")
 	}
-	imports := []string{"MISSING", "EventStream", "Stream", "frame_data", "wire"}
+	imports := []string{"MISSING", "EventStream", "Stream", "frame_data", "or_missing", "wire"}
 	if anyGuard || anyUse {
 		imports = append(imports, "StreamError")
 	}
+	if anyEnv {
+		b.WriteString("from src.lib.env import env\n")
+	}
+	g.writeUserFnImports(&b, fnNames)
 	fmt.Fprintf(&b, "from src.lib.events import %s\n", strings.Join(imports, ", "))
 	b.WriteString("\nrouter = APIRouter()\n\n")
 
@@ -147,9 +170,16 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 	scope := g.streamScope(se)
 	uses := g.useBindings(se.Meta)
 
+	// The request headers any statement or handler reads are captured once, at the
+	// top of the route, and passed to the pre-stream helper and to every handler.
+	streamHeaders := readsDirect("header", streamAllStmts(se))
+
 	// Pre-stream helper: a sync function on its own session, run in a threadpool.
 	ctx := g.newBodyCtx(ep)
 	ctx.streamPre = true
+	if streamHeaders {
+		ctx.headersVar = headersDictName
+	}
 	var helperArgs []string
 	helperArgs = append(helperArgs, inputNames...)
 	if jwt {
@@ -158,6 +188,9 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 	// `use` values are computed before the pre-stream helper and passed into it.
 	for _, u := range uses {
 		helperArgs = append(helperArgs, u.alias)
+	}
+	if streamHeaders {
+		helperArgs = append(helperArgs, headersDictName)
 	}
 	var pre strings.Builder
 	for i, u := range uses {
@@ -184,7 +217,7 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 	}
 	limitPreamble := ""
 	limit, window, hasLimit := endpointRateLimit(ep)
-	readsHeaders := false
+	readsHeaders := streamHeaders
 	for _, u := range uses {
 		if len(u.headers) > 0 {
 			readsHeaders = true
@@ -231,6 +264,9 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 	}
 	fmt.Fprintf(b, "@router.get(%q%s)\n", pathBpToFastapi(se.Path), suffix)
 	fmt.Fprintf(b, "async def %s(%s):\n", fnName, params)
+	if streamHeaders {
+		fmt.Fprintf(b, "    %s = %s\n", headersDictName, headerCapture("bp_request", directFieldReads("header", streamAllStmts(se))))
+	}
 	// `use` middleware runs first, as on Node, so a refused request never reaches
 	// the rate limit or the pre-stream statements.
 	for i, u := range uses {
@@ -257,23 +293,38 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 	var timers []string
 	var callbacks strings.Builder
 	for i, h := range se.Handlers {
+		// A handler that calls a fn runs as a sync helper in a worker thread; the
+		// callback the Stream calls awaits it, as the Node handler awaits the call.
+		threaded := g.handlerCallsFn(h)
 		if h.Timeout != "" {
 			ms, _ := streamDurationMS(h.Timeout)
 			out := streamOutputOf(h)
-			fmt.Fprintf(&callbacks, "    def _tick_%d():\n", i)
-			fmt.Fprintf(&callbacks, "        return frame_data(%s)\n\n", streamOutputPy(out, &handlerCtx, scope, false))
+			render := "frame_data(" + streamOutputPy(out, &handlerCtx, scope, false) + ")"
+			if threaded {
+				fmt.Fprintf(&callbacks, "    def _tick_%d_sync():\n        return %s\n\n", i, render)
+				fmt.Fprintf(&callbacks, "    async def _tick_%d():\n        return await run_in_threadpool(_tick_%d_sync)\n\n", i, i)
+			} else {
+				fmt.Fprintf(&callbacks, "    def _tick_%d():\n", i)
+				fmt.Fprintf(&callbacks, "        return %s\n\n", render)
+			}
 			timers = append(timers, fmt.Sprintf("    stream.every(\"ping\", %s, _tick_%d)\n",
 				strconv.FormatFloat(ms/1000, 'f', -1, 64), i))
 			continue
 		}
-		fmt.Fprintf(&callbacks, "    def _on_event_%d(event):\n", i)
 		out := streamOutputOf(h)
 		value := "frame_data(" + streamOutputPy(out, &handlerCtx, scope, false) + ")"
+		var body strings.Builder
 		if h.Condition != nil {
 			cond := streamExprPy(h.Condition, &handlerCtx, scope, true)
-			fmt.Fprintf(&callbacks, "        if not (%s):\n            return None\n", cond)
+			fmt.Fprintf(&body, "        if not (%s):\n            return None\n", cond)
 		}
-		fmt.Fprintf(&callbacks, "        return (%s, %s)\n\n", pyStringLiteral(h.EventName), value)
+		fmt.Fprintf(&body, "        return (%s, %s)\n", pyStringLiteral(h.EventName), value)
+		if threaded {
+			fmt.Fprintf(&callbacks, "    def _on_event_%d_sync(event):\n%s\n", i, body.String())
+			fmt.Fprintf(&callbacks, "    async def _on_event_%d(event):\n        return await run_in_threadpool(_on_event_%d_sync, event)\n\n", i, i)
+		} else {
+			fmt.Fprintf(&callbacks, "    def _on_event_%d(event):\n%s\n", i, body.String())
+		}
 		registrations = append(registrations, fmt.Sprintf("    stream.on_event(%s, _on_event_%d)\n", pyStringLiteral(h.EventName), i))
 	}
 	b.WriteString(callbacks.String())
@@ -293,7 +344,7 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 func hasPreStatements(se *ast.StreamEndpoint) bool {
 	for _, s := range se.Stmts {
 		switch s.(type) {
-		case *ast.StepStmt, *ast.GuardStmt:
+		case *ast.StepStmt, *ast.GuardStmt, *ast.TryRecover:
 			return true
 		}
 	}
@@ -362,7 +413,8 @@ func streamOutputPy(blk *ast.BlockExpr, ctx *bodyCtx, scope map[string]bool, whe
 	}
 	parts := make([]string, 0, len(blk.Entries))
 	for _, kv := range blk.Entries {
-		parts = append(parts, fmt.Sprintf("%q: %s", common.CamelCase(kv.Key), streamExprPy(kv.Value, ctx, scope, where)))
+		value := streamEntryPy(kv.Value, streamExprPy(kv.Value, ctx, scope, where))
+		parts = append(parts, fmt.Sprintf("%q: %s", common.CamelCase(kv.Key), value))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }
@@ -407,6 +459,16 @@ func streamExprPy(e ast.Expr, ctx *bodyCtx, scope map[string]bool, where bool) s
 			parts = append(parts, streamExprPy(el, ctx, scope, where))
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
+	case *ast.FnCall:
+		// A declared fn takes the handler's values, event fields included, as arguments.
+		if ctx.userFns[v.Name] {
+			args := make([]string, len(v.Args))
+			for i, a := range v.Args {
+				args[i] = streamExprPy(a, ctx, scope, where)
+			}
+			return v.Name + "(" + strings.Join(args, ", ") + ")"
+		}
+		return exprToPyWithCtx(e, ctx)
 	case *ast.BlockExpr:
 		// A nested object drops its absent fields too, as JSON.stringify does on Node.
 		return "frame_data(" + streamOutputPy(v, ctx, scope, where) + ")"
@@ -447,14 +509,23 @@ func (g *Generator) streamExprFeatures(e ast.Expr, scope map[string]bool, where 
 		switch v := e.(type) {
 		case nil:
 		case *ast.FnCall:
-			out = append(out, fmt.Sprintf("STREAM handler call to %q", v.Name))
+			// A declared fn is called from the handler's worker thread; anything
+			// else is named by pythonExpressionFeatures below.
+			for _, a := range v.Args {
+				walk(a)
+			}
 		case *ast.Ident:
-			if v.Name == "event" {
+			if reason := headerEnvReadFeature(v); reason != "" {
+				out = append(out, reason)
+			} else if v.Name == "event" {
 				out = append(out, "bare `event` in a STREAM handler (use event.<field>)")
 			} else if !scope[v.Name] && !where {
 				out = append(out, fmt.Sprintf("STREAM handler name %q that is not an input, a bound step, or an event field", v.Name))
 			}
 		case *ast.FieldAccess:
+			if reason := headerEnvReadFeature(v); reason != "" {
+				out = append(out, reason)
+			}
 			root := v
 			for {
 				next, ok := root.Base.(*ast.FieldAccess)
@@ -466,7 +537,7 @@ func (g *Generator) streamExprFeatures(e ast.Expr, scope map[string]bool, where 
 			if base, ok := root.Base.(*ast.Ident); ok {
 				switch {
 				case base.Name == "header" || base.Name == "env":
-					out = append(out, fmt.Sprintf("%s references in a STREAM handler", base.Name))
+					// A direct read is supported; a nested one was named above.
 				case base.Name == "event" || scope[base.Name]:
 				case base.Name == "claims":
 					out = append(out, "`claims` in a STREAM handler of a non-jwt endpoint")
@@ -474,7 +545,7 @@ func (g *Generator) streamExprFeatures(e ast.Expr, scope map[string]bool, where 
 					out = append(out, fmt.Sprintf("nested event field %q in a STREAM handler (use event.%s)", base.Name, base.Name))
 				}
 			}
-			if !isFieldChainRootedAt(v, "event") && !isClaimsAccess(v) {
+			if !isFieldChainRootedAt(v, "event") && !isClaimsAccess(v) && !isDirectHeaderEnvRead(v) {
 				walk(v.Base)
 			}
 		case *ast.BinaryExpr:
@@ -532,13 +603,22 @@ func (g *Generator) streamFeatures(se *ast.StreamEndpoint) []string {
 			add(fmt.Sprintf("STREAM `use %s` that injects a name Python cannot use (%q)", u.name, u.alias))
 		}
 	}
-	for _, s := range se.Stmts {
-		switch s.(type) {
-		case *ast.InputStmt, *ast.StepStmt, *ast.GuardStmt, *ast.IntentStep:
-		default:
-			add(fmt.Sprintf("STREAM statement %T before the stream block", s))
+	// Statements before the stream block run on a worker thread; a try/recover
+	// among them runs its body and recover branch the same way.
+	var preStmts func([]ast.ArrowStmt)
+	preStmts = func(stmts []ast.ArrowStmt) {
+		for _, s := range stmts {
+			switch v := s.(type) {
+			case *ast.InputStmt, *ast.StepStmt, *ast.GuardStmt, *ast.IntentStep:
+			case *ast.TryRecover:
+				preStmts(v.Try)
+				preStmts(v.Recover)
+			default:
+				add(fmt.Sprintf("STREAM statement %T before the stream block", s))
+			}
 		}
 	}
+	preStmts(se.Stmts)
 	scope := g.streamScope(se)
 	for _, h := range se.Handlers {
 		switch {

@@ -62,6 +62,17 @@ type wsPlan struct {
 	hasLimit  bool
 	uses      []useBinding // `use` middleware, run in the handshake before the path inputs
 	injected  []string     // the names those middleware inject, passed to every handler
+	headers   []string     // request headers any handler reads (header.X), captured at the handshake
+}
+
+// kwInjected lists the keyword-only values every handler takes: the `use` values
+// and, when a handler reads one, the captured request headers.
+func (p wsPlan) kwInjected() []string {
+	names := append([]string{}, p.injected...)
+	if len(p.headers) > 0 {
+		names = append(names, headersDictName)
+	}
+	return names
 }
 
 func (g *Generator) newWsPlan(we *ast.WsEndpoint) wsPlan {
@@ -95,6 +106,7 @@ func (g *Generator) newWsPlan(we *ast.WsEndpoint) wsPlan {
 			p.hoisted = append(p.hoisted, name)
 		}
 	}
+	p.headers = directFieldReads("header", p.allStmts)
 	return p
 }
 
@@ -178,6 +190,21 @@ func (g *Generator) genWsRouteFile(resource string, wes []*ast.WsEndpoint) codeg
 		eps = append(eps, wsAsEndpoint(we, nil))
 	}
 
+	needsEnv := false
+	fnCalls := map[string]bool{}
+	for _, we := range wes {
+		p := g.newWsPlan(we)
+		needsEnv = needsEnv || readsDirect("env", p.allStmts)
+		for _, n := range g.userFnCallsIn(p.allStmts) {
+			fnCalls[n] = true
+		}
+	}
+	var fnNames []string
+	for n := range fnCalls {
+		fnNames = append(fnNames, n)
+	}
+	sort.Strings(fnNames)
+
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	if needsUUID {
@@ -191,6 +218,8 @@ func (g *Generator) genWsRouteFile(resource string, wes []*ast.WsEndpoint) codeg
 	b.WriteString("from fastapi.concurrency import run_in_threadpool\n")
 	if needsAuth {
 		b.WriteString("from src.lib.auth import authenticate\n")
+	}
+	if needsAuth || needsEnv {
 		b.WriteString("from src.lib.env import env\n")
 	}
 	if needsDB {
@@ -208,6 +237,7 @@ func (g *Generator) genWsRouteFile(resource string, wes []*ast.WsEndpoint) codeg
 	for _, name := range mwNames {
 		fmt.Fprintf(&b, "from src.middleware.%s import %s\n", name, name)
 	}
+	g.writeUserFnImports(&b, fnNames)
 	b.WriteString("from src.lib.log import logger\n")
 	b.WriteString("from src.lib.realtime import (\n")
 	b.WriteString("    WsConnection, WsGuardError, WsResult, apply_effects, evict, js_length, js_str, js_truthy,\n")
@@ -252,9 +282,9 @@ func (g *Generator) writeWsHelper(b *strings.Builder, p wsPlan, ep *ast.Endpoint
 	}
 	params = append(params, p.handlerArgs()...)
 	params = append(params, "connection")
-	// Keyword-only: the `use` values (every handler) and, after connect, the
-	// on_connect bindings. Connect itself binds the hoisted names.
-	kwNames := append([]string{}, p.injected...)
+	// Keyword-only: the `use` values and captured headers (every handler) and,
+	// after connect, the on_connect bindings. Connect binds the hoisted names.
+	kwNames := p.kwInjected()
 	if !connect {
 		kwNames = append(kwNames, p.hoisted...)
 	}
@@ -279,6 +309,9 @@ func (g *Generator) writeWsHelper(b *strings.Builder, p wsPlan, ep *ast.Endpoint
 	ctx := g.newBodyCtx(ep)
 	ctx.ws = true
 	ctx.wsReturn = p.bindingsExpr(connect)
+	if len(p.headers) > 0 {
+		ctx.headersVar = headersDictName
+	}
 	inner := "        "
 	for _, s := range stmts {
 		emitBodyStmt(b, s, ctx, inner)
@@ -389,14 +422,19 @@ func (g *Generator) writeWsRoute(b *strings.Builder, p wsPlan) {
 	}
 	// The `use` values reach every handler; the on_connect bindings reach the
 	// handlers after connect.
-	connectKW := keywords(p.injected)
-	kw := keywords(append(append([]string{}, p.injected...), p.hoisted...))
+	connectKW := keywords(p.kwInjected())
+	kw := keywords(append(p.kwInjected(), p.hoisted...))
 	connectArgs := argList
 	if connectArgs != "" {
 		connectArgs += ", "
 	}
 	connectArgs += "connection"
 
+	// The headers are read from the handshake, before accept(), so every handler
+	// sees the values of the request that opened the connection.
+	if len(p.headers) > 0 {
+		fmt.Fprintf(b, "    %s = %s\n", headersDictName, headerCapture("websocket", p.headers))
+	}
 	b.WriteString("    await websocket.accept()\n")
 	b.WriteString("    connection = WsConnection(websocket)\n")
 	b.WriteString("    connection.start()\n")
@@ -504,7 +542,7 @@ func (g *Generator) wsFeatures(we *ast.WsEndpoint) []string {
 		}
 	}
 
-	bindingReserved := map[string]bool{"message": true, "connection": true, "claims": true, "exc": true, "result": true, "frame": true, "text": true, "db": true, "_fx": true, "websocket": true}
+	bindingReserved := map[string]bool{"message": true, "connection": true, "claims": true, "exc": true, "result": true, "frame": true, "text": true, "db": true, "_fx": true, "websocket": true, headersDictName: true}
 	for name := range pathParams {
 		bindingReserved[name] = true
 	}
@@ -541,10 +579,11 @@ func (g *Generator) wsStmtsFeatures(stmts []ast.ArrowStmt, handler string, add f
 		case *ast.GuardStmt:
 			g.wsExprFeatures(v.Condition, handler, add)
 		case *ast.WhenStmt:
-			if v.Inline != nil {
-				add(handler + ": inline `when` in a WS handler")
-			}
 			g.wsExprFeatures(v.Condition, handler, add)
+			if v.Inline != nil {
+				// The inline form is one realtime step under the if, checked as a step.
+				g.wsStepFeatures(&ast.StepStmt{Loc: v.Loc, Expr: v.Inline}, handler, add)
+			}
 			g.wsStmtsFeatures(v.Body, handler, add)
 		case *ast.OutputStmt:
 			blk, ok := v.Value.(*ast.BlockExpr)
@@ -558,7 +597,10 @@ func (g *Generator) wsStmtsFeatures(stmts []ast.ArrowStmt, handler string, add f
 		case *ast.StepStmt:
 			g.wsStepFeatures(v, handler, add)
 		case *ast.TryRecover:
-			add(handler + ": try/recover in a WS handler")
+			// Node's try has a catch that sees every failure; a failed try keeps the
+			// frames it already sent, and rolls back its writes when it wraps them.
+			g.wsStmtsFeatures(v.Try, handler, add)
+			g.wsStmtsFeatures(v.Recover, handler, add)
 		default:
 			add(fmt.Sprintf("%s: WS statement %T", handler, s))
 		}
@@ -632,6 +674,13 @@ func (g *Generator) wsStepFeatures(s *ast.StepStmt, handler string, add func(str
 				g.wsExprFeatures(a, handler, add)
 			}
 		default:
+			if g.userFnNames()[v.Name] {
+				// A declared fn runs in the handler's worker thread, as a REST body calls it.
+				for _, a := range v.Args {
+					g.wsExprFeatures(a, handler, add)
+				}
+				return
+			}
 			add(fmt.Sprintf("%s: WS step %q", handler, v.Name))
 		}
 		return
@@ -658,21 +707,10 @@ func (g *Generator) wsExprFeatures(e ast.Expr, handler string, add func(string))
 	if e == nil {
 		return
 	}
+	if reason := headerEnvReadFeature(e); reason != "" {
+		add(handler + ": " + reason)
+	}
 	if fa, ok := e.(*ast.FieldAccess); ok {
-		root := fa
-		for {
-			next, ok := root.Base.(*ast.FieldAccess)
-			if !ok {
-				break
-			}
-			root = next
-		}
-		if base, ok := root.Base.(*ast.Ident); ok {
-			switch base.Name {
-			case "header", "env":
-				add(fmt.Sprintf("%s: %s references in a WS handler", handler, base.Name))
-			}
-		}
 		if fa.Field == "length" && !isFieldChainRootedAt(fa, "message") {
 			add(handler + ": `.length` on a value that is not a message field")
 		}
@@ -689,7 +727,9 @@ func (g *Generator) wsExprFeatures(e ast.Expr, handler string, add func(string))
 	case *ast.ParenExpr:
 		g.wsExprFeatures(v.Expr, handler, add)
 	case *ast.FieldAccess:
-		g.wsExprFeatures(v.Base, handler, add)
+		if !isDirectHeaderEnvRead(v) {
+			g.wsExprFeatures(v.Base, handler, add)
+		}
 	case *ast.ListExpr:
 		for _, el := range v.Elements {
 			g.wsExprFeatures(el, handler, add)

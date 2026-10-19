@@ -284,12 +284,34 @@ STREAM /api/x {
 `,
 			want: "STREAM handler output that is not an object literal",
 		},
-		"header access in a handler": {
+		"bare header in a handler": {
 			src: `STREAM /api/x {
-  stream { |> on event(e) { -> { h: header.x_trace } } }
+  stream { |> on event(e) { -> { h: header } } }
 }
 `,
-			want: "header references in a STREAM handler",
+			want: "bare `header`",
+		},
+		"nested header read in a handler": {
+			src: `STREAM /api/x {
+  stream { |> on event(e) { -> { h: header.x_trace.id } } }
+}
+`,
+			want: "nested header read",
+		},
+		"output inside try before the stream": {
+			src: `secret DATABASE_URL
+model item { id uuid primary }
+STREAM /api/x {
+  <- id uuid required
+  |> try {
+    |> row = fetch item(id)
+  } recover {
+    -> 500 "x"
+  }
+  stream { |> on timeout(1s) { -> { type: "t" } } }
+}
+`,
+			want: "STREAM statement",
 		},
 		"external emit": {
 			src: `POST /api/x {

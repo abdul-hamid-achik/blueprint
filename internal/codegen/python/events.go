@@ -57,6 +57,7 @@ func (g *Generator) genEventsPy() codegen.OutputFile {
 // bounded queue counts messages (not bytes), Redis channel payloads keep the
 // .bp key spelling, and frames carry the JSON the handler rendered.
 const eventsPySource = `import asyncio
+import inspect
 import json
 import math
 import os
@@ -121,6 +122,11 @@ def frame_data(fields: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in fields.items() if value is not MISSING}
 
 
+def or_missing(value: Any) -> Any:
+    """A header or env value that is absent (None) becomes MISSING, so frame_data drops its key."""
+    return MISSING if value is None else value
+
+
 def wire(value: Any) -> Any:
     """Return value in the JSON form emit payloads arrive in, for where() comparisons."""
     return jsonable_encoder(value)
@@ -167,8 +173,10 @@ class Stream:
     def __init__(self, endpoint: str) -> None:
         self.endpoint = endpoint
         self._handlers: dict[str, list[Handler]] = {}
-        self._timers: list[tuple[str, float, Callable[[], dict[str, Any]]]] = []
+        self._timers: list[tuple[str, float, Callable[[], Any]]] = []
         self._tasks: list[asyncio.Task] = []
+        # Frames still being computed by an async handler or timer (a handler that calls a fn).
+        self._frame_tasks: set[asyncio.Task] = set()
         self._items: deque[bytes] = deque()
         self._pending = 0
         self._over_since: float | None = None
@@ -180,7 +188,7 @@ class Stream:
         """Register a handler; it returns (frame name, data) to send, or None to skip the event."""
         self._handlers.setdefault(event, []).append(handler)
 
-    def every(self, name: str, seconds: float, render: Callable[[], dict[str, Any]]) -> None:
+    def every(self, name: str, seconds: float, render: Callable[[], Any]) -> None:
         """Send a frame named name every seconds, starting after the first interval."""
         self._timers.append((name, seconds, render))
 
@@ -213,6 +221,8 @@ class Stream:
                     _listeners.pop(event, None)
         for task in self._tasks:
             task.cancel()
+        for task in list(self._frame_tasks):
+            task.cancel()
         self._items.clear()
         self._pending = 0
         if self._wake is not None:
@@ -237,8 +247,25 @@ class Stream:
             except Exception:
                 logger.exception("STREAM %s: handler failed for %s", self.endpoint, event)
                 continue
+            if inspect.isawaitable(frame):
+                # An async handler (one that calls a fn) answers when it finishes; the frames keep arrival order per handler.
+                self._track(asyncio.get_running_loop().create_task(self._finish(event, frame)))
+                continue
             if frame is not None:
                 self._push(frame[0], frame[1])
+
+    async def _finish(self, event: str, pending: Any) -> None:
+        try:
+            frame = await pending
+        except Exception:
+            logger.exception("STREAM %s: handler failed for %s", self.endpoint, event)
+            return
+        if frame is not None:
+            self._push(frame[0], frame[1])
+
+    def _track(self, task: asyncio.Task) -> None:
+        self._frame_tasks.add(task)
+        task.add_done_callback(self._frame_tasks.discard)
 
     def _push(self, name: str, data: dict[str, Any]) -> None:
         if self._closed:
@@ -261,6 +288,8 @@ class Stream:
             await asyncio.sleep(seconds)
             try:
                 data = render()
+                if inspect.isawaitable(data):
+                    data = await data
             except Exception:
                 logger.exception("STREAM %s: timeout handler failed", self.endpoint)
                 continue

@@ -149,24 +149,18 @@ secret JWT_SECRET required
 		src    string
 		reason string
 	}{
-		"try/recover": {head + `WS /ws/x {
-  on_message {
-    |> try {
-      |> guard message.body -> 400 "e"
-    } recover {
-      |> log "failed: {error.message}"
-    }
-  }
-}
-`, "try/recover in a WS handler"},
 		"unknown step": {head + `WS /ws/x {
   on_message { |> notify(message) }
 }
 `, `WS step "notify"`},
-		"header read": {head + `WS /ws/x {
-  on_message { |> guard header.Authorization -> 401 "no" }
+		"bare header": {head + `WS /ws/x {
+  on_message { |> guard header -> 401 "no" }
 }
-`, "header references in a WS handler"},
+`, "bare `header`"},
+		"nested env read": {head + `WS /ws/x {
+  on_message { -> { value: env.JWT_SECRET.length } }
+}
+`, "nested env read"},
 		"webhook signature": {head + `WS /ws/x {
   auth webhook_sig using(secret.JWT_SECRET)
   on_message { |> log "x" }

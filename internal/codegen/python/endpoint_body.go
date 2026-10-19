@@ -87,6 +87,11 @@ type bodyCtx struct {
 	// wsReturn is the Python expression for the bindings the helper returns with
 	// its WsResult ("None" when the handler binds nothing later handlers read).
 	wsReturn string
+
+	// headersVar names the dict of request headers a WS or STREAM body reads. It
+	// is set when the body references header.X; a read then renders as
+	// headersVar.get("x"), which is None when the header is absent.
+	headersVar string
 }
 
 func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
@@ -983,6 +988,13 @@ func emitWhen(b *strings.Builder, s *ast.WhenStmt, ctx *bodyCtx, indent string) 
 	cond := exprToPyWithCtx(s.Condition, ctx)
 	if ctx != nil && ctx.ws {
 		cond = "js_truthy(" + cond + ")"
+		if s.Inline != nil {
+			// A WS inline `when` runs one realtime step (close, join, broadcast, ...)
+			// under the if, as Node runs it.
+			fmt.Fprintf(b, "%sif %s:\n", indent, cond)
+			emitStep(b, &ast.StepStmt{Loc: s.Loc, Expr: s.Inline}, ctx, indent+"    ")
+			return
+		}
 	}
 	if s.Inline != nil {
 		stmt := inlineWhenStatement(s.Inline, ctx)
@@ -1074,7 +1086,9 @@ func emitTryRecover(b *strings.Builder, s *ast.TryRecover, ctx *bodyCtx, indent 
 	// A guard inside the try body raises HTTPException; without this clause
 	// the generic `except Exception` below would swallow it and turn a
 	// declared status (e.g. 402) into the recover branch's response.
-	if stmtsHaveGuards(s.Try) {
+	// Node's catch sees every failure, a guard included, so WS and STREAM bodies
+	// (which raise WsGuardError or StreamError) recover from a guard as well.
+	if stmtsHaveGuards(s.Try) && !ctx.ws && !ctx.streamPre {
 		fmt.Fprintf(b, "%sexcept HTTPException:\n", indent)
 		fmt.Fprintf(b, "%sraise\n", inner)
 	}
@@ -1264,8 +1278,13 @@ func emitReturn(b *strings.Builder, s *ast.OutputStmt, ctx *bodyCtx, indent stri
 		status = "200"
 	}
 	if ctx != nil && ctx.ws {
-		// A WS output is a frame: the status is ignored, as on Node.
-		fmt.Fprintf(b, "%s_fx.append((\"send\", ws_dumps(%s)))\n", indent, exprToPyWithCtx(s.Value, ctx))
+		// A WS output is a frame: the status is ignored, as on Node. Absent header
+		// and env entries drop their keys, as undefined does in JSON.stringify.
+		value := exprToPyWithCtx(s.Value, ctx)
+		if blk, ok := s.Value.(*ast.BlockExpr); ok {
+			value = wsOutputPy(blk, ctx)
+		}
+		fmt.Fprintf(b, "%s_fx.append((\"send\", ws_dumps(%s)))\n", indent, value)
 		return
 	}
 	var expr string
@@ -1356,6 +1375,9 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 		// We don't gate this on a middleware-only flag because endpoint
 		// bodies never legitimately reference `header.X` directly.
 		if baseIdent, ok := v.Base.(*ast.Ident); ok && baseIdent.Name == "header" {
+			if ctx != nil && ctx.headersVar != "" {
+				return ctx.headersVar + ".get(" + pyStringLiteral(strings.ToLower(v.Field)) + ")"
+			}
 			return pythonHeaderParamName(v.Field)
 		}
 		// Two-level FK access: `var.fkField.x` → `alias.x` when the alias
@@ -1566,6 +1588,9 @@ func stmtTouchesDB(s ast.ArrowStmt) bool {
 			}
 		}
 	case *ast.WhenStmt:
+		if v.Inline != nil && stmtTouchesDB(&ast.StepStmt{Expr: v.Inline}) {
+			return true
+		}
 		return stmtsTouchDB(v.Body)
 	case *ast.TryRecover:
 		return stmtsTouchDB(v.Try) || stmtsTouchDB(v.Recover)

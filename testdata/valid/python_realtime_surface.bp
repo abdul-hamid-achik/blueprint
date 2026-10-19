@@ -1,0 +1,60 @@
+blueprint "python-realtime-surface" {
+  version  "1.0.0"
+  port     3000
+  runtime  node
+}
+
+secret GREETING
+
+fn shout {
+  <- text string
+
+  -> string
+
+  impl node {
+    module: "./internal/shout"
+    func:   "shout"
+  }
+}
+
+@ "Greetings for one room, with the caller's trace id and a shouted text"
+STREAM /api/rooms/:id/greetings {
+  <- id string required
+
+  |> try {
+    |> guard id -> 400 "Room is required"
+  } recover {
+    |> log "greetings: {error.message}" level(error)
+  }
+
+  stream {
+    |> on event(greeting) where(room_id == id) {
+      -> { text: shout(event.text), trace: header.X-Trace, greeting: env.GREETING }
+    }
+    |> on timeout(5s) {
+      -> { type: "ping", trace: header.X-Trace }
+    }
+  }
+}
+
+@ "Room socket: a welcome frame, a guarded echo inside try/recover, and a close command"
+WS /ws/rooms/:id {
+  <- id string required
+
+  on_connect {
+    |> join room(id)
+    -> { type: "welcome", room: id, trace: header.X-Trace, greeting: env.GREETING }
+  }
+  on_message {
+    |> when message.body == "close": close
+    |> try {
+      -> { echo: shout(message.body) }
+      |> guard message.body.length < 6 -> 400 "Too long"
+    } recover {
+      -> { type: "error", reason: error.message }
+    }
+  }
+  on_disconnect {
+    |> leave room(id)
+  }
+}
