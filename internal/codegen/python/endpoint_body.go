@@ -68,6 +68,11 @@ type bodyCtx struct {
 	// webhookData is set on an auth webhook_sig endpoint, where `data` is the
 	// verified JSON payload; data.<field> reads render as dict lookups.
 	webhookData bool
+
+	// streamPre is set while emitting a STREAM endpoint's pre-stream statements.
+	// A guard there raises StreamError (answered as {"error": ...}) instead of
+	// HTTPException, because the response has not started yet.
+	streamPre bool
 }
 
 func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
@@ -244,6 +249,8 @@ func emitStep(b *strings.Builder, s *ast.StepStmt, ctx *bodyCtx, indent string) 
 		emitMap(b, s.Binding, fn, ctx, indent)
 	case "log":
 		emitLog(b, fn, ctx, indent)
+	case "emit":
+		emitEmit(b, fn, ctx, indent)
 	case "sum":
 		emitSum(b, s.Binding, fn, ctx, indent)
 	default:
@@ -1127,8 +1134,60 @@ func emitGuard(b *strings.Builder, s *ast.GuardStmt, ctx *bodyCtx, indent string
 		status = "400"
 	}
 	fmt.Fprintf(b, "%sif not (%s):\n", indent, cond)
+	if ctx != nil && ctx.streamPre {
+		fmt.Fprintf(b, "%s    raise StreamError(%s, %s)\n", indent, status, pyStringLiteral(s.Message))
+		return
+	}
 	fmt.Fprintf(b, "%s    raise HTTPException(status_code=%s, detail=%s)\n",
 		indent, status, pyStringLiteral(s.Message))
+}
+
+// emitEmit translates `|> emit <event> { ... }` into a call to the events
+// module. emit is safe from sync handlers (threadpool) and from the event loop:
+// it queues delivery onto each listener's loop and never awaits. The payload
+// keys keep their .bp spelling on both the local and the Redis path.
+func emitEmit(b *strings.Builder, fn *ast.FnCall, ctx *bodyCtx, indent string) {
+	name := identOrStringName(fn.Args[0])
+	payload := "{}"
+	if len(fn.Args) >= 2 {
+		payload = blockExprToPyDictWithCtx(fn.Args[1].(*ast.BlockExpr), ctx)
+	}
+	fmt.Fprintf(b, "%sbp_emit(%s, %s)\n", indent, pyStringLiteral(name), payload)
+}
+
+// emitStepFeatures validates an emit step. Node's external `emit ... to(service)`
+// has no Python transport, so only an object-literal payload is accepted.
+func emitStepFeatures(fn *ast.FnCall) []string {
+	if len(fn.Args) == 0 {
+		return []string{"`emit` without an event name"}
+	}
+	switch fn.Args[0].(type) {
+	case *ast.Ident, *ast.StringLit:
+	default:
+		return []string{"`emit` event name that is not an identifier or string"}
+	}
+	if len(fn.Args) >= 2 {
+		if _, ok := fn.Args[1].(*ast.BlockExpr); !ok {
+			return []string{"`emit` payload that is not an object literal (external emit to(...) has no Python transport)"}
+		}
+	}
+	if len(fn.Args) > 2 {
+		return []string{"`emit` with extra arguments"}
+	}
+	return nil
+}
+
+// blockExprToPyDictWithCtx renders an object literal whose values may reference
+// bound variables, claims, or event fields through the body context.
+func blockExprToPyDictWithCtx(blk *ast.BlockExpr, ctx *bodyCtx) string {
+	if len(blk.Entries) == 0 {
+		return "{}"
+	}
+	parts := make([]string, 0, len(blk.Entries))
+	for _, kv := range blk.Entries {
+		parts = append(parts, fmt.Sprintf("%q: %s", kv.Key, exprToPyWithCtx(kv.Value, ctx)))
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
 }
 
 // emitReturn: BlockExpr outputs become a JSONResponse around a dict-comprehension-

@@ -231,10 +231,27 @@ test smoke {
   expect { status 200 }
 }
 `,
-		"stream endpoint": `blueprint "x" { version "1.0" port 3000 runtime node }
+		"stream bare auth": `blueprint "x" { version "1.0" port 3000 runtime node }
 STREAM /events {
+  auth bearer
   stream {
     |> on event(created) { -> { id: event.id } }
+  }
+}
+`,
+		"stream use middleware": `blueprint "x" { version "1.0" port 3000 runtime node }
+middleware audit { before { |> log "x" } }
+STREAM /events {
+  use audit
+  stream {
+    |> on event(created) { -> { id: event.id } }
+  }
+}
+`,
+		"stream handler without output object": `blueprint "x" { version "1.0" port 3000 runtime node }
+STREAM /events {
+  stream {
+    |> on event(created) { -> "text" }
   }
 }
 `,

@@ -187,14 +187,20 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	if anyEndpointCache(endpoints) {
 		out = append(out, g.genHTTPCachePy())
 	}
-	if usesEndpointMeta(endpoints, "limit") {
+	// STREAM endpoints share the rate-limit and auth helpers with REST endpoints.
+	guarded := g.withStreamEndpoints(endpoints)
+	if usesEndpointMeta(guarded, "limit") {
 		out = append(out, g.genRateLimitPy())
 	}
-	if hasEnforcedAuth(endpoints) {
+	if hasEnforcedAuth(guarded) {
 		out = append(out, g.genAuthPy())
 	}
 	if hasWebhookSig(endpoints) {
 		out = append(out, g.genWebhookPy())
+	}
+	// events.py backs the emit step and STREAM listeners (and the WS emit later).
+	if len(streams) > 0 || usesEmit(endpoints) {
+		out = append(out, g.genEventsPy())
 	}
 	out = append(out, g.genAppPy(bp, endpoints))
 
@@ -430,10 +436,11 @@ func (g *Generator) unsupportedFeatures() []string {
 				add(reason)
 			}
 		case *ast.StreamEndpoint:
-			// The current emitter only generates a ping loop and comments for
-			// event/filter behavior. Reject the declaration until Phase 5b can
-			// preserve the authored stream semantics.
-			add("`STREAM` endpoints (event delivery and filters)")
+			// STREAM endpoints are translated when every statement, filter and
+			// output has a faithful Python form; anything else is named here.
+			for _, reason := range g.streamFeatures(n) {
+				add(reason)
+			}
 		case *ast.WsEndpoint:
 			// The current emitter accepts a socket but comments out every
 			// lifecycle body. A successful build must not imply those handlers
@@ -1269,6 +1276,8 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 			return []string{reason}
 		}
 		return nil
+	case "emit":
+		return emitStepFeatures(fn)
 	case "sum":
 		if len(fn.Args) != 1 {
 			return []string{"`sum` requires exactly one collection expression"}

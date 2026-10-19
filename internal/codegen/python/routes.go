@@ -49,6 +49,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsHeader := false
 	needsEnv := false
 	needsLog := false
+	needsEmit := false
 	needsPath := false
 	needsAnnotated := false
 	needsFormats := false
@@ -153,6 +154,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			if m.Kind == "use" && m.Use != nil {
 				middlewares[m.Use.Name] = true
 			}
+		}
+		if usesEmit([]*ast.Endpoint{ep}) {
+			needsEmit = true
 		}
 	}
 	// Middleware Depends always need Depends in fastapi import + a Session
@@ -260,6 +264,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	}
 	if needsLog {
 		b.WriteString("from src.lib.log import logger\n")
+	}
+	if needsEmit {
+		b.WriteString("from src.lib.events import emit as bp_emit\n")
 	}
 	// `use <middleware>` requires Depends + the middleware module import.
 	if len(middlewares) > 0 {

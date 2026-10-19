@@ -50,16 +50,11 @@ func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStre
 			`"alembic>=1.14"`,
 		)
 	}
-	if hasCache {
-		// Phase 5: Redis client. The async client (redis.asyncio) is the same
-		// package; we expose a sync interface in src/lib/cache.py to mirror
-		// the sync SQLAlchemy session shape.
+	if hasCache || hasStream {
+		// Redis client. src/lib/cache.py uses the sync interface; STREAM fan-out
+		// uses redis.asyncio, and only when REDIS_URL is set. SSE framing is
+		// plain StreamingResponse in src/lib/events.py, so no SSE package is needed.
 		deps = append(deps, `"redis>=5.0"`)
-	}
-	if hasStream {
-		// Phase 5: SSE helper. Plain StreamingResponse works too, but
-		// sse-starlette handles client-disconnect detection and ping framing.
-		deps = append(deps, `"sse-starlette>=2.1"`)
 	}
 	depBlock := "  " + strings.Join(deps, ",\n  ") + ","
 
@@ -197,8 +192,12 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString("from fastapi import FastAPI\n")
-	if hasEnforcedAuth(endpoints) {
+	guarded := g.withStreamEndpoints(endpoints)
+	if hasEnforcedAuth(guarded) {
 		b.WriteString("from src.lib.auth import Unauthorized, unauthorized_handler\n")
+	}
+	if len(streamResources) > 0 {
+		b.WriteString("from src.lib.events import StreamError, stream_error_handler\n")
 	}
 	if hasWebhookSig(endpoints) {
 		b.WriteString("from src.lib.webhook import InvalidWebhook, invalid_webhook_handler\n")
@@ -220,10 +219,14 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 		version = "0.1.0"
 	}
 	fmt.Fprintf(&b, "app = FastAPI(title=%q, version=%q)\n\n", bp.Name, version)
-	if hasEnforcedAuth(endpoints) {
+	if hasEnforcedAuth(guarded) {
 		// Auth failures raise Unauthorized so the body is exactly {"error": ...}
 		// rather than FastAPI's {"detail": ...}.
 		b.WriteString("app.add_exception_handler(Unauthorized, unauthorized_handler)\n")
+	}
+	if len(streamResources) > 0 {
+		// Pre-stream guard failures raise StreamError, answered as {"error": ...}.
+		b.WriteString("app.add_exception_handler(StreamError, stream_error_handler)\n")
 	}
 	if hasWebhookSig(endpoints) {
 		// Webhook rejections raise InvalidWebhook so the body is {"error": ...}.
