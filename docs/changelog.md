@@ -14,6 +14,19 @@ All notable changes to this project will be documented in this file.
   editor text preferred and include cycles guarded. A rename that would break
   the merged program, or that hits a parse error in any of those files, is
   refused. Diagnostics are still computed per document.
+- Node enforces endpoint `auth bearer`, `auth jwt` (HS256 only, with `exp`
+  and `nbf` checked), `auth api_key`, and `auth basic` when they carry
+  `using(secret.NAME)`, on REST, STREAM, and WS endpoints. The check runs
+  before `use` middleware and input validation; a failure answers 401
+  `{"error":"Unauthorized"}` and a WS upgrade is refused. STREAM and WS also
+  accept `?token=` or `?api_key=`, since browsers cannot set headers there.
+  Secrets are compared in constant time, and an unset secret fails closed.
+  OpenAPI documents the 401 and the security scheme, and generated contract
+  tests send credentials and add an unauthenticated 401 case.
+- Checker code C053 rejects `using(...)` that is not a declared `secret.NAME`
+  or that sits on a strategy with no secret.
+- Lint `unenforced-auth` warns when a REST or STREAM endpoint declares `auth`
+  with no `using(...)` and no `use` middleware covers it.
 
 ### Changed
 
@@ -24,6 +37,9 @@ All notable changes to this project will be documented in this file.
   `slow consumer` warning. A WS socket whose unsent buffer exceeds
   `BP_WS_MAX_BUFFERED_BYTES` (default 1 MiB) is removed from its rooms and
   closed with code 1013. Both limits are read from the environment at startup.
+- Lint `unenforceable-ws-auth` now warns only about WS `auth` lines with no
+  `using(secret.NAME)`. `examples/realtime-chat.bp` uses
+  `auth jwt using(secret.JWT_SECRET)` on its WS endpoint.
 
 ## [0.18.0] - 2026-10-18
 
