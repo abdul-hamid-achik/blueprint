@@ -440,12 +440,14 @@ plain `str`. A value that fails the check answers `422`, FastAPI's validation
 status. The generated module is stdlib only. Python applies `format` to endpoint
 inputs and model fields.
 
-On Python, `min` and `max` on model fields become pydantic `Field` bounds in
-`src/models/pydantic.py`: `min_length`/`max_length` for `string`, `text`, lists,
-and maps, and `ge`/`le` for `int`, `float`, and `money`. Node applies `min` and
-`max` to endpoint inputs, `type` fields, and aliases, but not to model fields:
-its generated model schemas (server and frontend) and Drizzle tables carry no
-inline model-field bounds. The two targets differ for model fields.
+`min` and `max` on model fields are carried into each target's generated model
+schemas, using the same type mapping. Length bounds apply to `string`, `text`,
+lists, and maps, and value bounds to `int`, `float`, and `money`. On Python they
+become pydantic `Field` bounds in `src/models/pydantic.py` (`min_length`/`max_length`,
+`ge`/`le`). On Node they become Zod `.min`/`.max` in `src/types/schemas.ts`,
+with a key-count check for maps. Neither target checks saved rows against these
+bounds: requests are checked against endpoint input constraints, and the Drizzle
+and SQLAlchemy tables carry no bounds.
 
 ### Computed Fields
 

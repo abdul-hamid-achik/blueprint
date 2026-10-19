@@ -279,8 +279,7 @@ func (g *Generator) genFrontendSchemas(models []*ast.Model, types []*ast.TypeDec
 	for _, m := range models {
 		fmt.Fprintf(&b, "export const %s = z.object({\n", frontendSchemaName(m.Name))
 		for _, f := range m.Fields {
-			info := g.frontendTypeInfoFromModelField(f)
-			fmt.Fprintf(&b, "  %s: %s,\n", toCamelCase(f.Name), info.zod)
+			fmt.Fprintf(&b, "  %s: %s,\n", toCamelCase(f.Name), frontendModelFieldZod(f))
 		}
 		for _, f := range m.ComputedFields {
 			fmt.Fprintf(&b, "  %s: %s,\n", toCamelCase(f.Name), frontendTypeToZod(f.Type))
@@ -1108,6 +1107,73 @@ func (g *Generator) frontendTypeInfoFromModelField(field *ast.Field) frontendTyp
 		info.zod += ".nullable()"
 	}
 	return info
+}
+
+// frontendModelFieldZod returns the Zod schema for a model field in
+// src/types/schemas.ts. It carries the field's min/max bounds before the
+// nullable wrapper, since Zod does not allow refinements after .nullable().
+func frontendModelFieldZod(f *ast.Field) string {
+	zod := frontendTypeToZod(f.Type) + frontendModelFieldBoundsZod(f.Type, f.Constraints)
+	if frontendConstraintsOptional(f.Constraints) {
+		zod += ".nullable()"
+	}
+	return zod
+}
+
+// frontendModelFieldBoundsZod maps a model field's min/max onto Zod, using the
+// same type mapping as the Python target's pydanticFieldBounds: length for
+// string, text, list, and map; value for int, float, and money. Other types
+// carry no bounds, and a bound whose value does not fit the type is skipped.
+// These bounds document the stored shape only; requests are checked against
+// endpoint input constraints, not against model schemas.
+func frontendModelFieldBoundsZod(t ast.TypeExpr, cs []*ast.Constraint_) string {
+	isMap := false
+	switch v := t.(type) {
+	case *ast.PrimitiveType:
+		switch v.Name {
+		case "string", "text", "int", "float", "money":
+		default:
+			return ""
+		}
+	case *ast.ListType:
+	case *ast.MapType:
+		isMap = true
+	default:
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range cs {
+		if (c.Kind != "min" && c.Kind != "max") || !frontendModelBoundFits(t, c.Value) {
+			continue
+		}
+		value := exprToJS(c.Value)
+		if !isMap {
+			fmt.Fprintf(&b, ".%s(%s)", c.Kind, value)
+			continue
+		}
+		// Zod 3 record schemas have no min/max, so bound the key count.
+		op := ">="
+		if c.Kind == "max" {
+			op = "<="
+		}
+		fmt.Fprintf(&b, ".refine((value) => Object.keys(value).length %s %s)", op, value)
+	}
+	return b.String()
+}
+
+// frontendModelBoundFits reports whether a min/max literal is a value the
+// bound's type can take: an integer for string, text, int, list, and map, and
+// an integer or float for float and money.
+func frontendModelBoundFits(t ast.TypeExpr, value ast.Expr) bool {
+	if p, ok := t.(*ast.PrimitiveType); ok && (p.Name == "float" || p.Name == "money") {
+		switch value.(type) {
+		case *ast.IntLit, *ast.FloatLit:
+			return true
+		}
+		return false
+	}
+	_, ok := value.(*ast.IntLit)
+	return ok
 }
 
 func (g *Generator) frontendTypeInfoFromTypeField(field *ast.Field) frontendTypeInfo {
