@@ -168,6 +168,14 @@ func requireAuthDependency(ea enforcedAuth, blueprintName string) string {
 	return fmt.Sprintf("Depends(_bp_require_auth(%q, %q, %q))", ea.Strategy, ea.Secret, blueprintName)
 }
 
+// streamAuthDependency is requireAuthDependency for STREAM endpoints. Browsers
+// cannot set headers on EventSource, so the dependency also accepts ?token=
+// (bearer, jwt) and ?api_key= (api_key), as Node does on STREAM. basic stays
+// header-only.
+func streamAuthDependency(ea enforcedAuth, blueprintName string) string {
+	return fmt.Sprintf("Depends(_bp_require_auth(%q, %q, %q, allow_query=True))", ea.Strategy, ea.Secret, blueprintName)
+}
+
 // blueprintNameForAuth returns the blueprint name used as the realm of Basic
 // challenges.
 func (g *Generator) blueprintNameForAuth() string {
@@ -187,6 +195,10 @@ func (g *Generator) genAuthPy() codegen.OutputFile {
 // here: strict base64url segments (base64 silently drops other characters),
 // NaN/Infinity rejected in JSON, bool is not a numeric claim, and malformed
 // input of any kind is a failure rather than an exception.
+//
+// authenticate takes header and query values, not a Request, so a WebSocket
+// handler can verify the same credentials later. require_auth(..., allow_query=True)
+// is the STREAM form; REST never reads query-string credentials.
 const authPySource = `import base64
 import binascii
 import hashlib
@@ -275,24 +287,19 @@ def _verify_jwt(token: str, secret: bytes) -> dict[str, Any] | None:
     return payload
 
 
-def _jwt_claims(request: Request, secret: bytes) -> dict[str, Any] | None:
-    token = _bearer_token(request)
-    return _verify_jwt(token, secret) if token is not None else None
+def _bearer_token(authorization: str | None, query_token: str | None) -> str | None:
+    # A present Authorization header decides on its own, as on Node: a malformed
+    # header is not replaced by the query string.
+    if authorization is not None:
+        match = BEARER_RE.fullmatch(authorization)
+        return match.group(1) if match else None
+    return query_token
 
 
-def _bearer_token(request: Request) -> str | None:
-    header = request.headers.get("Authorization")
-    if header is None:
+def _basic_credential(authorization: str | None) -> bytes | None:
+    if authorization is None:
         return None
-    match = BEARER_RE.fullmatch(header)
-    return match.group(1) if match else None
-
-
-def _basic_credential(request: Request) -> bytes | None:
-    header = request.headers.get("Authorization")
-    if header is None:
-        return None
-    match = BASIC_RE.fullmatch(header)
+    match = BASIC_RE.fullmatch(authorization)
     if match is None:
         return None
     raw = match.group(1).rstrip("=")
@@ -302,18 +309,37 @@ def _basic_credential(request: Request) -> bytes | None:
         return None
 
 
-def _verify(request: Request, strategy: str, secret: str) -> bool:
+def authenticate(
+    strategy: str,
+    secret: str | None,
+    *,
+    authorization: str | None = None,
+    api_key: str | None = None,
+    query_token: str | None = None,
+    query_api_key: str | None = None,
+) -> dict[str, Any] | None:
+    """Verify the presented credential against secret.
+
+    Returns the verified claims for jwt, {} for the other strategies, or None
+    when the credential is missing or wrong. An unset or empty secret fails
+    closed. The query_* arguments are only passed on STREAM endpoints.
+    """
+    if not secret:
+        return None
     expected = secret.encode("utf-8")
+    if strategy == "jwt":
+        token = _bearer_token(authorization, query_token)
+        return _verify_jwt(token, expected) if token is not None else None
     if strategy == "bearer":
-        token = _bearer_token(request)
-        return token is not None and _same_secret(token.encode("utf-8"), expected)
+        token = _bearer_token(authorization, query_token)
+        return {} if token is not None and _same_secret(token.encode("utf-8"), expected) else None
     if strategy == "api_key":
-        key = request.headers.get("X-API-Key")
-        return bool(key) and _same_secret(key.encode("utf-8"), expected)
+        key = api_key if api_key is not None else query_api_key
+        return {} if key and _same_secret(key.encode("utf-8"), expected) else None
     if strategy == "basic":
-        credential = _basic_credential(request)
-        return credential is not None and _same_secret(credential, expected)
-    return False
+        credential = _basic_credential(authorization)
+        return {} if credential is not None and _same_secret(credential, expected) else None
+    return None
 
 
 def _challenge(strategy: str, realm: str) -> str | None:
@@ -325,29 +351,29 @@ def _challenge(strategy: str, realm: str) -> str | None:
     return None
 
 
-def require_auth(strategy: str, secret_name: str, realm: str):
+def require_auth(strategy: str, secret_name: str, realm: str, allow_query: bool = False):
     """Return a FastAPI dependency that rejects requests failing the check.
 
     The secret is read from env on every request. An unset or empty secret
     fails closed. For jwt the dependency returns the verified payload (the
     endpoint claims value); every other strategy returns None. Dependencies run
     before body validation, so an invalid body from an unauthenticated caller
-    gets 401, not 422.
+    gets 401, not 422. allow_query is set only on STREAM endpoints.
     """
     challenge = _challenge(strategy, realm)
 
     def dependency(request: Request) -> dict[str, Any] | None:
-        secret = getattr(env, secret_name, None)
-        if not secret:
+        claims = authenticate(
+            strategy,
+            getattr(env, secret_name, None),
+            authorization=request.headers.get("Authorization"),
+            api_key=request.headers.get("X-API-Key"),
+            query_token=request.query_params.get("token") if allow_query else None,
+            query_api_key=request.query_params.get("api_key") if allow_query else None,
+        )
+        if claims is None:
             raise Unauthorized(challenge)
-        if strategy == "jwt":
-            claims = _jwt_claims(request, secret.encode("utf-8"))
-            if claims is None:
-                raise Unauthorized(challenge)
-            return claims
-        if not _verify(request, strategy, secret):
-            raise Unauthorized(challenge)
-        return None
+        return claims if strategy == "jwt" else None
 
     return dependency
 `

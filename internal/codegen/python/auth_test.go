@@ -40,19 +40,20 @@ func TestPython_AuthEmitsVerifierAndEnforcedRoutes(t *testing.T) {
 		"isinstance(value, bool)",
 		`JSONResponse({"error": "Unauthorized"}, status_code=401, headers=headers)`,
 		`if header.get("alg") != "HS256":`,
-		`secret = getattr(env, secret_name, None)`,
+		`getattr(env, secret_name, None),`,
 		`if not secret:`,
-		`if not _verify(request, strategy, secret):`,
+		`if claims is None:`,
+		`def require_auth(strategy: str, secret_name: str, realm: str, allow_query: bool = False):`,
 	} {
 		if !strings.Contains(authPy, want) {
 			t.Errorf("src/lib/auth.py missing %q", want)
 		}
 	}
-	if strings.Contains(authPy, "token") && strings.Contains(authPy, "request.query_params") {
-		t.Errorf("src/lib/auth.py must not read query-string credentials on REST")
-	}
 
 	routes := readPy(t, outDir, "src/routes/guard.py")
+	if strings.Contains(routes, "allow_query") {
+		t.Errorf("REST routes must not read query-string credentials")
+	}
 	for _, want := range []string{
 		`@router.get("/api/guard", dependencies=[Depends(_bp_require_auth("bearer", "API_KEY", "shop"))], responses={401: {"description": "Unauthorized"}})`,
 		`@router.post("/api/guard", tags=["auth"], responses={401: {"description": "Unauthorized"}})`,
