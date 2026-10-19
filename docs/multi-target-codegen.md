@@ -220,7 +220,7 @@ behavior.
 | `auth webhook_sig using(secret.NAME)` | HMAC-SHA256 (hex) over the raw body in `X-Webhook-Signature`; `401` `{"error": "Invalid signature"}` for a bad, non-hex, or missing signature and for an unset or empty secret (fails closed); `400` `{"error": "Invalid payload"}` for a verified non-JSON body; the parsed body is `data` | Same contract and bodies in `src/lib/webhook.py`. The check runs before body validation and binds `data` |
 | `min`/`max` on model fields | Carried into the model Zod schemas in `src/types/schemas.ts` (`.min`/`.max`; a key-count refine on maps); not in Drizzle tables | pydantic `Field(min_length/max_length/ge/le)` in `src/models/pydantic.py`; a violation raises `ValidationError` when a read model is built |
 | Model-field bounds on saved rows | Not checked: inserts go through Drizzle, and requests are checked against endpoint input constraints | Not checked: inserts go through SQLAlchemy, and requests are checked against endpoint input constraints |
-| `use` middleware variables on STREAM/WS | Typed like REST (`c.get('auth')` has the injected row type) | Not supported: STREAM and WS `use` fail closed |
+| `use` middleware variables on STREAM/WS | Typed like REST (`c.get('auth')` has the injected row type); the middleware runs before the stream opens or in the handshake | Runs before the stream opens (a guard answers `{"error"}` with its status) or in the WS handshake after auth (refused status-only); runs on a short-lived session; the injected value is readable in pre-stream statements, `on event`/`on timeout`, and every WS handler |
 | STREAM endpoints (SSE) | `streamSSE`: `event:`/`data:` frames for each `on event` and `on timeout`, `text/event-stream`, pre-stream guards answer `{"error"}` before the stream opens | Same frames and headers from `src/lib/events.py`; `StreamingResponse`, no keepalive comments; pre-stream guards answer `{"error"}`; input errors answer `422` |
 | `claims` on `auth jwt` endpoints | Verified token payload in REST, STREAM, and WS handlers; `claims.org.id` reads nested keys as written; a missing key is `undefined` | `claims: dict[str, Any]` dependency (first REST handler parameter); `claims.<field>` renders as `claims.get("<field>")`; a missing key is `None` |
 | `auth` on STREAM | `?token=` (bearer, jwt) and `?api_key=` (api_key) as a fallback to the header; basic is header-only | Same fallback, opt-in on STREAM only (`require_auth(..., allow_query=True)`); REST is header-only |
@@ -253,8 +253,8 @@ reasons come from `unsupportedFeatures()` in
 
 - struct `enum` declarations (variants with bodies, such as `Plan[x].field` lookups)
 - model fields typed by a `type` declaration, primary keys typed by an alias, and `json<T>` model fields over a declared type
-- WS endpoints that use `use` middleware, `auth webhook_sig`, `try/recover`, an inline `when`, `header`/`env` references, function calls, or a handler output that is not an object literal
-- STREAM endpoints that use `use` middleware, `cache`, `auth webhook_sig`, `try/recover` before the stream block, calls to functions or `header`/`env` inside a handler, or handler output that is not an object literal
+- WS endpoints that use `use` middleware with configuration (`use name { ... }`) or an undeclared middleware, `auth webhook_sig`, `try/recover`, an inline `when`, `header`/`env` references, function calls, or a handler output that is not an object literal
+- STREAM endpoints that use `use` middleware with configuration or an undeclared middleware, `cache`, `auth webhook_sig`, `try/recover` before the stream block, calls to functions or `header`/`env` inside a handler, or handler output that is not an object literal
 - `emit ... to(service)` (no Python transport)
 - `schedule`, `worker`, `subscribe`, and `external` declarations
 - `env` declarations, and `env.X` reads outside endpoint and middleware bodies

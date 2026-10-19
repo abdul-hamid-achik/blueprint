@@ -1163,6 +1163,12 @@ keep-alive`. Differences:
   `{"error": "..."}` with its status, as on Node. The statements run on a
   short-lived database session that closes before streaming, so a long stream
   holds no pooled connection.
+- `use` middleware runs before the stream opens. Each one reads the request's
+  headers, runs on a short-lived database session, and injects its value. The
+  injected name is readable in pre-stream statements and in every `on event` and
+  `on timeout` handler. A failing guard answers its status with `{"error": ...}`
+  and no stream starts. The injected value is a detached row, so read loaded
+  columns only, not relationships.
 - Credentials are verified as on REST, with the same `401` body. On STREAM only,
   `?token=` (bearer, jwt) and `?api_key=` (api_key) are accepted when the header
   is absent. Basic stays header-only.
@@ -1184,7 +1190,7 @@ keep-alive`. Differences:
   runtime per Redis deployment.
 - A client that disconnects is unsubscribed at once and its timers are cancelled.
 
-Not supported on Python yet: `use` middleware, `cache`, `auth webhook_sig`,
+Not supported on Python yet: `cache`, `auth webhook_sig`,
 `try/recover` before the stream block, calls to functions or `header`/`env` in a
 handler, and handler output that is not an object literal. `bp build` names the
 reason. WS endpoints are translated on Python; section 15 lists their notes.
@@ -1334,9 +1340,10 @@ The Python target translates WS endpoints. Each endpoint becomes a route in
 the send queue, and Redis fan-out). The client-visible behavior matches Node,
 with these differences:
 
-- The handshake runs in Node's order: `auth`, then path inputs, then `limit`,
-  then the upgrade. A refusal carries its status and no body, as on Node: `401`
-  for auth, `400` for a path input, and `429` for `limit`. Python sends it
+- The handshake runs `auth`, then `use` middleware, then path inputs, then
+  `limit`, then the upgrade. Without `use`, that is Node's order. A refusal
+  carries its status and no body: `401` for auth, the guard's status for a
+  failing `use` middleware, `400` for a path input, and `429` for `limit`. Python sends it
   through the `websocket.http.response` extension, which uvicorn implements. A
   server without the extension closes the socket before accept, and the server
   answers `403`.
@@ -1350,6 +1357,9 @@ with these differences:
   are detached objects for the rest of the connection. Columns loaded by the
   `fetch` are readable; a relationship that was not loaded, or an attribute
   expired by a commit in `on_connect`, is not.
+- The value a `use` middleware injects is readable in `on_connect`, `on_message`,
+  and `on_disconnect`, detached like an `on_connect` binding. The middleware
+  runs once per handshake on a short-lived session, before the socket accepts.
 - Room membership is per process, shared by every WS endpoint of the app. On
   Node each WS route file keeps its own room map.
 - A room broadcast or whisper sends the same JSON text as Node, on the same
@@ -1378,7 +1388,7 @@ with these differences:
   form used by STREAM frames.
 
 Still rejected on Python, with a reason from `bp build`: `try/recover` in a
-handler, `use` middleware, `auth webhook_sig`, an inline `when`, a `header` or
+handler, `auth webhook_sig`, an inline `when`, a `header` or
 `env` reference, a call to a function or to `call`, `.length` on a value that is
 not a message field, a step outside the translated set, and a handler output that
 is not an object literal. The translated set is the realtime built-ins (`join`,
