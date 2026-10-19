@@ -20,7 +20,7 @@ func (g *Generator) genSchemaPy(models []*ast.Model) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 
-	imports := schemaImports(models)
+	imports := g.schemaImports(models)
 	sort.Strings(imports)
 	for _, imp := range imports {
 		b.WriteString(imp)
@@ -33,14 +33,14 @@ func (g *Generator) genSchemaPy(models []*ast.Model) codegen.OutputFile {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		emitSQLAlchemyModel(&b, m)
+		g.emitSQLAlchemyModel(&b, m)
 	}
 	return codegen.OutputFile{Path: "src/models/schema.py", Content: []byte(b.String())}
 }
 
 // schemaImports collects the import lines that the schema module needs. The set
 // is deduplicated and sorted in genSchemaPy.
-func schemaImports(models []*ast.Model) []string {
+func (g *Generator) schemaImports(models []*ast.Model) []string {
 	set := map[string]bool{
 		"from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column": true,
 	}
@@ -50,10 +50,16 @@ func schemaImports(models []*ast.Model) []string {
 	needsDateTimeDefault := false
 	hasOptional := false
 
+	enumImports := newImportSet()
 	for _, m := range models {
 		for _, f := range m.Fields {
-			ct := sqlAlchemyColumnType(f.Type)
+			ct := g.sqlAlchemyColumnType(f.Type)
 			colTypes[ct.importName] = true
+			typeRefs(f.Type, func(ref string) {
+				if g.namedKind(ref) == "enum" {
+					enumImports.add(pyEnumsModule, pyClassName(ref))
+				}
+			})
 			for _, c := range f.Constraints {
 				switch c.Kind {
 				case "ref":
@@ -100,13 +106,14 @@ func schemaImports(models []*ast.Model) []string {
 	for s := range set {
 		out = append(out, s)
 	}
+	out = append(out, enumImports.lines()...)
 	return out
 }
 
 // emitSQLAlchemyModel writes one declarative class. Table name = pluralized
 // model name (matching the JS/Drizzle convention so the same DB works for
 // both targets).
-func emitSQLAlchemyModel(b *strings.Builder, m *ast.Model) {
+func (g *Generator) emitSQLAlchemyModel(b *strings.Builder, m *ast.Model) {
 	className := common.PascalCase(m.Name)
 	tableName := common.Pluralize(m.Name)
 
@@ -117,13 +124,13 @@ func emitSQLAlchemyModel(b *strings.Builder, m *ast.Model) {
 	fmt.Fprintf(b, "    __tablename__ = %q\n\n", tableName)
 
 	for _, f := range m.Fields {
-		emitSQLAlchemyField(b, f)
+		g.emitSQLAlchemyField(b, f)
 	}
 }
 
-func emitSQLAlchemyField(b *strings.Builder, f *ast.Field) {
-	ct := sqlAlchemyColumnType(f.Type)
-	pyType := sqlAlchemyMappedAnnotation(f.Type, f.Constraints)
+func (g *Generator) emitSQLAlchemyField(b *strings.Builder, f *ast.Field) {
+	ct := g.sqlAlchemyColumnType(f.Type)
+	pyType := g.sqlAlchemyMappedAnnotation(f.Type, f.Constraints)
 
 	var args []string
 	args = append(args, ct.constructor)
@@ -164,7 +171,7 @@ func emitSQLAlchemyField(b *strings.Builder, f *ast.Field) {
 		if c.Kind != "default" {
 			continue
 		}
-		if d := sqlAlchemyDefault(c.Value); d != "" {
+		if d := g.sqlAlchemyDefault(f.Type, c.Value); d != "" {
 			args = append(args, "default="+d)
 			hasDefault = true
 		}
@@ -189,8 +196,15 @@ type colType struct {
 	constructor string // first arg of mapped_column
 }
 
-func sqlAlchemyColumnType(t ast.TypeExpr) colType {
+func (g *Generator) sqlAlchemyColumnType(t ast.TypeExpr) colType {
 	switch v := t.(type) {
+	case *ast.NamedType:
+		// A declared enum uses the Postgres type name Drizzle's pgEnum uses on
+		// Node, so both targets create the same type. Values are the variant
+		// strings, not the Python member names.
+		return colType{"Enum", fmt.Sprintf(
+			"Enum(%s, name=%q, values_callable=lambda e: [m.value for m in e])",
+			pyClassName(v.Name), pgEnumTypeName(v.Name))}
 	case *ast.PrimitiveType:
 		switch v.Name {
 		case "string":
@@ -228,9 +242,11 @@ func sqlAlchemyColumnType(t ast.TypeExpr) colType {
 // pythonAnnotationForField produces the Python annotation for non-SQLAlchemy
 // contexts (e.g. Pydantic model fields when no special primitive mapping
 // applies). Optional fields become Optional[X].
-func pythonAnnotationForField(t ast.TypeExpr, cs []*ast.Constraint_) string {
-	base := pythonTypeAnnotation(t)
-	if base == "" || strings.Contains(base, "TODO") {
+func (g *Generator) pythonAnnotationForField(t ast.TypeExpr, cs []*ast.Constraint_) string {
+	base := g.pyAnnotation(t)
+	// Inline enum model fields stay plain str on the read model; the column
+	// keeps its string values and no Literal is emitted here.
+	if _, inline := t.(*ast.EnumInline); inline || base == "" || strings.Contains(base, "TODO") {
 		base = "str"
 	}
 	base = annotatedType(base, t, cs)
@@ -247,9 +263,11 @@ func pythonAnnotationForField(t ast.TypeExpr, cs []*ast.Constraint_) string {
 // Python's uuid.UUID (not str) and DateTime maps to datetime.datetime.
 // Routes/Pydantic use str/datetime via their own paths; this is only used
 // inside src/models/schema.py.
-func sqlAlchemyMappedAnnotation(t ast.TypeExpr, cs []*ast.Constraint_) string {
+func (g *Generator) sqlAlchemyMappedAnnotation(t ast.TypeExpr, cs []*ast.Constraint_) string {
 	base := "str"
 	switch v := t.(type) {
+	case *ast.NamedType:
+		base = pyClassName(v.Name)
 	case *ast.PrimitiveType:
 		switch v.Name {
 		case "uuid":
@@ -278,7 +296,7 @@ func sqlAlchemyMappedAnnotation(t ast.TypeExpr, cs []*ast.Constraint_) string {
 
 // sqlAlchemyDefault renders a Blueprint default-value expression as the
 // Python value passed to mapped_column(default=...). Returns "" to skip.
-func sqlAlchemyDefault(e ast.Expr) string {
+func (g *Generator) sqlAlchemyDefault(t ast.TypeExpr, e ast.Expr) string {
 	switch v := e.(type) {
 	case *ast.NowLit:
 		return "datetime.utcnow"
@@ -294,7 +312,11 @@ func sqlAlchemyDefault(e ast.Expr) string {
 	case *ast.StringLit:
 		return fmt.Sprintf("%q", v.Value)
 	case *ast.Ident:
-		// Enum variant identifier — quote as a string.
+		// Enum variant identifier. A declared enum uses its member (Status.x);
+		// an inline enum or other column uses the quoted string.
+		if rendered, ok := g.enumDefault(t, v.Name); ok {
+			return rendered
+		}
 		return fmt.Sprintf("%q", v.Name)
 	}
 	return ""
@@ -353,18 +375,31 @@ func (g *Generator) genPydanticPy(models []*ast.Model) codegen.OutputFile {
 	if needsFormats {
 		b.WriteString("from src.lib import formats\n")
 	}
+	enumImports := newImportSet()
+	for _, m := range models {
+		for _, f := range m.Fields {
+			typeRefs(f.Type, func(ref string) {
+				if g.namedKind(ref) == "enum" {
+					enumImports.add(pyEnumsModule, pyClassName(ref))
+				}
+			})
+		}
+	}
+	for _, line := range enumImports.lines() {
+		b.WriteString(line + "\n")
+	}
 	b.WriteString("\n")
 
 	for i, m := range models {
 		if i > 0 {
 			b.WriteString("\n\n")
 		}
-		emitPydanticModel(&b, m)
+		g.emitPydanticModel(&b, m)
 	}
 	return codegen.OutputFile{Path: "src/models/pydantic.py", Content: []byte(b.String())}
 }
 
-func emitPydanticModel(b *strings.Builder, m *ast.Model) {
+func (g *Generator) emitPydanticModel(b *strings.Builder, m *ast.Model) {
 	className := common.PascalCase(m.Name)
 	if m.Intent != nil {
 		fmt.Fprintf(b, "# %s\n", m.Intent.Text)
@@ -372,7 +407,7 @@ func emitPydanticModel(b *strings.Builder, m *ast.Model) {
 	fmt.Fprintf(b, "class %s(BaseModel):\n", className)
 	b.WriteString("    model_config = ConfigDict(from_attributes=True)\n\n")
 	for _, f := range m.Fields {
-		annot := pythonAnnotationForField(f.Type, f.Constraints)
+		annot := g.pythonAnnotationForField(f.Type, f.Constraints)
 		// Pydantic primitive overrides: timestamp → datetime, uuid → UUID.
 		if pt, ok := f.Type.(*ast.PrimitiveType); ok {
 			switch pt.Name {

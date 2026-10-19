@@ -52,6 +52,8 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsPath := false
 	needsAnnotated := false
 	needsFormats := false
+	needsLiteral := false
+	namedImports := newImportSet()
 	userFnCalls := map[string]bool{}
 	middlewares := map[string]bool{}
 	for _, ep := range eps {
@@ -67,13 +69,22 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 		}
 		for _, s := range ep.Stmts {
 			if input, ok := s.(*ast.InputStmt); ok {
+				typeRefs(input.Type, func(ref string) {
+					switch g.namedKind(ref) {
+					case "enum":
+						namedImports.add(pyEnumsModule, pyClassName(ref))
+					case "alias", "type":
+						namedImports.add(pyTypesModule, pyClassName(ref))
+					}
+				})
+				needsLiteral = needsLiteral || hasInlineEnum(input.Type)
 				needsUUID = needsUUID || typeContainsPrimitive(input.Type, "uuid")
 				needsNow = needsNow || typeContainsPrimitive(input.Type, "timestamp")
 				if formatTypeFor(input.Type, input.Constraints) != "" {
 					needsFormats = true
 				}
 				if common.IsPathParam(input.Name, ep.Path) {
-					if len(inputValidationArgs(input.Type, input.Constraints)) > 0 {
+					if len(g.inputArgs(input.Type, input.Constraints)) > 0 {
 						needsAnnotated = true
 						needsPath = true
 					}
@@ -197,8 +208,14 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	if needsAnnotated {
 		b.WriteString("from typing import Annotated\n")
 	}
+	if needsLiteral {
+		b.WriteString("from typing import Literal\n")
+	}
 	if needsFormats {
 		b.WriteString("from src.lib import formats\n")
+	}
+	for _, line := range namedImports.lines() {
+		b.WriteString(line + "\n")
 	}
 	if needsEnv {
 		b.WriteString("from src.lib.env import env\n")
@@ -357,7 +374,7 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 		}
 	}
 
-	params := signatureParams(ep.Method, ep.Path, inputs)
+	params := g.signatureParams(ep.Method, ep.Path, inputs)
 	for _, header := range endpointHeaderFields(ep) {
 		if params != "" {
 			params += ", "
@@ -484,23 +501,23 @@ func endpointHasComplexBody(ep *ast.Endpoint) bool {
 // signatureParams renders the FastAPI handler signature. Path parameters stay
 // ordinary required arguments. Every other input gets an explicit Body/Query
 // marker so the generated transport matches the Blueprint HTTP contract.
-func signatureParams(method, path string, inputs []*ast.InputStmt) string {
+func (g *Generator) signatureParams(method, path string, inputs []*ast.InputStmt) string {
 	var pathParams, requestParams []string
 	query := strings.EqualFold(method, "GET") || strings.EqualFold(method, "DELETE")
 	for _, in := range inputs {
 		if common.IsPathParam(in.Name, path) {
 			var extra []string
-			if args := inputValidationArgs(in.Type, in.Constraints); len(args) > 0 {
+			if args := g.inputArgs(in.Type, in.Constraints); len(args) > 0 {
 				extra = append(extra, fmt.Sprintf("Path(%s)", strings.Join(args, ", ")))
 			}
-			typ := annotatedType(pythonTypeAnnotation(in.Type), in.Type, in.Constraints, extra...)
+			typ := annotatedType(g.pyAnnotation(in.Type), in.Type, in.Constraints, extra...)
 			pathParams = append(pathParams, fmt.Sprintf("%s: %s", in.Name, typ))
 			continue
 		}
 
-		typ := annotatedType(pythonTypeAnnotation(in.Type), in.Type, in.Constraints)
+		typ := annotatedType(g.pyAnnotation(in.Type), in.Type, in.Constraints)
 		defaultValue := "..."
-		if value, ok := inputDefaultValue(in.Constraints); ok {
+		if value, ok := g.inputDefaultValue(in.Type, in.Constraints); ok {
 			defaultValue = value
 		} else if isOptional(in.Constraints) {
 			defaultValue = "None"
@@ -510,7 +527,7 @@ func signatureParams(method, path string, inputs []*ast.InputStmt) string {
 		if !query {
 			args = append(args, "embed=True")
 		}
-		args = append(args, inputValidationArgs(in.Type, in.Constraints)...)
+		args = append(args, g.inputArgs(in.Type, in.Constraints)...)
 		marker := "Body"
 		if query {
 			marker = "Query"
@@ -540,10 +557,10 @@ func endpointHeaderFields(ep *ast.Endpoint) []string {
 	return headers
 }
 
-func inputDefaultValue(constraints []*ast.Constraint_) (string, bool) {
+func (g *Generator) inputDefaultValue(t ast.TypeExpr, constraints []*ast.Constraint_) (string, bool) {
 	for _, constraint := range constraints {
 		if constraint.Kind == "default" && constraint.Value != nil {
-			return exprToPy(constraint.Value), true
+			return g.pyDefaultLiteral(t, constraint.Value), true
 		}
 	}
 	return "", false
@@ -794,38 +811,6 @@ func pyStringLiteral(s string) string {
 	escaped := strings.ReplaceAll(s, "\\", "\\\\")
 	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
 	return "f\"" + escaped + "\""
-}
-
-// pythonTypeAnnotation maps a Blueprint type to a Python/FastAPI annotation.
-// Phase 1 covers the primitives used by hello-world; anything else returns
-// `str` plus a TODO comment so the file still parses.
-func pythonTypeAnnotation(t ast.TypeExpr) string {
-	switch v := t.(type) {
-	case *ast.PrimitiveType:
-		switch v.Name {
-		case "string", "text":
-			return "str"
-		case "uuid":
-			return "UUID"
-		case "int", "money":
-			return "int"
-		case "float":
-			return "float"
-		case "bool":
-			return "bool"
-		case "timestamp":
-			return "datetime"
-		case "json":
-			return "dict"
-		}
-	case *ast.TypedJSONType:
-		return "dict"
-	case *ast.ListType:
-		return "list[" + pythonTypeAnnotation(v.Element) + "]"
-	case *ast.MapType:
-		return "dict[" + pythonTypeAnnotation(v.Key) + ", " + pythonTypeAnnotation(v.Value) + "]"
-	}
-	return "str  # TODO(python): unmapped Blueprint type"
 }
 
 // orderedResources returns the deterministic, deduplicated list of resource

@@ -186,10 +186,10 @@ jobs:
           fi
           echo "$output" | grep -q "authored tests and fixtures"
           if output=$(./bin/bp build examples/ecommerce-api.bp --out /tmp/py-ecommerce --target python 2>&1); then
-            echo "ecommerce-api unexpectedly built despite unsupported named enum semantics"
+            echo "ecommerce-api unexpectedly built despite unsupported dictionary attribute access"
             exit 1
           fi
-          echo "$output" | grep -q 'named `enum` declarations'
+          echo "$output" | grep -q 'dictionary-backed input "payment"'
           if output=$(./bin/bp build examples/realtime-chat.bp --out /tmp/py-chat --target python 2>&1); then
             echo "realtime-chat unexpectedly built despite unsupported STREAM/WS semantics"
             exit 1

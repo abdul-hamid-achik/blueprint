@@ -476,6 +476,8 @@ model job {
 }
 ```
 
+On `--target python`, an inline enum endpoint input (query, body, or path) becomes `Literal["a", "b"]`, and a `default(...)` names one of its variants. Inline enum model columns keep their string values.
+
 ### Naming
 
 - Model name `job` → table `jobs` (pluralized)
@@ -560,6 +562,8 @@ GET /api/image/:id {
 }
 ```
 
+On `--target python`, a `type` becomes a Pydantic `BaseModel` in `src/models/types.py`. Its fields accept `required`, `optional`, `min`, `max`, and `format`; a `default` on a type field is rejected. Endpoint inputs of a `type` take a body (`POST`, `PUT`, `PATCH`), not a query. A model field typed by a `type` is rejected for now. An endpoint input typed `json<T>` over a declared `type` or enum becomes that class on Python.
+
 ### `alias` — Type Aliases
 
 Single-type aliases with optional constraints.
@@ -572,6 +576,8 @@ alias FileSize = int min(0) max(100mb)
 ```
 
 Supported formats: `email`, `url`, `uuid`, `ip`, `date`
+
+On `--target python`, an alias becomes `Name = Annotated[...]` in `src/models/types.py`, with `min`, `max`, and `format` applied. An alias of another alias is supported; `format` on that second level is rejected, so put the format on the base alias. A model field typed by an alias is rejected for now.
 
 ### Extended Type Expressions
 
@@ -622,6 +628,8 @@ enum Status {
 ```
 
 Generated as a TypeScript union type and Zod enum.
+
+On `--target python`, a simple enum becomes a `str` Enum in `src/models/enums.py` whose values are the variant strings. A model column typed by the enum uses a SQLAlchemy `Enum` named with the lowercased enum name (`Status` → `status`), the same Postgres type name Node's `pgEnum` creates. Endpoint inputs typed by the enum validate the value and answer `422` for anything else. Rich enums (variants with bodies) are not yet supported on Python.
 
 ### Rich Enums
 

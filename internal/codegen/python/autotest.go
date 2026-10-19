@@ -287,7 +287,7 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, model
 	seedCounter := 0
 	if len(pathParams) > 0 {
 		if modelName := firstDataOpModelInStmts(ep.Stmts); modelName != "" {
-			if v := emitSeedModelPy(&seedBody, modelName, models, indent, &seedCounter, map[string]bool{}); v != "" {
+			if v := g.emitSeedModelPy(&seedBody, modelName, models, indent, &seedCounter, map[string]bool{}); v != "" {
 				for _, p := range pathParams {
 					seedParamVar[p] = v
 				}
@@ -319,7 +319,7 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, model
 	if len(queryInputs) > 0 {
 		qs := make([]string, 0, len(queryInputs))
 		for _, inp := range queryInputs {
-			qs = append(qs, inp.Name+"="+sampleQueryValuePy(inp.Type, inp.Constraints))
+			qs = append(qs, inp.Name+"="+g.sampleQueryValue(inp.Type, inp.Constraints))
 		}
 		// url is a single-quoted Python string OR an f-string. Either way,
 		// append the querystring inside the closing quote.
@@ -341,7 +341,7 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, model
 	if len(bodyInputs) > 0 {
 		kvs := make([]string, 0, len(bodyInputs))
 		for _, inp := range bodyInputs {
-			kvs = append(kvs, fmt.Sprintf("%q: %s", inp.Name, sampleJSONValuePy(inp.Type, inp.Constraints)))
+			kvs = append(kvs, fmt.Sprintf("%q: %s", inp.Name, g.sampleJSONValue(inp.Type, inp.Constraints)))
 		}
 		callArgs = append(callArgs, "json={"+strings.Join(kvs, ", ")+"}")
 	}
@@ -422,7 +422,7 @@ func appendQueryToURL(url, qs string) string {
 // emitSeedModelPy inserts a row for modelName (seeding ref parents first) and
 // returns the Python variable holding the inserted row, or "" if the model is
 // unknown. Mirrors the JS-side emitSeedModel.
-func emitSeedModelPy(b *strings.Builder, modelName string, models []*ast.Model, indent string, counter *int, visiting map[string]bool) string {
+func (g *Generator) emitSeedModelPy(b *strings.Builder, modelName string, models []*ast.Model, indent string, counter *int, visiting map[string]bool) string {
 	m := findModel(models, modelName)
 	if m == nil || visiting[modelName] {
 		return ""
@@ -437,7 +437,7 @@ func emitSeedModelPy(b *strings.Builder, modelName string, models []*ast.Model, 
 		if ref == "" {
 			continue
 		}
-		if pv := emitSeedModelPy(b, ref, models, indent, counter, visiting); pv != "" {
+		if pv := g.emitSeedModelPy(b, ref, models, indent, counter, visiting); pv != "" {
 			fkValues[f.Name] = pv + ".id"
 		}
 	}
@@ -451,7 +451,7 @@ func emitSeedModelPy(b *strings.Builder, modelName string, models []*ast.Model, 
 		if !fieldNeedsSeedValuePy(f) {
 			continue
 		}
-		kvs = append(kvs, fmt.Sprintf("%s=%s", f.Name, modelFieldSamplePy(f)))
+		kvs = append(kvs, fmt.Sprintf("%s=%s", f.Name, g.modelFieldSamplePy(f)))
 	}
 
 	v := fmt.Sprintf("_seed%d", *counter)
@@ -483,7 +483,7 @@ func fieldNeedsSeedValuePy(f *ast.Field) bool {
 
 // modelFieldSamplePy synthesizes a Python expression for a seed value. Unique
 // string columns get a uuid4 so test runs don't collide.
-func modelFieldSamplePy(f *ast.Field) string {
+func (g *Generator) modelFieldSamplePy(f *ast.Field) string {
 	for _, c := range f.Constraints {
 		if c.Kind == "unique" {
 			if pt, ok := f.Type.(*ast.PrimitiveType); ok && (pt.Name == "string" || pt.Name == "text") {
@@ -491,7 +491,7 @@ func modelFieldSamplePy(f *ast.Field) string {
 			}
 		}
 	}
-	return sampleJSONValuePy(f.Type, f.Constraints)
+	return g.sampleJSONValue(f.Type, f.Constraints)
 }
 
 // refTargetPy returns the target model name of a ref() constraint, or "".

@@ -90,14 +90,27 @@ func formatFeature(t ast.TypeExpr, c *ast.Constraint_) string {
 	return fmt.Sprintf("format(%s) constraint on %T", formatKind(c.Value), t)
 }
 
-// pythonUsesFormats reports whether any endpoint input or model field carries
-// a format constraint, which is when src/lib/formats.py must be emitted.
-func pythonUsesFormats(models []*ast.Model, endpoints []*ast.Endpoint) bool {
+// usesFormats reports whether any endpoint input, model field, type field, or
+// alias carries a format constraint, which is when src/lib/formats.py must be
+// emitted.
+func (g *Generator) usesFormats(models []*ast.Model, endpoints []*ast.Endpoint) bool {
 	for _, m := range models {
 		for _, f := range m.Fields {
 			if formatTypeFor(f.Type, f.Constraints) != "" {
 				return true
 			}
+		}
+	}
+	for _, t := range g.declaredTypes() {
+		for _, f := range t.Fields {
+			if formatTypeFor(f.Type, f.Constraints) != "" {
+				return true
+			}
+		}
+	}
+	for _, a := range g.declaredAliases() {
+		if formatTypeFor(a.Type, a.Constraints) != "" {
+			return true
 		}
 	}
 	for _, ep := range endpoints {

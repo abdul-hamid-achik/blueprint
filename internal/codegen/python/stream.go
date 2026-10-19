@@ -68,7 +68,7 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 	}
 	fmt.Fprintf(b, "@router.get(%q)\n", fastapiPath)
 
-	params := streamSignatureParams(se)
+	params := g.streamSignatureParams(se)
 	if g.streamTouchesDB(se) {
 		if params != "" {
 			params += ", "
@@ -139,14 +139,14 @@ func streamHandlerName(path string) string {
 
 // streamSignatureParams renders FastAPI handler params for a STREAM endpoint.
 // Same shape as REST: path params first, required next, optionals last.
-func streamSignatureParams(se *ast.StreamEndpoint) string {
+func (g *Generator) streamSignatureParams(se *ast.StreamEndpoint) string {
 	var inputs []*ast.InputStmt
 	for _, s := range se.Stmts {
 		if in, ok := s.(*ast.InputStmt); ok {
 			inputs = append(inputs, in)
 		}
 	}
-	return signatureParams("GET", se.Path, inputs)
+	return g.signatureParams("GET", se.Path, inputs)
 }
 
 // streamTouchesDB reports whether any pre-stream statement is a data op.

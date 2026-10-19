@@ -213,10 +213,6 @@ GET /api/x { -> 200 "ok" }
 env LOG_LEVEL "info"
 GET /api/x { -> 200 "ok" }
 `,
-		"named enum declaration": `blueprint "x" { version "1.0" port 3000 runtime node }
-enum Status { active inactive }
-GET /api/x { -> 200 "ok" }
-`,
 		"unresolved include declaration": `blueprint "x" { version "1.0" port 3000 runtime node }
 include "models.bp"
 GET /api/x { -> 200 "ok" }

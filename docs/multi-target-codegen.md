@@ -223,6 +223,10 @@ behavior.
 | `try/recover` with two or more writes | `db.transaction(...)` | `with db.begin_nested():` (a SAVEPOINT) |
 | `log` | `console.*` levels | stdlib `logging` through `src/lib/log.py` |
 | `pipe` declarations | `src/pipes/<name>.ts` | `src/pipes/<name>.py` for the inline subset only |
+| Named `enum` (model column, endpoint input) | pgEnum `<lowercased name>`, Zod enum | `class Name(str, enum.Enum)` in `src/models/enums.py`; SQLAlchemy `Enum` with the same Postgres type name |
+| Inline `enum(...)` endpoint input | Zod `z.enum([...])` | `Literal[...]`; `default` names a variant |
+| `type` declaration | TypeScript interface and Zod schema | Pydantic `BaseModel` in `src/models/types.py` |
+| `alias` declaration | TypeScript type and Zod schema | `Name = Annotated[...]` in `src/models/types.py` |
 
 `src/lib/formats.py` is emitted only when an endpoint input or model field uses
 `format(...)`. A Python build without formats has no such file. Unknown format
@@ -234,8 +238,8 @@ kinds fail the checker (C052) on every target.
 reasons come from `unsupportedFeatures()` in
 `internal/codegen/python/generator.go`. They currently include:
 
-- inline `enum(...)` endpoint inputs, and named `enum` declarations
-- `type` and `alias` declarations
+- struct `enum` declarations (variants with bodies, such as `Plan[x].field` lookups)
+- model fields typed by an alias or a `type` declaration, and `json<T>` model fields over a declared type
 - `STREAM` and `WS` endpoints
 - `schedule`, `worker`, `subscribe`, and `external` declarations
 - `env` declarations, and `env.X` reads outside endpoint and middleware bodies

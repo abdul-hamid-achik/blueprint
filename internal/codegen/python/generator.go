@@ -24,6 +24,7 @@ type Generator struct {
 	file       *ast.File
 	sourceFile string
 	genTests   bool
+	idx        *declIndex // enum/alias/type lookup, built lazily per Files call
 }
 
 // WithGenTests enables auto-generated contract tests under tests/ backed by a
@@ -107,6 +108,7 @@ func (g *Generator) Files(file *ast.File) ([]codegen.OutputFile, error) {
 		return nil, err
 	}
 	g.file = file
+	g.idx = nil
 	g.sourceFile = file.Loc.File
 	if g.sourceFile == "" {
 		g.sourceFile = "main.bp"
@@ -179,15 +181,29 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	out = append(out, emptyInit("src/routes/__init__.py", g.sourceFile))
 	out = append(out, g.genEnvPy(secrets, hasDB, hasCache))
 	out = append(out, g.genLogPy())
-	if pythonUsesFormats(models, endpoints) {
+	if g.usesFormats(models, endpoints) {
 		out = append(out, g.genFormatsPy())
 	}
 	out = append(out, g.genAppPy(bp, endpoints))
 
+	// Named enum / type / alias declarations live in src/models/ next to the
+	// SQLAlchemy and Pydantic modules, so the package is needed even without
+	// a database.
+	enums := g.declaredEnums()
+	hasTypes := len(g.declaredTypes()) > 0 || len(g.declaredAliases()) > 0
+	if len(enums) > 0 {
+		out = append(out, g.genEnumsPy(enums))
+	}
+	if hasTypes {
+		out = append(out, g.genTypesPy())
+	}
+
 	// Phase 2: data layer (models + db session + alembic) when the spec
 	// declares any models. Endpoints can still be Phase 1 static bodies.
-	if hasDB {
+	if hasDB || len(enums) > 0 || hasTypes {
 		out = append(out, emptyInit("src/models/__init__.py", g.sourceFile))
+	}
+	if hasDB {
 		out = append(out, g.genSchemaPy(models))
 		out = append(out, g.genPydanticPy(models))
 	}
@@ -343,6 +359,9 @@ func (g *Generator) unsupportedFeatures() []string {
 				if !validPythonIdentifier(field.Name) {
 					add(fmt.Sprintf("model field %q that is not a valid Python identifier", field.Name))
 				}
+				if reason := g.modelFieldTypeFeature(field); reason != "" {
+					add(fmt.Sprintf("model field %q: %s", field.Name, reason))
+				}
 				for _, c := range field.Constraints {
 					if c.Kind == "format" {
 						if reason := formatFeature(field.Type, c); reason != "" {
@@ -357,12 +376,10 @@ func (g *Generator) unsupportedFeatures() []string {
 			// The CLI resolves includes before codegen. Reject a raw Include AST
 			// passed through the Generator API rather than silently dropping it.
 			add("unresolved `include` declarations")
-		case *ast.TypeDecl:
-			add("`type` declarations")
-		case *ast.Alias:
-			add("`alias` declarations")
-		case *ast.Enum:
-			add("named `enum` declarations")
+		case *ast.TypeDecl, *ast.Alias, *ast.Enum:
+			for _, reason := range g.declFeatures(b) {
+				add(reason)
+			}
 		case *ast.Content:
 			add("`content` declarations")
 		case *ast.Pipe:
@@ -602,7 +619,7 @@ func (g *Generator) complexEndpointFeatures(ep *ast.Endpoint) []string {
 	for _, s := range ep.Stmts {
 		if input, ok := s.(*ast.InputStmt); ok {
 			inputNames[input.Name] = true
-			if pythonInputUsesDict(input.Type) {
+			if g.pythonInputUsesDict(input.Type) {
 				dictInputs[input.Name] = true
 			}
 			if common.IsPathParam(input.Name, ep.Path) {
@@ -615,7 +632,7 @@ func (g *Generator) complexEndpointFeatures(ep *ast.Endpoint) []string {
 						seen[fmt.Sprintf("path input constraint %q", constraint.Kind)] = true
 					}
 				}
-			} else if (strings.EqualFold(ep.Method, "GET") || strings.EqualFold(ep.Method, "DELETE")) && !pythonQueryInputTypeSupported(input.Type) {
+			} else if (strings.EqualFold(ep.Method, "GET") || strings.EqualFold(ep.Method, "DELETE")) && !g.pythonQueryInputTypeSupported(input.Type) {
 				seen[fmt.Sprintf("query transport for endpoint input %q", input.Name)] = true
 			}
 		}
@@ -760,12 +777,12 @@ func (g *Generator) complexStmtFeatures(s ast.ArrowStmt) []string {
 	switch v := s.(type) {
 	case *ast.InputStmt:
 		var out []string
-		if reason := pythonInputTypeFeature(v.Type); reason != "" {
+		if reason := g.pythonInputTypeFeature(v.Type); reason != "" {
 			out = append(out, reason)
 		}
 		for _, c := range v.Constraints {
 			out = append(out, g.pythonExpressionFeatures(c.Value)...)
-			if reason := pythonInputConstraintFeature(v.Type, c); reason != "" {
+			if reason := g.pythonInputConstraintFeature(v.Type, c); reason != "" {
 				out = append(out, reason)
 			}
 		}
@@ -872,7 +889,9 @@ func (g *Generator) middlewareFeatures(mw *ast.Middleware) []string {
 
 // pythonInputTypeFeature reports endpoint input types whose validation or
 // transport semantics the FastAPI signature emitter cannot preserve yet.
-func pythonInputTypeFeature(t ast.TypeExpr) string {
+// Named enum, alias, and type references resolve to the generated modules in
+// src/models/; anything else (a model, an undeclared name) stays rejected.
+func (g *Generator) pythonInputTypeFeature(t ast.TypeExpr) string {
 	switch v := t.(type) {
 	case *ast.PrimitiveType:
 		switch v.Name {
@@ -882,18 +901,24 @@ func pythonInputTypeFeature(t ast.TypeExpr) string {
 			return fmt.Sprintf("endpoint input type %q", v.Name)
 		}
 	case *ast.TypedJSONType:
+		if inner, ok := v.Inner.(*ast.NamedType); ok && g.namedKind(inner.Name) != "" {
+			return ""
+		}
 		return "typed `json<T>` endpoint inputs"
 	case *ast.ListType:
-		return pythonInputTypeFeature(v.Element)
+		return g.pythonInputTypeFeature(v.Element)
 	case *ast.MapType:
-		if reason := pythonInputTypeFeature(v.Key); reason != "" {
+		if reason := g.pythonInputTypeFeature(v.Key); reason != "" {
 			return reason
 		}
-		return pythonInputTypeFeature(v.Value)
+		return g.pythonInputTypeFeature(v.Value)
 	case *ast.NamedType:
-		return fmt.Sprintf("named endpoint input type %q", v.Name)
+		if g.namedKind(v.Name) == "" {
+			return fmt.Sprintf("named endpoint input type %q", v.Name)
+		}
+		return ""
 	case *ast.EnumInline:
-		return "inline-enum endpoint inputs"
+		return ""
 	case *ast.MimeTypeExpr:
 		return "file/MIME endpoint inputs"
 	case *ast.TranslationKeyType:
@@ -903,7 +928,7 @@ func pythonInputTypeFeature(t ast.TypeExpr) string {
 	}
 }
 
-func pythonInputConstraintFeature(t ast.TypeExpr, constraint *ast.Constraint_) string {
+func (g *Generator) pythonInputConstraintFeature(t ast.TypeExpr, constraint *ast.Constraint_) string {
 	if constraint == nil {
 		return ""
 	}
@@ -930,7 +955,7 @@ func pythonInputConstraintFeature(t ast.TypeExpr, constraint *ast.Constraint_) s
 		}
 		return ""
 	case "default":
-		if pythonDefaultMatchesType(t, constraint.Value) {
+		if g.pyDefaultMatchesType(t, constraint.Value) {
 			return ""
 		}
 		return fmt.Sprintf("endpoint input default expression %T for %T", constraint.Value, t)
@@ -959,61 +984,46 @@ func pythonConstraintValueMatches(t ast.TypeExpr, value ast.Expr) bool {
 	return false
 }
 
-func pythonDefaultMatchesType(t ast.TypeExpr, value ast.Expr) bool {
-	if _, ok := value.(*ast.NullLit); ok {
-		return true
-	}
-	switch primitive := t.(type) {
-	case *ast.PrimitiveType:
-		switch primitive.Name {
-		case "string", "text":
-			_, ok := value.(*ast.StringLit)
-			return ok
-		case "int", "money":
-			_, ok := value.(*ast.IntLit)
-			return ok
-		case "float":
-			switch value.(type) {
-			case *ast.IntLit, *ast.FloatLit:
-				return true
-			}
-		case "bool":
-			_, ok := value.(*ast.BoolLit)
-			return ok
-		case "json":
-			switch value.(type) {
-			case *ast.StringLit, *ast.IntLit, *ast.FloatLit, *ast.BoolLit, *ast.ListExpr, *ast.BlockExpr:
-				return true
-			}
-		}
-	case *ast.ListType:
-		_, ok := value.(*ast.ListExpr)
-		return ok
-	case *ast.MapType:
-		_, ok := value.(*ast.BlockExpr)
-		return ok
-	}
-	return false
-}
-
-func pythonQueryInputTypeSupported(t ast.TypeExpr) bool {
+// pythonQueryInputTypeSupported reports whether a GET/DELETE input can be sent
+// as a query parameter. Enum values (inline or declared) and aliases of scalar
+// types are plain strings or numbers on the wire; `type` classes are objects
+// and need a body.
+func (g *Generator) pythonQueryInputTypeSupported(t ast.TypeExpr) bool {
 	switch v := t.(type) {
 	case *ast.PrimitiveType:
 		return v.Name != "json"
+	case *ast.EnumInline:
+		return true
+	case *ast.NamedType:
+		switch g.namedKind(v.Name) {
+		case "enum":
+			return true
+		case "alias":
+			return g.pythonQueryInputTypeSupported(g.decls().aliases[v.Name].Type)
+		}
+		return false
 	case *ast.ListType:
 		_, scalar := v.Element.(*ast.PrimitiveType)
-		return scalar && pythonQueryInputTypeSupported(v.Element)
+		return scalar && g.pythonQueryInputTypeSupported(v.Element)
 	default:
 		return false
 	}
 }
 
-func pythonInputUsesDict(t ast.TypeExpr) bool {
-	switch t.(type) {
-	case *ast.TypedJSONType, *ast.MapType:
+// pythonInputUsesDict reports whether an input is a free-form dictionary (so
+// attribute access such as payload.x must be rejected). Typed json<T> over a
+// declared type is a generated class, so it is not dictionary-backed.
+func (g *Generator) pythonInputUsesDict(t ast.TypeExpr) bool {
+	switch v := t.(type) {
+	case *ast.TypedJSONType:
+		if inner, ok := v.Inner.(*ast.NamedType); ok && g.namedKind(inner.Name) != "" {
+			return false
+		}
+		return true
+	case *ast.MapType:
 		return true
 	case *ast.PrimitiveType:
-		return t.(*ast.PrimitiveType).Name == "json"
+		return v.Name == "json"
 	default:
 		return false
 	}
