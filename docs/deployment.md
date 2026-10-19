@@ -245,7 +245,8 @@ Review these behaviors before scaling beyond one process:
   one shared secret. They do
   not look up users, rotate keys, or check JWT issuer or audience. Bare metadata
   such as `auth session` (no `using`) verifies nothing. Generated webhook HMAC
-  verification is also implemented. STREAM and WS endpoints accept the
+  verification is also implemented on Node and Python REST endpoints; an unset or
+  empty secret fails closed. STREAM and WS endpoints accept the
   credential in `?token=` or `?api_key=`, so keep query strings out of proxy
   and access logs.
 - Endpoint `cache <duration>` on the Node target sets `Cache-Control` on GET 2xx

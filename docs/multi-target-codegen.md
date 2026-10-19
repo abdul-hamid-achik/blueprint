@@ -217,6 +217,8 @@ behavior.
 |---------|------|--------|
 | REST path input `min`/`max` and type | Zod-validated before the handler runs; a failing segment answers `400` with the `{ success: false, error }` body | `Path(...)` bounds; a failing segment answers `422` |
 | `format(email\|url\|uuid\|ip\|date)` | Zod `.email()`, `.url()`, `.uuid()`, `.ip()`, `.date()` | `formats.Email`, `formats.Url`, `formats.Uuid`, `formats.IpAddress`, `formats.Date` from `src/lib/formats.py`; a violation answers `422` |
+| `auth webhook_sig using(secret.NAME)` | HMAC-SHA256 (hex) over the raw body in `X-Webhook-Signature`; `401` `{"error": "Invalid signature"}` for a bad, non-hex, or missing signature and for an unset or empty secret (fails closed); `400` `{"error": "Invalid payload"}` for a verified non-JSON body; the parsed body is `data` | Same contract and bodies in `src/lib/webhook.py`. The check runs before body validation and binds `data` |
+| `min`/`max` on model fields | Not carried into model Zod schemas or tables (endpoint inputs and aliases are enforced) | pydantic `Field(min_length/max_length/ge/le)` in `src/models/pydantic.py`; a violation raises `ValidationError` when the model is built |
 | `use` middleware variables on STREAM/WS | Typed like REST (`c.get('auth')` has the injected row type) | Not supported: STREAM/WS endpoints fail closed |
 | STREAM event fan-out | Redis `bp:stream:<event>` channels when `REDIS_URL` is set | Not supported |
 | Endpoint `cache <duration>` | `Cache-Control` on GET 2xx responses | `Cache-Control` on GET 2xx responses through `src/lib/http_cache.py`; `private` under the same rules |
@@ -246,7 +248,7 @@ reasons come from `unsupportedFeatures()` in
 - `schedule`, `worker`, `subscribe`, and `external` declarations
 - `env` declarations, and `env.X` reads outside endpoint and middleware bodies
 - `fn logic` bodies and `middleware after` bodies
-- endpoint `timeout` metadata, `auth webhook_sig`, bare `auth` lines (only `auth bearer|jwt|api_key|basic using(secret.NAME)` is enforced), and blueprint-level `use`
+- endpoint `timeout` metadata, bare `auth webhook_sig` and bare `auth` lines (only `auth bearer|jwt|api_key|basic|webhook_sig using(secret.NAME)` is enforced), and blueprint-level `use`
 - authored `test` blocks and fixtures
 
 The Effect target stays a scaffold. It emits `GET /health` and typed `Config`,

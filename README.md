@@ -439,7 +439,8 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
   (HS256), `api_key`, and `basic` with `using(secret.NAME)` are verified before
   the handler and answer 401 otherwise. A bare `auth` line with no `using`, such
   as `auth session`, is metadata only; use explicit middleware for it. Webhook
-  HMAC auth is implemented.
+  HMAC auth (`auth webhook_sig using(secret.NAME)`) is implemented on Node and
+  on Python REST endpoints.
 - Node `external` auth is a separate generated boundary: `bearer`/`jwt`/`basic`/
   `api_key` accept one declared `secret.NAME` or `env.NAME`. `retry N` adds N
   immediate retries for network/timeout failures and HTTP 408/429/5xx, with a

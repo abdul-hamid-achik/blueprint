@@ -363,8 +363,7 @@ Prep work (must precede the Python generator):
       `--gen-tests` suites send credentials and assert 401 without them. _(shipped 2026-10-18)_
     - [ ] Still rejected on Python: struct `enum` declarations (variants with bodies),
       `type`-typed model fields and `json<T>` model fields over a declared type, primary keys
-      typed by an alias, endpoint `timeout` metadata, `auth webhook_sig` (Node-only HMAC check),
-      bare `auth` lines, and blueprint-level `use`.
+      typed by an alias, endpoint `timeout` metadata, bare `auth` lines, and blueprint-level `use`.
   - [~] Phase 4: middleware, fn/pipe (Python `impl python` mode), `bp test`
     against testcontainers for real Postgres.
     - [x] `bp build --target python --gen-tests` emits a runnable pytest

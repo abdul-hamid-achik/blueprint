@@ -432,6 +432,12 @@ plain `str`. A value that fails the check answers `422`, FastAPI's validation
 status. The generated module is stdlib only. Python applies `format` to endpoint
 inputs and model fields.
 
+On Python, `min` and `max` on model fields become pydantic `Field` bounds in
+`src/models/pydantic.py`: `min_length`/`max_length` for `string`, `text`, lists,
+and maps, and `ge`/`le` for `int`, `float`, and `money`. Node applies `min` and
+`max` to endpoint inputs and aliases; its generated model schemas and tables do
+not carry inline model-field bounds, so the two targets differ for model fields.
+
 ### Computed Fields
 
 A model can declare pure, read-only values that are derived when a record is
@@ -905,7 +911,7 @@ POST /api/watermark {
 | Key | Syntax | Node runtime behavior |
 |-----|--------|-----------------------|
 | `use` | `use middleware_name` | Applies a declared custom middleware |
-| `auth` | `auth jwt using(secret.JWT_SECRET)` | Enforced for `bearer`, `jwt`, `api_key`, and `basic` with `using(secret.NAME)`, and for `webhook_sig`; metadata only otherwise (see Auth Strategies). On Python, only the four strategies with `using(secret.NAME)` are accepted |
+| `auth` | `auth jwt using(secret.JWT_SECRET)` | Enforced for `bearer`, `jwt`, `api_key`, and `basic` with `using(secret.NAME)`, and for `webhook_sig`; metadata only otherwise (see Auth Strategies). On Python, `auth bearer|jwt|api_key|basic|webhook_sig` with `using(secret.NAME)` are accepted |
 | `limit` | `limit 60/min` | Enforced by an in-process, per-instance counter keyed by client address and path (behind a reverse proxy, set `FORWARDED_ALLOW_IPS`; see [Deployment](deployment.md#multi-instance-and-security-caveats)) |
 | `cache` | `cache 5min` | GET only: sets `Cache-Control` on 2xx responses (see below); ignored on other methods |
 | `tags` | `tags ["a", "b"]` | Included in generated OpenAPI metadata |
@@ -934,8 +940,8 @@ response, so a guard's 4xx or any other error response carries none. `limit` is
 enforced by `src/lib/rate_limit.py` with the same client-address-and-path key and fixed
 window as Node, and an over-limit request answers `429` with
 `{"error": "Rate limit exceeded"}`. `tags` become the route's FastAPI tags, which
-show in the generated OpenAPI. `timeout` metadata, `auth webhook_sig`, and bare
-`auth` lines still fail the Python build; `auth bearer|jwt|api_key|basic using(secret.NAME)`
+show in the generated OpenAPI. `timeout` metadata and bare `auth` lines still
+fail the Python build; `auth bearer|jwt|api_key|basic|webhook_sig using(secret.NAME)`
 is enforced (see Auth Strategies).
 
 ### Auth Strategies
@@ -946,7 +952,7 @@ is enforced (see Auth Strategies).
 | `auth jwt using(secret.NAME)` | Enforced: `Authorization: Bearer <jwt>`; HS256 only, signed with the secret; `exp` and `nbf` are checked |
 | `auth api_key using(secret.NAME)` | Enforced: the `X-API-Key` header must equal the secret value |
 | `auth basic using(secret.NAME)` | Enforced: `Authorization: Basic <base64(user:password)>`; the secret holds `user:password` |
-| `auth webhook_sig using(secret.KEY)` | Enforced with HMAC-SHA256 against `X-Webhook-Signature` |
+| `auth webhook_sig using(secret.KEY)` | Enforced with HMAC-SHA256 (hex) over the raw body, against `X-Webhook-Signature`. An unset or empty secret fails closed. A bad, non-hex, or missing signature, or one made with an empty key, answers `401` with `{ "error": "Invalid signature" }`. A verified body that is not JSON answers `400` with `{ "error": "Invalid payload" }`. The parsed body is bound to `data`. Python enforces the same contract in `src/lib/webhook.py` |
 | `auth bearer`, `auth jwt`, `auth api_key`, `auth basic`, `auth session` (no `using`) | Parsed metadata; does not verify anything by itself |
 
 An enforced check runs before the handler, before `use` middleware and input
@@ -995,10 +1001,16 @@ On `--target python`, the four REST strategies with `using(secret.NAME)` are
 enforced by `src/lib/auth.py`, as a FastAPI route dependency that runs before
 `use` middleware and input validation. It answers with the same 401 body,
 challenges, and fail-closed secret handling as Node, and it has no query-string
-fallback. `auth webhook_sig` and bare `auth` lines fail the Python build. A
+fallback. Bare `auth` lines fail the Python build. A
 request whose JSON body cannot be parsed at all gets `422` before the check,
 because FastAPI parses the body first, while a body that parses but fails
 validation gets `401`.
+
+`auth webhook_sig using(secret.NAME)` is verified by `src/lib/webhook.py` on
+Python REST endpoints, with the same `401` and `400` bodies as Node. The check
+runs as a parameter dependency before body validation, so an unsigned request
+gets `401` even when its body is malformed. Bare `auth webhook_sig` fails the
+Python build.
 
 ### Input Sources
 

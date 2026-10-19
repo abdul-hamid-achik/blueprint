@@ -172,7 +172,9 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
   use explicit middleware for it.
 - On the Python target, `auth bearer|jwt|api_key|basic using(secret.NAME)` on REST
   endpoints is verified by `src/lib/auth.py` as a route dependency, with headers
-  only. `auth webhook_sig` and bare `auth` lines fail the build.
+  only. `auth webhook_sig using(secret.NAME)` is verified by `src/lib/webhook.py`
+  with the same `401`/`400` bodies as Node. Bare `auth` and `auth webhook_sig`
+  without `using` fail the build.
 - This endpoint-auth limitation does not apply to Node `external` service
   configuration. External `bearer`/`jwt`/`basic`/`api_key` auth requires exactly
   one declared `secret.NAME` or `env.NAME` and generates the corresponding
