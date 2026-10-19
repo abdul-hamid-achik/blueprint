@@ -415,12 +415,9 @@ Prep work (must precede the Python generator):
     body, so it is one fixed value, not a per-message signature; decide the
     contract first); the rest of the `pipe` body surface; and
     `payload.X` → `payload["X"]` for fn returns typed `json`.
-  - [ ] Python `timestamp` columns are `DateTime()` (naive, filled with UTC)
-    while `N.minutes.ago` is an aware UTC value. Postgres compares the two in
-    the session `TimeZone`, so on a server not set to UTC (a local Homebrew
-    install, for example) the comparison is off by the offset. Verified correct
-    under UTC only (2026-10-19, `python_schedule.bp`). Check Node's Drizzle
-    columns for the same question.
+  - [x] `timestamp` columns are `timestamptz` on both targets; Python
+    `default(now)` is aware UTC. Verified on a Postgres with session TimeZone
+    America/Mexico_City (before: 0 rows expired; after: 1). _(2026-10-19)_
   - [ ] Python generated tests import `starlette.testclient` through httpx,
     which Starlette now deprecates in favor of `httpx2`; move the dev
     dependency before a Starlette release drops httpx.

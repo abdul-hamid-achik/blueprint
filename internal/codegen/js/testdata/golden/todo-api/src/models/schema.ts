@@ -6,7 +6,7 @@ export const todo = pgTable('todos', {
   id: uuid('id').defaultRandom().primaryKey(),
   title: text('title').notNull(),
   done: boolean('done').default(false),
-  created: timestamp('created').defaultNow(),
+  created: timestamp('created', { withTimezone: true }).defaultNow(),
 });
 
 export type Todo = typeof todo.$inferSelect;

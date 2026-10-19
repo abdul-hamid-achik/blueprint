@@ -15,6 +15,17 @@ All notable changes to this project will be documented in this file.
   jwt`, `bearer`, or `api_key` with `using(secret.NAME)`. This replaces the
   `webhook-sig-without-body` lint warning added in 0.21.0, which is removed.
 
+### Changed
+
+- **Breaking schema change:** `timestamp` model fields are Postgres
+  `timestamptz` on both targets (Drizzle `timestamp(..., { withTimezone:
+  true })`, SQLAlchemy `DateTime(timezone=True)`), and Python's `default(now)`
+  is an aware UTC value. Before, Python stored naive UTC values in a
+  `timestamp` column and compared them with aware values such as
+  `1.minutes.ago`, so on a Postgres whose session `TimeZone` is not UTC the
+  comparison was off by the offset (a schedule that expires rows older than a
+  minute expired none). Regenerate migrations after upgrading.
+
 ## [0.21.0] - 2026-10-19
 
 ### Added

@@ -13,7 +13,7 @@ import (
 // genSchemaPy emits src/models/schema.py — SQLAlchemy 2.0 declarative models.
 // One class per Blueprint `model`. Field types and constraints map directly:
 // uuid primary → primary_key + default=uuid4; string required → String, nullable=False;
-// timestamp default(now) → DateTime default=datetime.utcnow; ref(other) → ForeignKey.
+// timestamp → DateTime(timezone=True); default(now) → an aware UTC now; ref(other) → ForeignKey.
 //
 // The metadata exported here is what alembic/env.py imports for autogenerate.
 func (g *Generator) genSchemaPy(models []*ast.Model) codegen.OutputFile {
@@ -107,7 +107,9 @@ func (g *Generator) schemaImports(models []*ast.Model) []string {
 	if needsUUIDDefault || needsMappedUUID {
 		set["import uuid"] = true
 	}
-	if needsDateTimeDefault || needsMappedDatetime {
+	if needsDateTimeDefault {
+		set["from datetime import datetime, timezone"] = true
+	} else if needsMappedDatetime {
 		set["from datetime import datetime"] = true
 	}
 	if hasOptional {
@@ -255,7 +257,7 @@ func (g *Generator) sqlAlchemyColumnType(t ast.TypeExpr) colType {
 		case "uuid":
 			return colType{"UUID", "UUID(as_uuid=True)"}
 		case "timestamp":
-			return colType{"DateTime", "DateTime()"}
+			return colType{"DateTime", "DateTime(timezone=True)"}
 		case "json":
 			return colType{"JSON", "JSON()"}
 		}
@@ -367,7 +369,9 @@ func (g *Generator) sqlAlchemyMappedAnnotation(t ast.TypeExpr, cs []*ast.Constra
 func (g *Generator) sqlAlchemyDefault(t ast.TypeExpr, e ast.Expr) string {
 	switch v := e.(type) {
 	case *ast.NowLit:
-		return "datetime.utcnow"
+		// An aware UTC instant for a timezone=True column (timestamptz), as
+		// Node's defaultNow() on timestamp({ withTimezone: true }).
+		return "lambda: datetime.now(timezone.utc)"
 	case *ast.BoolLit:
 		if v.Value {
 			return "True"

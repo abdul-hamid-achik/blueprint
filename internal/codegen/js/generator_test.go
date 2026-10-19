@@ -514,7 +514,7 @@ content mission {
 		t.Fatal(err)
 	}
 	schema := string(schemaContent)
-	for _, expected := range []string{"pgTable('missions'", "key: text('key').notNull().unique()", "version: integer('version').default(1)", "status: missionStatusEnum('status').default(\"draft\")", "published: timestamp('published')", "created: timestamp('created').defaultNow()", "updated: timestamp('updated').defaultNow()"} {
+	for _, expected := range []string{"pgTable('missions'", "key: text('key').notNull().unique()", "version: integer('version').default(1)", "status: missionStatusEnum('status').default(\"draft\")", "published: timestamp('published', { withTimezone: true })", "created: timestamp('created', { withTimezone: true }).defaultNow()", "updated: timestamp('updated', { withTimezone: true }).defaultNow()"} {
 		if !strings.Contains(schema, expected) {
 			t.Fatalf("expected generated content schema to contain %q\n%s", expected, schema)
 		}

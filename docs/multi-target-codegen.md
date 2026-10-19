@@ -328,7 +328,7 @@ The checker rejects any other `level(...)` value (C051) on every target.
 | `float` | `number` | `float` | `float64` |
 | `bool` | `boolean` | `bool` | `bool` |
 | `uuid` | `string` | `UUID` | `uuid.UUID` |
-| `timestamp` | `Date` | `datetime` | `time.Time` |
+| `timestamp` | `Date` (`timestamptz` column) | aware `datetime` (`timestamptz` column) | `time.Time` |
 | `json` | `unknown` | `dict` / typed model | `json.RawMessage` |
 | `money` | `number` (integer cents) | `int` (integer cents) | `decimal.Decimal` |
 | `file` | `File` in functions; endpoint inputs rejected until multipart emission ships | rejected for endpoint inputs until multipart emission ships | `multipart.File` |

@@ -204,7 +204,13 @@ func (g *Generator) genSchema(models []*ast.Model, enums []*ast.Enum) codegen.Ou
 			}
 
 			colType := typeToDrizzle(f.Type)
-			fmt.Fprintf(&b, "  %s: %s('%s')", colName, colType, f.Name)
+			if colType == "timestamp" {
+				// timestamptz: an absolute instant, so comparisons such as
+				// `created < 1.hours.ago` do not depend on the session TimeZone.
+				fmt.Fprintf(&b, "  %s: timestamp('%s', { withTimezone: true })", colName, f.Name)
+			} else {
+				fmt.Fprintf(&b, "  %s: %s('%s')", colName, colType, f.Name)
+			}
 			if jt, ok := f.Type.(*ast.TypedJSONType); ok {
 				fmt.Fprintf(&b, ".$type<%s>()", typeToTS(jt.Inner))
 			}

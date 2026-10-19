@@ -114,7 +114,7 @@ model user {
 | `float` | Floating point | `3.14`, `0.5` |
 | `bool` | Boolean | `true`, `false` |
 | `uuid` | UUID v4 | Generated automatically |
-| `timestamp` | ISO 8601 datetime | `now`, `2024-01-01` |
+| `timestamp` | ISO 8601 datetime, stored as Postgres `timestamptz` (an absolute instant) | `now`, `2024-01-01` |
 | `json` | Arbitrary JSON | Any object or array |
 | `money` | Decimal with 2 places | `9.99` |
 | `file` | Binary file | Multipart upload |

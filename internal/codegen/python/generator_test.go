@@ -700,7 +700,7 @@ func TestPython_Phase2SQLAlchemyShape(t *testing.T) {
 		"id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, nullable=False, default=uuid.uuid4)",
 		"title: Mapped[str] = mapped_column(String(), nullable=False)",
 		"done: Mapped[bool] = mapped_column(Boolean(), default=False)",
-		"created: Mapped[datetime] = mapped_column(DateTime(), default=datetime.utcnow)",
+		"created: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("schema.py missing %q, got:\n%s", want, body)

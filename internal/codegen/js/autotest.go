@@ -173,7 +173,7 @@ func testPgType(t ast.TypeExpr) string {
 		case "uuid":
 			return "uuid"
 		case "timestamp":
-			return "timestamp"
+			return "timestamptz"
 		case "json":
 			return "jsonb"
 		case "money":
