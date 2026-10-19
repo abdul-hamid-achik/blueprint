@@ -239,35 +239,23 @@ jobs:
           npm test
           echo "generated contract + property tests execute successfully"
 
-      - name: Build with --target python --gen-tests (Phase 4 smoke)
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Run generated Python contract tests (pytest + Postgres testcontainer)
         # Python Phase 4 emits a pytest contract suite backed by
-        # testcontainers[postgresql]. We don't run pytest here (Docker isn't
-        # guaranteed in every CI environment), but we assert the harness +
-        # per-resource test files exist, syntax-check every emitted .py, and
-        # require idempotency via bp diff --exit-code.
+        # testcontainers[postgres]; the hosted runner has Docker. hello-world
+        # covers a spec without a database (no container), the others a real
+        # Postgres, hyphenated paths, and a NotImplementedError stub (500).
         run: |
           rm -rf /tmp/py-hello-gt
           ./bin/bp build examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests
           ./bin/bp diff examples/hello-world.bp --out /tmp/py-hello-gt --target python --gen-tests --no-color --exit-code
-          test -f /tmp/py-hello-gt/tests/conftest.py || (echo "missing conftest.py" && exit 1)
-          test -f /tmp/py-hello-gt/tests/test_hello.py || (echo "missing tests/test_hello.py" && exit 1)
-          grep -q "testcontainers" /tmp/py-hello-gt/pyproject.toml || (echo "testcontainers dep missing" && exit 1)
-          python3 - <<'PY'
-          import ast, os, sys
-          err = 0
-          for root, _, files in os.walk('/tmp/py-hello-gt/tests'):
-              for f in files:
-                  if not f.endswith('.py'):
-                      continue
-                  path = os.path.join(root, f)
-                  try:
-                      ast.parse(open(path).read(), filename=path)
-                  except SyntaxError as e:
-                      print(path, e)
-                      err = 1
-          sys.exit(err)
-          PY
-          echo "--target python --gen-tests output OK"
+          for src in examples/hello-world.bp examples/todo-api.bp testdata/valid/where_predicates.bp testdata/valid/include_basic.bp testdata/valid/pipe_in_endpoint.bp; do
+            name=$(basename "$src" .bp)
+            echo "=== bp test --target python: $src ==="
+            ./bin/bp test "$src" --target python --out "/tmp/py-test-$name"
+          done
+          echo "generated Python contract tests pass"
 
       - name: Lint examples
         run: |

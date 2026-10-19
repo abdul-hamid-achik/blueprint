@@ -1587,9 +1587,11 @@ func TestPython_Phase4ConftestShape(t *testing.T) {
 	body := readPy(t, buildPythonGenTests(t, phase4Src), "tests/conftest.py")
 	for _, want := range []string{
 		"from fastapi.testclient import TestClient",
-		"from testcontainers.postgres import PostgresContainer",
+		"from testcontainers.community.postgres import PostgresContainer",
+		"    from testcontainers.postgres import PostgresContainer",
 		"def pg_container() -> Iterator[PostgresContainer]:",
-		`with PostgresContainer("postgres:16-alpine") as pg:`,
+		`with PostgresContainer("postgres:16-alpine", driver="psycopg") as pg:`,
+		"url = pg_container.get_connection_url()\n",
 		"def engine(pg_container: PostgresContainer):",
 		"from src.models.schema import Base",
 		"Base.metadata.create_all(eng)",
@@ -1637,7 +1639,7 @@ func TestPython_Phase4ContractTestShape(t *testing.T) {
 // only when --gen-tests is on. Mirrors the JS pglite gate.
 func TestPython_Phase4PyprojectAddsTestcontainers(t *testing.T) {
 	withFlag := readPy(t, buildPythonGenTests(t, phase4Src), "pyproject.toml")
-	if !strings.Contains(withFlag, "testcontainers[postgresql]") {
+	if !strings.Contains(withFlag, `"testcontainers[postgres]>=4.0"`) {
 		t.Errorf("pyproject.toml should include testcontainers when --gen-tests is on, got:\n%s", withFlag)
 	}
 
@@ -1645,6 +1647,55 @@ func TestPython_Phase4PyprojectAddsTestcontainers(t *testing.T) {
 	withoutFlag := readPy(t, buildPython(t, phase4Src), "pyproject.toml")
 	if strings.Contains(withoutFlag, "testcontainers") {
 		t.Errorf("pyproject.toml should NOT include testcontainers without --gen-tests, got:\n%s", withoutFlag)
+	}
+}
+
+// A spec without a database gets a conftest with only the app client: no
+// Postgres container, no SQLAlchemy import, and no testcontainers dev-dep.
+func TestPython_Phase4NoDatabaseHarness(t *testing.T) {
+	src := `blueprint "hello" {
+  version "1.0.0"
+  runtime python
+}
+
+GET /api/hello {
+  -> { message: "hi" }
+}
+`
+	out := buildPythonGenTests(t, src)
+	conftest := readPy(t, out, "tests/conftest.py")
+	for _, unwanted := range []string{"sqlalchemy", "testcontainers", "PostgresContainer", "DATABASE_URL", "def db("} {
+		if strings.Contains(conftest, unwanted) {
+			t.Errorf("conftest.py for a spec without a database must not mention %q, got:\n%s", unwanted, conftest)
+		}
+	}
+	if !strings.Contains(conftest, "def client() -> Iterator[TestClient]:") {
+		t.Errorf("conftest.py should still provide the client fixture, got:\n%s", conftest)
+	}
+	if pyproject := readPy(t, out, "pyproject.toml"); strings.Contains(pyproject, "testcontainers") {
+		t.Errorf("pyproject.toml should not need testcontainers without a database, got:\n%s", pyproject)
+	}
+}
+
+// Path segments with hyphens still yield valid Python test function names,
+// and both client fixtures answer 500 instead of re-raising server errors.
+func TestPython_Phase4HyphenatedPathTestName(t *testing.T) {
+	src := `blueprint "hyphen" {
+  version "1.0.0"
+  runtime python
+}
+
+GET /api/in-stock/items {
+  -> { ok: true }
+}
+`
+	out := buildPythonGenTests(t, src)
+	tests := readPy(t, out, "tests/test_in_stock.py")
+	if !strings.Contains(tests, "def test_get_api_in_stock_items(client: TestClient) -> None:") {
+		t.Errorf("hyphenated path should give a valid test name, got:\n%s", tests)
+	}
+	if conftest := readPy(t, out, "tests/conftest.py"); !strings.Contains(conftest, "TestClient(app, raise_server_exceptions=False)") {
+		t.Errorf("client fixture should not re-raise server exceptions, got:\n%s", conftest)
 	}
 }
 

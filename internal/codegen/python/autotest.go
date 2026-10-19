@@ -14,7 +14,7 @@ import (
 //
 // When --gen-tests is set, genAutoTests emits a self-contained pytest suite
 // that runs each endpoint against a real Postgres container managed by
-// `testcontainers[postgresql]`. The JS target uses PGlite (in-process), but
+// `testcontainers[postgres]`. The JS target uses PGlite (in-process), but
 // SQLite/PGlite's dialect drifts too far from Postgres FK/JSON/enum semantics
 // for contract-test signal, so Phase 4 chooses a real container instead.
 //
@@ -84,21 +84,35 @@ func (g *Generator) genConftestPy(models []*ast.Model, secrets []*ast.Secret, ha
 	b.WriteString(fileHeader(g.sourceFile))
 
 	b.WriteString("\"\"\"Pytest fixtures for the auto-generated contract suite.\n\n")
-	b.WriteString("The suite runs against a real Postgres provisioned by\n")
-	b.WriteString("testcontainers[postgresql] (one container per session). Each test gets a\n")
-	b.WriteString("clean database via TRUNCATE; the FastAPI TestClient is wired so every route\n")
-	b.WriteString("uses the test session through app.dependency_overrides.\n\n")
-	b.WriteString("Run with: uv run pytest. Docker must be available locally; CI workflows\n")
-	b.WriteString("without Docker should skip the suite (see docs/production-readiness.md).\n")
+	if hasDB {
+		b.WriteString("The suite runs against a real Postgres provisioned by\n")
+		b.WriteString("testcontainers[postgres] (one container per session). Each test gets a\n")
+		b.WriteString("clean database via TRUNCATE; the FastAPI TestClient is wired so every route\n")
+		b.WriteString("uses the test session through app.dependency_overrides.\n\n")
+		b.WriteString("Run with: uv run pytest. Docker must be available locally; CI workflows\n")
+		b.WriteString("without Docker should skip the suite (see docs/production-readiness.md).\n")
+	} else {
+		b.WriteString("The spec declares no database, so the suite needs no Postgres container:\n")
+		b.WriteString("the FastAPI TestClient calls the app directly.\n\n")
+		b.WriteString("Run with: uv run pytest.\n")
+	}
 	b.WriteString("\"\"\"\n\n")
 
 	b.WriteString("import os\n")
 	b.WriteString("from typing import Iterator\n\n")
 	b.WriteString("import pytest\n")
 	b.WriteString("from fastapi.testclient import TestClient\n")
-	b.WriteString("from sqlalchemy import create_engine, text\n")
-	b.WriteString("from sqlalchemy.orm import Session, sessionmaker\n")
-	b.WriteString("from testcontainers.postgres import PostgresContainer\n\n")
+	if hasDB {
+		b.WriteString("from sqlalchemy import create_engine, text\n")
+		b.WriteString("from sqlalchemy.orm import Session, sessionmaker\n\n")
+		// testcontainers 4.15 moved the module to testcontainers.community and
+		// deprecated the old path; older 4.x releases only have the old one.
+		b.WriteString("try:\n")
+		b.WriteString("    from testcontainers.community.postgres import PostgresContainer\n")
+		b.WriteString("except ImportError:  # testcontainers < 4.15\n")
+		b.WriteString("    from testcontainers.postgres import PostgresContainer\n")
+	}
+	b.WriteString("\n")
 
 	// Dummy env vars must be set BEFORE importing the app so Pydantic Settings
 	// validation passes. Use a session-autouse fixture instead of monkeypatch
@@ -107,14 +121,20 @@ func (g *Generator) genConftestPy(models []*ast.Model, secrets []*ast.Secret, ha
 	b.WriteString(`@pytest.fixture(scope="session", autouse=True)
 def _seed_env() -> None:
     """Populate dummy env vars so src/lib/env.py import-time validation passes.
-
+`)
+	seen := map[string]bool{}
+	if hasDB {
+		b.WriteString(`
     The real DATABASE_URL is overridden by the engine fixture below; the value
     set here is just a placeholder that satisfies Pydantic Settings on import.
     """
     os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost:5432/test")
 `)
+		seen["DATABASE_URL"] = true
+	} else {
+		b.WriteString("    \"\"\"\n")
+	}
 	// Extra secrets the user declared — required ones get default "test".
-	seen := map[string]bool{"DATABASE_URL": true}
 	// Secrets that enforced auth verifies get one fixed test-only value, set
 	// unconditionally so a developer's real exported secret is never used.
 	// Other secrets keep setdefault so a real value is not overwritten.
@@ -131,11 +151,25 @@ def _seed_env() -> None:
 	}
 	b.WriteString("\n\n")
 
-	// pg_container — session-scoped real Postgres.
+	if !hasDB {
+		// No database: no container, engine, or session, only the app client.
+		b.WriteString(`@pytest.fixture()
+def client() -> Iterator[TestClient]:
+    """TestClient for a spec without a database — no overrides needed."""
+    from src.app import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+`)
+		return codegen.OutputFile{Path: "tests/conftest.py", Content: []byte(b.String())}
+	}
+
+	// pg_container — session-scoped real Postgres. driver="psycopg" makes
+	// get_connection_url() return the psycopg 3 URL the generated app uses;
+	// the default is psycopg2, which the project does not install.
 	b.WriteString(`@pytest.fixture(scope="session")
 def pg_container() -> Iterator[PostgresContainer]:
     """Spin up a single Postgres container for the whole test session."""
-    with PostgresContainer("postgres:16-alpine") as pg:
+    with PostgresContainer("postgres:16-alpine", driver="psycopg") as pg:
         yield pg
 
 
@@ -152,7 +186,7 @@ def engine(pg_container: PostgresContainer):
     can revisit if testing migrations themselves becomes a priority.
     """
     from src.models.schema import Base
-    url = pg_container.get_connection_url().replace("postgresql://", "postgresql+psycopg://", 1)
+    url = pg_container.get_connection_url()
     os.environ["DATABASE_URL"] = url
     eng = create_engine(url, pool_pre_ping=True, future=True)
     Base.metadata.create_all(eng)
@@ -162,13 +196,11 @@ def engine(pg_container: PostgresContainer):
 
 `)
 	} else {
-		// No DB: still expose an engine fixture for symmetry, but make it a
-		// no-op that yields None so client-only tests can depend on the rest
-		// of the chain without crashing.
+		// A database without models: an engine on the container, no tables.
 		b.WriteString(`@pytest.fixture(scope="session")
 def engine(pg_container: PostgresContainer):
-    """No-op engine for spec without a database — keeps fixtures compatible."""
-    url = pg_container.get_connection_url().replace("postgresql://", "postgresql+psycopg://", 1)
+    """Engine pointing at the test container; the spec declares no models."""
+    url = pg_container.get_connection_url()
     os.environ["DATABASE_URL"] = url
     eng = create_engine(url, pool_pre_ping=True, future=True)
     yield eng
@@ -212,7 +244,7 @@ def db(engine) -> Iterator[Session]:
 	} else {
 		b.WriteString(`@pytest.fixture()
 def db(engine) -> Iterator[Session]:
-    """No-op DB fixture for spec without a database."""
+    """Session on the test container; there are no tables to truncate."""
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     session = SessionLocal()
     try:
@@ -224,9 +256,11 @@ def db(engine) -> Iterator[Session]:
 `)
 	}
 
-	// client — function scope, overrides get_db.
-	if hasDB {
-		b.WriteString(`@pytest.fixture()
+	// client — function scope, overrides get_db. Both client fixtures turn an
+	// unhandled exception into a 500 response, as the running server does, so
+	// a route that reaches a NotImplementedError stub answers 500 instead of
+	// aborting the test.
+	b.WriteString(`@pytest.fixture()
 def client(db: Session) -> Iterator[TestClient]:
     """TestClient with get_db overridden so every route uses the test session."""
     from src.app import app
@@ -237,20 +271,11 @@ def client(db: Session) -> Iterator[TestClient]:
 
     app.dependency_overrides[get_db] = _override
     try:
-        with TestClient(app) as c:
+        with TestClient(app, raise_server_exceptions=False) as c:
             yield c
     finally:
         app.dependency_overrides.pop(get_db, None)
 `)
-	} else {
-		b.WriteString(`@pytest.fixture()
-def client() -> Iterator[TestClient]:
-    """TestClient for a spec without a database — no overrides needed."""
-    from src.app import app
-    with TestClient(app) as c:
-        yield c
-`)
-	}
 
 	return codegen.OutputFile{Path: "tests/conftest.py", Content: []byte(b.String())}
 }
@@ -470,9 +495,21 @@ func contractTestName(ep *ast.Endpoint) string {
 			continue
 		}
 		s = strings.TrimPrefix(s, ":")
-		segs = append(segs, common.SnakeCase(s))
+		segs = append(segs, pyIdentChars(common.SnakeCase(s)))
 	}
 	return "test_" + strings.Join(segs, "_")
+}
+
+// pyIdentChars replaces every character that cannot appear in a Python
+// identifier with an underscore, so a path segment such as `in-stock` yields
+// a valid test function name.
+func pyIdentChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, s)
 }
 
 // buildRequestPathPy renders a Python string literal for the endpoint path,

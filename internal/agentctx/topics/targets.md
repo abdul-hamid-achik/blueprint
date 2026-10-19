@@ -15,7 +15,7 @@ One `.bp` source, three possible outputs. `node` is the reference target and the
 ## `--target python` (beta)
 
 - **Stack**: FastAPI, SQLAlchemy 2.0, Pydantic v2, Alembic. Python 3.11+, managed with `uv`.
-- **Tests**: `bp test --target python` runs pytest against a Postgres testcontainer (Docker required).
+- **Tests**: `bp test --target python` runs pytest against a Postgres testcontainer (Docker required when the spec declares a database).
 - **Path inputs**: `min`/`max` become FastAPI `Path(...)` bounds. A violation answers `422`, not Node's `400`.
 - **Formats**: `format(email|url|uuid|ip|date)` on string inputs and model fields is enforced through a generated stdlib-only `src/lib/formats.py`. A violation answers `422`.
 - **Query and body**: GET/DELETE inputs are `Query`, POST/PUT/PATCH inputs are `Body`, `header.X-Name` is an aliased `Header`.

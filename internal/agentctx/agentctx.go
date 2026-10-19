@@ -315,7 +315,7 @@ func commandRegistry() []CommandInfo {
 func targetRegistry() []TargetInfo {
 	return []TargetInfo{
 		{"node", "Hono + Drizzle + Zod", "Default. Vitest + PGlite, opt-in deterministic fast-check properties, pure computed fields, and one-level ref-backed relationship loading."},
-		{"python", "FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic", "`--target python`. Advanced supported subset with an exhaustive fail-closed gate. Generated contracts run via pytest + testcontainers[postgresql] (Docker)."},
+		{"python", "FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic", "`--target python`. Advanced supported subset with an exhaustive fail-closed gate. Generated contracts run via pytest + testcontainers[postgres] (Docker)."},
 		{"effect", "Effect core Config + Node HTTP (application stack planned)", "`--target effect`. Early runnable scaffold — emits GET /health plus typed secret/env Config with pinned dependencies; endpoint/model/test emit fails closed. Opt-in/experimental, not the default."},
 	}
 }

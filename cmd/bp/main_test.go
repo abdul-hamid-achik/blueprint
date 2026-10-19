@@ -1981,7 +1981,7 @@ func TestTestCommandPythonBuildsAndRunsPytest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(pyproject), "testcontainers[postgresql]") {
+	if !strings.Contains(string(pyproject), "testcontainers[postgres]") {
 		t.Error("expected bp test --target python to enable the Postgres testcontainers dependency")
 	}
 }

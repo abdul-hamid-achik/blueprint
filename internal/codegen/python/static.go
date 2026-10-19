@@ -67,11 +67,12 @@ func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStre
 		`"pytest>=8"`,
 		`"httpx>=0.27"`,
 	}
-	if g.genTests {
+	if g.genTests && hasDB {
 		// Real-Postgres harness for the auto-generated contract suite
 		// (--gen-tests). Pinned to the 4.x series so the API we depend on
-		// (PostgresContainer.get_connection_url) is stable.
-		devDeps = append(devDeps, `"testcontainers[postgresql]>=4.0"`)
+		// (PostgresContainer.get_connection_url) is stable. The extra is
+		// named postgres; a spec without a database needs no container.
+		devDeps = append(devDeps, `"testcontainers[postgres]>=4.0"`)
 	}
 	devBlock := "  " + strings.Join(devDeps, ",\n  ") + ","
 

@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- The generated Python pytest suite (`bp test --target python`, `--gen-tests`)
+  now runs. The Postgres container uses the psycopg 3 driver the project
+  installs (it asked for psycopg2 before), the dev dependency names the
+  `testcontainers[postgres]` extra, and the module is imported from
+  `testcontainers.community` when available. A spec without a database gets a
+  harness with only the `TestClient`, without SQLAlchemy, a container, or
+  Docker. Test names for paths with hyphens are valid Python, and the test
+  client answers `500` for an unhandled route exception, such as a
+  `NotImplementedError` stub, instead of aborting the test. CI now runs the
+  suites against Postgres instead of only parsing them.
+
 ## [0.19.0] - 2026-10-19
 
 ### Added

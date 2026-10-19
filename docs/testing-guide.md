@@ -93,9 +93,12 @@ generated/
 ```
 
 The pytest harness starts `postgres:16-alpine` through
-`testcontainers[postgresql]`, creates the SQLAlchemy metadata once, and
-truncates tables between cases. Docker is required. `uv run` resolves the
-generated development dependencies before invoking pytest.
+`testcontainers[postgres]`, creates the SQLAlchemy metadata once, and
+truncates tables between cases. Docker is required. A spec without a database
+gets a harness with only the FastAPI `TestClient`, so it needs no Docker.
+`uv run` resolves the generated development dependencies before invoking
+pytest. An unhandled exception in a route, such as a `NotImplementedError`
+stub, answers `500` in the test client instead of aborting the test.
 
 Python contract tests cover generated endpoint contracts only. Blueprint
 `test`, `fixture`, and `test_group` declarations currently make Python codegen

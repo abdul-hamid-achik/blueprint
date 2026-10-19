@@ -113,7 +113,7 @@ gen := pythongen.New().WithGenTests(genTests)
 harness — it is how
 `bp build --gen-tests` (and `bp test`, which always enables it) turns on the
 auto-generated contract-test suite for that target: an in-memory PGlite-backed
-Vitest suite for node, a `testcontainers[postgresql]`-backed pytest suite for
+Vitest suite for node, a `testcontainers[postgres]`-backed pytest suite for
 python. Effect rejects `--gen-tests` on both `bp build` and `bp diff`, and is
 also rejected by `bp test`, instead of pretending to emit tests.
 `WithReactQuery`/`WithFrontendOnly` are node-only today — a new target

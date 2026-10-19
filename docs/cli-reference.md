@@ -117,7 +117,7 @@ bp build <file.bp> [--out <dir>] [--target <node|python|effect>] [--react-query]
 | `--target <name>` | `node` | Codegen target. `node` emits the Hono + Drizzle + Zod reference project. `python` emits FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (advanced beta — see "Python target status" below). `effect` emits a runnable, health-only TypeScript/Effect scaffold with typed secret/env config and pinned dependencies; authored endpoints/models still reject |
 | `--react-query` | off | Generate `src/types/react-query.ts` and add TanStack React Query deps (node target only) |
 | `--frontend-only` | off | Emit only the standalone frontend contract package (node target only) |
-| `--gen-tests` | off | Generate contract + happy-path tests. **Node target:** Vitest suite under `test/generated/` with an in-memory (PGlite) database harness — runs with no external Postgres. **Python target:** pytest suite under `tests/` backed by `testcontainers[postgresql]` — Docker required, real Postgres per session, function-scoped TRUNCATE between tests. **Effect target:** rejected before writing because no test emitter ships yet |
+| `--gen-tests` | off | Generate contract + happy-path tests. **Node target:** Vitest suite under `test/generated/` with an in-memory (PGlite) database harness — runs with no external Postgres. **Python target:** pytest suite under `tests/` backed by `testcontainers[postgres]` — Docker required when the spec declares a database, real Postgres per session, function-scoped TRUNCATE between tests. **Effect target:** rejected before writing because no test emitter ships yet |
 | `--gen-property-tests` | off | Node only. Generate deterministic fast-check valid-request properties and the contract suite (`--gen-tests` is implied). Unsupported or non-hermetic routes reject the whole build; nothing is silently skipped. Cannot be combined with `--frontend-only` |
 | `--force` | off | Overwrite a non-empty `--out` directory even if it has no `.blueprint/manifest.json`. Without it, `bp build` refuses to write into a foreign, non-empty directory it didn't create — see [Output directory safety](#output-directory-safety) below |
 
@@ -181,7 +181,7 @@ authored test blocks in `examples/auth-service.bp`.
   `fetch`, `log`, declared-function, `inject`, and `guard` step subset.
 - `cache redis` emits a working `src/lib/cache.py`.
 - `--gen-tests` — a pytest suite under `tests/` backed by
-  `testcontainers[postgresql]` (Docker required). See
+  `testcontainers[postgres]` (Docker required). See
   [Testing Guide](./testing-guide.md#python-harness).
 
 **Still rejected** with a specific, actionable message (tracked under
