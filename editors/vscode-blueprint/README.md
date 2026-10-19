@@ -49,8 +49,8 @@ Build and install the extension package:
 
 ```bash
 cd editors/vscode-blueprint
-bun install
-bunx @vscode/vsce package
+npm ci
+npx @vscode/vsce package
 code --install-extension blueprint-language-0.2.0.vsix
 ```
 
@@ -58,7 +58,7 @@ code --install-extension blueprint-language-0.2.0.vsix
 
 ```bash
 cd editors/vscode-blueprint
-bun install
+npm ci
 ln -s "$(pwd)" \
   "$HOME/.vscode/extensions/blueprint-language"
 ```
@@ -69,7 +69,7 @@ Reload VS Code (`Ctrl+Shift+P` → **Developer: Reload Window**).
 
 ```bash
 cd editors/vscode-blueprint
-bun install
+npm ci
 cp -r . \
   "$HOME/.vscode/extensions/blueprint-language"
 ```
@@ -93,8 +93,8 @@ can select the executable installed on the remote host.
 ## Development checks
 
 ```bash
-bun run test
-bun run check
+npm test
+npm run check
 ```
 
 ## What Gets Highlighted

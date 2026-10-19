@@ -19,7 +19,7 @@ can also produce a FastAPI + SQLAlchemy project.
 | `python` | FastAPI, SQLAlchemy, Pydantic, Alembic | Advanced beta; supported HTTP/data slices build, unsupported realtime and declaration semantics fail closed |
 | `effect` | Runnable Effect-TS health/config scaffold | Experimental; emits `GET /health`, typed secret/env config, and pinned dependencies; authored models/endpoints fail closed |
 
-## What 0.17.0 covers
+## Highlights
 
 - **Structured diagnostics.** Checker errors carry codes C001–C052, and the
   lexer and parser add L001 and P001. `bp explain <code>` prints the

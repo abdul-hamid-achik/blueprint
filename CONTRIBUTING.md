@@ -66,7 +66,7 @@ cd /tmp/blueprint-node && bun install && bun run build
 ```
 
 For the documentation site, run `cd docs && bun install && bun run docs:build`.
-For the VS Code extension, run `cd editors/vscode-blueprint && bun install && bun run check`.
+For the VS Code extension, run `cd editors/vscode-blueprint && npm ci && npm run check` (it uses the committed `package-lock.json`, as CI does).
 
 ## Project Structure
 
