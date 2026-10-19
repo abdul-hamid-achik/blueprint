@@ -103,9 +103,10 @@ The language server provides diagnostics, hover, go-to-definition,
 find-references, rename (within the open document), quick-fix code actions,
 document formatting, outline, folding, context-aware completion, and
 local-workspace symbol search. The packaged VS Code client starts `bp lsp`
-automatically and supports configurable server paths/restarts. Next steps are
-incremental sync/indexing, cross-file rename, and broader cross-file semantic
-completion.
+automatically and supports configurable server paths/restarts. Incremental
+sync and rename/references across included files have shipped. Next steps
+are cross-file diagnostics, an index instead of per-request rescans, and broader
+cross-file semantic completion.
 
 ### Deployment
 

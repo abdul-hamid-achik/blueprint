@@ -13,8 +13,10 @@ Editor and language-server support for the [Blueprint](https://github.com/abdul-
 - Hover and go-to-definition for Blueprint symbols
 - Find all references and rename for models, enums, types, `fn`, `pipe`,
   middleware, external services, and endpoint-local bindings (`<-` inputs and
-  `|>` bindings), scoped to the open document; rename refuses names that are
-  keywords, reserved, invalid, or colliding
+  `|>` bindings). Top-level symbols are searched and renamed across the files
+  linked by `include` (and workspace files that include them); bindings stay
+  in their own file. Rename refuses names that are keywords, reserved,
+  invalid, or colliding
 - Workspace symbol search across `.bp` files
 - Document outline (Outline view and `Cmd+Shift+O` / `Ctrl+Shift+O`) listing
   every declaration, with model fields and enum variants nested underneath

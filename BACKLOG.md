@@ -388,8 +388,8 @@ Prep work (must precede the Python generator):
   round-trip), workspace search scans local `.bp` files while ignoring common
   generated/vendor directories. Find-references, open-document rename,
   quick-fix code actions, formatting, document outline, and folding ranges
-  shipped 2026-10-18; cross-file rename and incremental sync remain future
-  work. _(shipped 2026-07-14)_
+  shipped 2026-10-18; cross-file rename and references across included files,
+  and incremental sync, shipped 2026-10-18. _(shipped 2026-07-14)_
 - [x] Behavioral test generation beyond contract tests: Node-only
   `--gen-property-tests` emits deterministic fast-check suites, implies
   `--gen-tests`, resets PGlite per run when needed, and fails the whole build

@@ -91,7 +91,7 @@ still emit an importable empty schema (`schema.ts` on Node, `Base` on Python).
 - `internal/linter/` — style and best-practice rules.
 - `internal/docs/` — OpenAPI 3.1 generation.
 - `internal/lsp/` — diagnostics (with quick-fix code actions), hover,
-  go-to-definition, find-references, open-document rename, formatting,
+  go-to-definition, find-references and rename across included files, formatting,
   document outline, folding ranges, context-aware completion, and
   local-workspace symbols over LSP.
 - `editors/vscode-blueprint/` — packaged VS Code stdio client and TextMate
@@ -228,9 +228,12 @@ Treat these as correctness constraints for docs, diagnostics, and new features:
 - LSP completion is based on the open document's recovery AST plus source
   context and has no resolve request. Workspace symbols scan only local `.bp`
   files, ignore common generated/vendor/VCS directories, and prefer unsaved
-  documents. Full-document sync ships. References and rename work on the open
-  document only (strict parse; rename refuses parse errors, invalid/reserved/
-  colliding/capturing names, and edits that add checker errors). Code actions
+  documents. Document sync is incremental (UTF-16 ranges, applied in order).
+  References and rename cover the include-connected files (the document's
+  includes plus workspace files that include it, unsaved text preferred);
+  rename refuses parse errors in any of them, invalid/reserved/colliding/
+  capturing names, and edits that add checker errors to the merged program.
+  Diagnostics are still computed per document. Code actions
   are quick fixes driven by diagnostic `data`; formatting returns nothing when
   the printer output is unstable, changes the syntax tree, or would drop
   comments.

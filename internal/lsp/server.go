@@ -212,7 +212,7 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) error {
 
 	result := map[string]interface{}{
 		"capabilities": map[string]interface{}{
-			"textDocumentSync":           1, // Full document sync
+			"textDocumentSync":           map[string]interface{}{"openClose": true, "change": 2}, // Incremental sync
 			"hoverProvider":              true,
 			"definitionProvider":         true,
 			"referencesProvider":         true,
@@ -259,7 +259,10 @@ func (s *Server) handleDidOpen(msg *jsonRPCMessage) error {
 	return s.publishDiagnostics(params.TextDocument.URI)
 }
 
-// handleDidChange handles textDocument/didChange notification.
+// handleDidChange handles textDocument/didChange notification. The server
+// advertises incremental sync (change: 2), so each content change either
+// replaces its range or, when it carries no range, the whole document. Changes
+// apply in order: each one sees the text produced by the ones before it.
 func (s *Server) handleDidChange(msg *jsonRPCMessage) error {
 	var params struct {
 		TextDocument struct {
@@ -267,7 +270,8 @@ func (s *Server) handleDidChange(msg *jsonRPCMessage) error {
 			Version int    `json:"version"`
 		} `json:"textDocument"`
 		ContentChanges []struct {
-			Text string `json:"text"`
+			Range *lspRange `json:"range,omitempty"`
+			Text  string    `json:"text"`
 		} `json:"contentChanges"`
 	}
 	if err := json.Unmarshal(msg.Params, &params); err != nil {
@@ -280,18 +284,42 @@ func (s *Server) handleDidChange(msg *jsonRPCMessage) error {
 	}
 
 	doc.Version = params.TextDocument.Version
-	// The server advertises textDocumentSync = Full (1) in handleInitialize, so
-	// every entry in ContentChanges carries the entire new document text rather
-	// than a range-based edit. A single didChange notification may legally batch
-	// multiple content changes; per the LSP spec they must be applied in order,
-	// which — for full-document sync — means the last entry wins. Only applying
-	// ContentChanges[0] silently dropped every edit after the first.
 	for _, change := range params.ContentChanges {
-		doc.Text = change.Text
+		doc.Text = applyContentChange(doc.Text, change.Range, change.Text)
 	}
 
 	// TODO: Validate document and publish diagnostics
 	return s.publishDiagnostics(params.TextDocument.URI)
+}
+
+// applyContentChange returns text with rng replaced by newText. A nil rng
+// replaces the whole document. Positions are clamped (see offsetAt), and an
+// end before the start collapses to an insertion at the start.
+func applyContentChange(text string, rng *lspRange, newText string) string {
+	if rng == nil {
+		return newText
+	}
+	start := offsetAt(text, rng.Start)
+	end := offsetAt(text, rng.End)
+	if end < start {
+		end = start
+	}
+	return text[:start] + newText + text[end:]
+}
+
+// offsetAt converts an LSP position to a byte offset, clamping positions that
+// fall outside the text: a negative line maps to 0, a line past the last one
+// maps to len(text), and a character past the line end maps to the line's end
+// (before its line terminator).
+func offsetAt(text string, pos lspPosition) int {
+	if pos.Line < 0 {
+		return 0
+	}
+	off, ok := positionToOffset(text, pos.Line, pos.Character)
+	if !ok {
+		return len(text)
+	}
+	return off
 }
 
 // handleDidClose handles textDocument/didClose notification.

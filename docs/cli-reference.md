@@ -998,6 +998,15 @@ Provides IDE support for Blueprint files:
   too. Rename is refused for a document with parse errors, for keywords and
   reserved names, for names that collide with or would be captured by another
   symbol, and for any edit after which the checker reports a new error
+- References and rename cover the include component of the open document: the
+  files it reaches through `include` statements (recursively), plus workspace
+  `.bp` files whose includes reach them. Each file is read from its unsaved
+  text when the client has it open. A top-level symbol is renamed in every
+  file of the component, and a name declared in more than one of them is
+  refused; endpoint-local bindings stay in their own document
+- Incremental document sync (`textDocumentSync` with `change: 2`): ranged
+  content changes are applied in order, positions count UTF-16 code units, and
+  a change without a range replaces the whole document
 - Quick-fix code actions (`textDocument/codeAction`) that apply the
   did-you-mean suggestion attached to a diagnostic
 - Context-aware completion for declarations, types, constraints, settings,
@@ -1020,10 +1029,12 @@ launches it automatically and exposes `blueprint.server.path`,
 other editors that support custom stdio language servers can point their client
 command directly at `bp lsp`.
 
-Current limits are deliberate: synchronization is full-document, completion
-uses the open document's parser/source context and has no resolve request,
-workspace symbols scan local `file:` roots only, and references and rename
-cover the open document only (no cross-file rename). Workspace scanning ignores common dependency,
+Current limits are deliberate: completion uses the open document's
+parser/source context and has no resolve request, workspace symbols scan local
+`file:` roots only, and references and rename stop at the include component
+(an `external` service is matched only within the file that declares it; a
+rename that would leave the component inconsistent is refused by the checker
+safety check). Workspace scanning ignores common dependency,
 generated, build, virtual-environment, and VCS directories; an unsaved open
 document takes precedence over its on-disk copy.
 

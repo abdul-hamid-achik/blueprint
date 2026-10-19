@@ -36,6 +36,10 @@ type symbolIndex struct {
 	toks    []lexer.Token
 	byOff   map[int]int // token start offset -> token index
 	globals map[string]globalSym
+	// imported holds the top-level declarations of the other files in the
+	// document's include component. They resolve references but are not this
+	// file's declarations, so they never produce a declaration occurrence.
+	imported map[string]globalSym
 	// externals are keyed by normalizeExternalName, because `call` names are
 	// identifiers while `external` declares a quoted, possibly hyphenated name.
 	externals map[string]externalSym
@@ -127,10 +131,18 @@ func skipInGlobalWalk(t reflect.Type) bool {
 // buildSymbolIndex walks a parsed document and records every occurrence of a
 // top-level declaration or endpoint-local binding.
 func buildSymbolIndex(doc *docIndex) *symbolIndex {
+	return buildSymbolIndexWith(doc, nil)
+}
+
+// buildSymbolIndexWith is buildSymbolIndex for a document whose include
+// component declares more names: imported maps those names to their
+// declarations in the other files. A nil map means no imports.
+func buildSymbolIndexWith(doc *docIndex, imported map[string]globalSym) *symbolIndex {
 	s := &symbolIndex{
 		text:       "",
 		byOff:      map[int]int{},
 		globals:    map[string]globalSym{},
+		imported:   imported,
 		externals:  map[string]externalSym{},
 		localBlock: map[string]int{},
 		localName:  map[string]string{},
@@ -926,7 +938,20 @@ func (b *occurrenceBuilder) fixtureSeedModel(n *ast.Fixture) {
 
 // kindOf returns the top-level declaration kind for name, or "".
 func (b *occurrenceBuilder) kindOf(name string) string {
-	return b.idx.globals[name].Kind
+	if g, ok := b.idx.globals[name]; ok {
+		return g.Kind
+	}
+	return b.idx.imported[name].Kind
+}
+
+// declares reports whether name is a top-level declaration of this document or
+// of another file in its include component.
+func (s *symbolIndex) declares(name string) bool {
+	if _, ok := s.globals[name]; ok {
+		return true
+	}
+	_, ok := s.imported[name]
+	return ok
 }
 
 func (b *occurrenceBuilder) tokenKind(off int) lexer.TokenKind {

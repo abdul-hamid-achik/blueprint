@@ -31,8 +31,9 @@ can also produce a FastAPI + SQLAlchemy project.
 - **Starter templates.** `bp init <name> --template default|minimal|crud|auth|worker`
   scaffolds a project without overwriting existing files.
 - **Language server.** `bp lsp` provides diagnostics with quick fixes, hover,
-  go-to-definition, find-references, open-document rename, completion,
-  formatting, document outline, folding ranges, and workspace symbols.
+  go-to-definition, find-references and rename across `include`d files,
+  incremental document sync, completion, formatting, document outline, folding
+  ranges, and workspace symbols.
 - **MCP server.** `bp mcp` exposes check, lint, format, explain, context, build,
   and diff as tools to MCP-capable agents, so they need no shell access.
 - **Validated inputs.** On the Node target, REST path parameters are checked

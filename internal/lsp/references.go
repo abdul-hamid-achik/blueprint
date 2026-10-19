@@ -3,12 +3,13 @@ package lsp
 import (
 	"encoding/json"
 	"strings"
-
-	"github.com/abdul-hamid-achik/blueprint/internal/parser"
 )
 
 // positionToOffset converts an LSP (line, UTF-16 character) position into a
-// byte offset in text. It reports false when the line does not exist.
+// byte offset in text. It reports false when the line does not exist. Lines end
+// at "\n"; a "\r" directly before it is the line terminator's first half, not
+// content, so a character past the end of a CRLF line clamps to the offset
+// before "\r" and an edit there never splits the pair.
 func positionToOffset(text string, line, char int) (int, bool) {
 	if line < 0 {
 		return 0, false
@@ -25,6 +26,7 @@ func positionToOffset(text string, line, char int) (int, bool) {
 	if nl := strings.IndexByte(lineText, '\n'); nl >= 0 {
 		lineText = lineText[:nl]
 	}
+	lineText = strings.TrimSuffix(lineText, "\r")
 	return off + byteOffsetForUTF16(lineText, char), true
 }
 
@@ -49,48 +51,36 @@ func occurrenceRange(text string, o symOccurrence) lspRange {
 	}
 }
 
-// symbolDoc parses an open document for symbol analysis. It uses the strict
-// parser, which accepts an intent before the blueprint block; the partial
-// parser behind buildIndex does not, so it would drop most of such a file.
-// Definition and diagnostics keep using buildIndex.
-func (s *Server) symbolDoc(uri string) *docIndex {
-	doc, ok := s.docs[uri]
-	if !ok {
-		return nil
-	}
-	file, errs := parser.ParseFile(uriToFilename(uri), []byte(doc.Text))
-	return &docIndex{text: doc.Text, file: file, errors: errs}
-}
-
-// symbolAtCursor resolves the symbol under an LSP position using the document's
-// occurrence index. It reports false when the position is not on a symbol the
-// index tracks (keywords, literals, strings, fields, builtins, unknown names).
-func symbolAtCursor(doc *docIndex, line, char int) (*symbolIndex, symOccurrence, bool) {
-	if doc == nil {
-		return nil, symOccurrence{}, false
-	}
-	off, ok := positionToOffset(doc.text, line, char)
-	if !ok {
-		return nil, symOccurrence{}, false
-	}
-	si := buildSymbolIndex(doc)
-	occ, ok := si.at(off)
-	return si, occ, ok
-}
-
 // computeReferences returns every occurrence of the symbol at (line, char) in
 // the document. The result is never nil.
 func computeReferences(uri string, doc *docIndex, line, char int, includeDecl bool) []lspLocation {
+	return computeComponentReferences([]scopeFile{{uri: uri, doc: doc}}, line, char, includeDecl)
+}
+
+// computeComponentReferences returns every occurrence of the symbol at the
+// cursor in files[0], across the include component. A top-level symbol is
+// searched in every file of the component; an endpoint-local binding only in
+// its own document. The result is never nil.
+func computeComponentReferences(files []scopeFile, line, char int, includeDecl bool) []lspLocation {
 	out := []lspLocation{}
-	si, occ, ok := symbolAtCursor(doc, line, char)
+	if len(files) == 0 || files[0].doc == nil {
+		return out
+	}
+	idx := componentIndexes(files)
+	occ, ok := cursorOccurrence(files[0].doc, idx[0], line, char)
 	if !ok {
 		return out
 	}
-	for _, o := range si.occurrencesOf(occ.Key) {
-		if o.Decl && !includeDecl {
-			continue
+	if strings.HasPrefix(occ.Key, "local:") {
+		files, idx = files[:1], idx[:1]
+	}
+	for i, f := range files {
+		for _, o := range idx[i].occurrencesOf(occ.Key) {
+			if o.Decl && !includeDecl {
+				continue
+			}
+			out = append(out, lspLocation{URI: f.uri, Range: occurrenceRange(f.doc.text, o)})
 		}
-		out = append(out, lspLocation{URI: uri, Range: occurrenceRange(doc.text, o)})
 	}
 	return out
 }
@@ -107,6 +97,6 @@ func (s *Server) handleReferences(msg *jsonRPCMessage) error {
 		return s.sendError(msg.ID, -32602, "Invalid params", err.Error())
 	}
 	uri := params.TextDocument.URI
-	locs := computeReferences(uri, s.symbolDoc(uri), params.Position.Line, params.Position.Character, params.Context.IncludeDeclaration)
+	locs := computeComponentReferences(s.symbolScope(uri), params.Position.Line, params.Position.Character, params.Context.IncludeDeclaration)
 	return s.sendResult(msg.ID, locs)
 }

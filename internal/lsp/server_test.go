@@ -382,6 +382,10 @@ func TestServer_InitializeAdvertisesDefinitionProvider(t *testing.T) {
 	if v, _ := resp.Capabilities["hoverProvider"].(bool); !v {
 		t.Errorf("expected hoverProvider=true, got %+v", resp.Capabilities)
 	}
+	sync, _ := resp.Capabilities["textDocumentSync"].(map[string]interface{})
+	if sync == nil || sync["change"] != float64(2) || sync["openClose"] != true {
+		t.Errorf("expected textDocumentSync {openClose:true, change:2} (incremental), got %v", resp.Capabilities["textDocumentSync"])
+	}
 }
 
 // decodeFramed splits a Content-Length-framed stream into JSON-RPC messages.

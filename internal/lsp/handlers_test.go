@@ -9,12 +9,12 @@ import (
 
 // --- textDocument/didChange correctness ---------------------------------------
 //
-// The server advertises textDocumentSync = Full (see handleInitialize), which
-// means every entry in a didChange notification's contentChanges carries the
-// ENTIRE new document text (not a range-based patch). Per the LSP spec,
-// multiple entries in one notification must be applied in order; for full
-// sync that means "last entry wins". handleDidChange used to always apply
-// ContentChanges[0], silently discarding any later entries. The tests below
+// The server advertises incremental sync (see handleInitialize). Entries in a
+// didChange notification's contentChanges are applied in order, and an entry
+// without a range replaces the whole document. The tests below pin that a
+// batch with several whole-document entries keeps the last one (the
+// regression case: handleDidChange once applied only ContentChanges[0]). The
+// tests below
 // drive the server through its real JSON-RPC entry point (Server.Run reading
 // framed messages off an in-memory pipe) to prove all changes are merged in
 // order, not just the first.

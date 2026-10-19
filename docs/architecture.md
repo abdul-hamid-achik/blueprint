@@ -537,12 +537,17 @@ line is incomplete. It does not implement completion resolve.
 `workspace/symbol` merges unsaved open documents with `.bp` files scanned from
 local workspace folders. Open text wins over disk; common VCS, dependency,
 generated, build, and virtual-environment directories are ignored. Remote
-workspace roots, cross-file rename, and incremental document
-sync/indexing are not implemented.
+workspace roots are not implemented. Document sync is incremental: ranged
+changes apply in order with UTF-16 positions, and the parser and checker
+indexes are rebuilt after each change.
 
-Find-references and rename use the same scope-aware index as the checker and
-work within the open document. Renaming a path-parameter input also renames its
-`:param` segment, and a rename that would add a checker error is refused.
+Find-references and rename use the same scope-aware index as the checker. They
+cover the include component of the open document: the files it reaches through
+`include` statements, plus workspace files whose includes reach them, read from
+unsaved text when open. Each file is indexed with the top-level declarations of
+the others, so a use in `main.bp` resolves to a model declared in `models.bp`. A
+rename that would add a checker error to the merged component is refused.
+Renaming a path-parameter input also renames its `:param` segment.
 Code actions offer did-you-mean fixes, formatting uses the `bp fmt` printer, and
 document symbols and folding ranges are served.
 
