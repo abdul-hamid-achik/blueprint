@@ -22,8 +22,19 @@ All notable changes to this project will be documented in this file.
   target with Zod `.uuid()`, `.ip()`, and `.date()`; before, only `email` and
   `url` were. Contract-test samples, property-test arbitraries, and OpenAPI
   formats follow.
+- Python target: `min`/`max` on REST path inputs become FastAPI `Path(...)`
+  bounds, and `format(email|url|uuid|ip|date)` on string endpoint inputs and
+  model fields is enforced through a generated, stdlib-only
+  `src/lib/formats.py` (values stay plain `str`). Violations answer `422`, the
+  FastAPI convention. Before, path constraints were dropped and `format` made
+  the Python build fail closed.
 
 ### Fixed
+
+- STREAM and WS route files type the variables that `use` middleware injects,
+  as REST routes already did: `c.get('auth')` is the injected model's row type
+  instead of `any`. A REST route file whose typed middleware variables need
+  `schema` but that does not query the database now imports it.
 
 - `bp fmt` and LSP formatting keep an `@` intent above `secret`, `env`,
   `locale`, `translation`, `include`, `type`, `alias`, `external`, and
