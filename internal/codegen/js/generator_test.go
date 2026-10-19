@@ -2702,8 +2702,8 @@ func TestGenWorkerBasicFixture(t *testing.T) {
 	// The `<- job_id uuid` input must be destructured from `data` in BOTH the
 	// handler and on_fail — on_fail receives the same raw job payload, not
 	// any record the handler fetched.
-	if got := strings.Count(workerStr, "const jobId = _bpData.job_id;"); got != 2 {
-		t.Errorf("expected 'const jobId = _bpData.job_id;' once in the handler and once in on_fail (got %d), full output:\n%s", got, workerStr)
+	if got := strings.Count(workerStr, "const jobId = _bpData.jobId;"); got != 2 {
+		t.Errorf("expected 'const jobId = _bpData.jobId;' once in the handler and once in on_fail (got %d), full output:\n%s", got, workerStr)
 	}
 
 	// The impl-backed fn call must be awaited (missing await previously meant

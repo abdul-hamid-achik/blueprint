@@ -1460,6 +1460,10 @@ attempt, so the generated BullMQ producer receives `attempts: N + 1`. A plain
 by a generated custom capped strategy. A backoff clause must declare `base` or
 `delay`, and unsupported strategies or keys fail before files are returned.
 
+`enqueue "queue" { ... }` sends the payload with camelCase keys, as `emit`
+does, and a worker input `<- job_id` reads the `jobId` key. A producer on
+another runtime must send the same keys.
+
 `enqueue` is currently supported only inside HTTP endpoint bodies. Its static
 queue name must resolve to exactly one worker trigger and its payload is
 required. Missing or ambiguous workers, malformed calls, and enqueue calls in

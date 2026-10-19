@@ -387,7 +387,9 @@ func (g *Generator) genWorker(w *ast.Worker) codegen.OutputFile {
 	emitInputBindings := func(indent string, ctx *emitCtx) {
 		for _, inp := range inputs {
 			camelName := toCamelCase(inp.Name)
-			fmt.Fprintf(&b, "%sconst %s = _bpData.%s;\n", indent, camelName, inp.Name)
+			// enqueue camel-cases payload keys, as emit does, so the input
+			// arrives under its camelCase name.
+			fmt.Fprintf(&b, "%sconst %s = _bpData.%s;\n", indent, camelName, camelName)
 			ctx.declared[camelName] = true
 		}
 	}
