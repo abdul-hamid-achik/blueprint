@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-19
+
 ### Added
 
 - `bp lint` rule `webhook-sig-without-body` (warning): `auth webhook_sig` on
