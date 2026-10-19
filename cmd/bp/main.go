@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -1576,6 +1577,18 @@ func cmdTestWithPropertyTests(filename, outDir, target string, force, propertyTe
 	}
 	copyProjectEnv(filename, outDir)
 
+	// A spec with only STREAM/WS endpoints (or none) generates no test files.
+	// vitest and pytest both fail on an empty suite, which would report a
+	// false failure, so report the skip and exit 0 instead.
+	if !hasGeneratedTests(outDir, target) {
+		if target == targetPython {
+			fmt.Printf("No tests generated for %s: generated tests cover REST endpoints.\n", filename)
+		} else {
+			fmt.Printf("No tests generated for %s: generated tests cover REST endpoints and authored test blocks.\n", filename)
+		}
+		return 0
+	}
+
 	if target == targetPython {
 		return runPythonTests(outDir)
 	}
@@ -1594,6 +1607,28 @@ func cmdTestWithPropertyTests(filename, outDir, target string, force, propertyTe
 		return 1
 	}
 	return 0
+}
+
+// hasGeneratedTests reports whether the generated project has a test file the
+// target's runner would collect: Node runs vitest over test/**/*.test.ts and
+// Python runs pytest over tests/test_*.py.
+func hasGeneratedTests(outDir, target string) bool {
+	if target == targetPython {
+		matches, _ := filepath.Glob(filepath.Join(outDir, "tests", "test_*.py"))
+		return len(matches) > 0
+	}
+	found := false
+	_ = filepath.WalkDir(filepath.Join(outDir, "test"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(path, ".test.ts") {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // runPythonTests shells to `uv run pytest`. uv resolves the generated
