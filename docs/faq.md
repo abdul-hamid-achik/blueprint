@@ -508,12 +508,11 @@ those files format normally. Exit `3` for those files was a 0.16.0 behavior.
 
 ### Why does a command exit 2?
 
-Exit `2` is a usage or environment error: an unknown flag, a value flag with no
-value, an unexpected extra argument, a path that doesn't exist, or a missing
-external tool. Exit `1` is a validation failure. A command run without its
-required argument (for example `bp check` with no path) prints usage and exits
-`1`. Scripts can branch on the codes. See the
-[Exit Codes](./cli-reference.md#exit-codes) table.
+Exit `2` is a usage or environment error: an unknown command or flag, a
+missing required argument (for example `bp check` with no path), a value flag
+with no value, an unexpected extra argument, a path that doesn't exist, or a
+missing external tool. Exit `1` is a validation failure. Scripts can branch on
+the two codes. See the [Exit Codes](./cli-reference.md#exit-codes) table.
 
 ### "Error: unexpected token" on a valid-looking file
 

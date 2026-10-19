@@ -186,18 +186,51 @@ func TestHelpDashH(t *testing.T) {
 
 func TestNoArgs(t *testing.T) {
 	_, _, exitCode := runBP(t)
-	if exitCode != 1 {
-		t.Errorf("expected exit code 1 (no args), got %d", exitCode)
+	if exitCode != 2 {
+		t.Errorf("expected exit code 2 (no args), got %d", exitCode)
 	}
 }
 
 func TestUnknownCommand(t *testing.T) {
 	_, stderr, exitCode := runBP(t, "nonexistent")
-	if exitCode != 1 {
-		t.Errorf("expected exit code 1 for unknown command, got %d", exitCode)
+	if exitCode != 2 {
+		t.Errorf("expected exit code 2 for unknown command, got %d", exitCode)
 	}
 	if !strings.Contains(stderr, "Unknown command") {
 		t.Errorf("expected stderr to contain 'Unknown command', got %q", stderr)
+	}
+}
+
+// Usage errors (a missing required argument, an extra argument, an unknown
+// subcommand or value) exit 2, like malformed flags; 1 is for validation.
+func TestUsageErrorsExitTwo(t *testing.T) {
+	valid := filepath.Join(getProjectRoot(), "examples", "hello-world.bp")
+	cases := [][]string{
+		{"check"},
+		{"build"},
+		{"fmt"},
+		{"lint"},
+		{"docs"},
+		{"test"},
+		{"diff"},
+		{"explain"},
+		{"stats"},
+		{"completion"},
+		{"completion", "tcsh"},
+		{"completion", "zsh", "extra"},
+		{"explain", "C001", "extra"},
+		{"migrate", valid, "bogus"},
+		{"migrate", valid, "generate", "extra"},
+		{"import", "a", "b"},
+		{"context", "a", "b"},
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, stderr, code := runBP(t, args...)
+			if code != 2 {
+				t.Errorf("bp %s: expected exit 2, got %d (stderr %q)", strings.Join(args, " "), code, stderr)
+			}
+		})
 	}
 }
 
@@ -1512,8 +1545,8 @@ func TestMigrateUnknownSubcommandRejected(t *testing.T) {
 	root := getProjectRoot()
 	bp := filepath.Join(root, "examples", "todo-api.bp")
 	_, stderr, code := runBP(t, "migrate", bp, "genereate", "--out", t.TempDir())
-	if code != 1 {
-		t.Errorf("expected exit 1 for unknown migrate subcommand, got %d", code)
+	if code != 2 {
+		t.Errorf("expected exit 2 for unknown migrate subcommand, got %d", code)
 	}
 	if !strings.Contains(stderr, "unknown migrate subcommand") {
 		t.Errorf("expected 'unknown migrate subcommand' message, got: %q", stderr)

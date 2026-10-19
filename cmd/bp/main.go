@@ -209,7 +209,7 @@ func checkOutDirSafety(outDir string, force bool) error {
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
-		os.Exit(1)
+		os.Exit(2)
 	}
 
 	switch os.Args[1] {
@@ -224,13 +224,13 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp check <file.bp|dir> [more ...] [--json]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[2:], flagSpec{"--json": false})
 		exitOnArgError(err)
 		if len(parsed.positional) == 0 {
 			fmt.Fprintln(os.Stderr, "Usage: bp check <file.bp|dir> [more ...] [--json]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		files, multi, err := resolveBPArgs(parsed.positional)
 		if err != nil {
@@ -258,7 +258,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp build <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--force]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{
 			"--out": true, "--target": true, "--react-query": false,
@@ -287,7 +287,7 @@ func main() {
 			}
 			if len(os.Args) < 4 {
 				fmt.Fprintln(os.Stderr, "Usage: bp frontend publish <file.bp> [--out <dir>] [--react-query] [--skip-install]")
-				os.Exit(1)
+				os.Exit(2)
 			}
 			parsed, err := parseArgs(os.Args[4:], flagSpec{"--out": true, "--react-query": false, "--skip-install": false})
 			exitOnArgError(err)
@@ -306,7 +306,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp frontend <file.bp> [--out <dir>] [--react-query]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--react-query": false})
 		exitOnArgError(err)
@@ -328,13 +328,13 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp fmt <file.bp|dir> [more ...] [--write] [--check]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[2:], flagSpec{"--write": false, "--check": false})
 		exitOnArgError(err)
 		if len(parsed.positional) == 0 {
 			fmt.Fprintln(os.Stderr, "Usage: bp fmt <file.bp|dir> [more ...] [--write] [--check]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		files, multi, err := resolveBPArgs(parsed.positional)
 		if err != nil {
@@ -367,13 +367,13 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp lint <file.bp|dir> [more ...] [--json]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[2:], flagSpec{"--json": false})
 		exitOnArgError(err)
 		if len(parsed.positional) == 0 {
 			fmt.Fprintln(os.Stderr, "Usage: bp lint <file.bp|dir> [more ...] [--json]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		files, multi, err := resolveBPArgs(parsed.positional)
 		if err != nil {
@@ -393,7 +393,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp docs <file.bp> [--out file.json]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true})
 		exitOnArgError(err)
@@ -413,7 +413,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp test <file.bp> [--out <dir>] [--target <name>] [--gen-property-tests] [--force]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--target": true, "--gen-property-tests": false, "--force": false})
 		exitOnArgError(err)
@@ -429,7 +429,7 @@ func main() {
 		os.Exit(cmdTestWithPropertyTests(os.Args[2], outDir, target, parsed.set["--force"], parsed.set["--gen-property-tests"]))
 	case "migrate":
 		if hasHelpFlag(os.Args[2:]) {
-			printCommandHelp("migrate", "migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>] [--force]",
+			printCommandHelp("migrate", "migrate <file.bp> [generate|push|studio|check] [--out <dir>] [--target <name>] [--force]",
 				"Build and run database migrations.\nnode (default): Drizzle Kit. python: Alembic via uv.",
 				[][2]string{
 					{"--out <dir>", "Output directory (default: generated/)"},
@@ -439,8 +439,8 @@ func main() {
 			os.Exit(0)
 		}
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: bp migrate <file.bp> [generate|push|studio] [--out <dir>] [--target <name>] [--force]")
-			os.Exit(1)
+			fmt.Fprintln(os.Stderr, "Usage: bp migrate <file.bp> [generate|push|studio|check] [--out <dir>] [--target <name>] [--force]")
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--target": true, "--force": false})
 		exitOnArgError(err)
@@ -451,12 +451,12 @@ func main() {
 			validSubs := map[string]bool{"generate": true, "push": true, "studio": true, "check": true}
 			if !validSubs[parsed.positional[0]] {
 				fmt.Fprintf(os.Stderr, "Error: unknown migrate subcommand %q (expected generate, push, studio, or check)\n", parsed.positional[0])
-				os.Exit(1)
+				os.Exit(2)
 			}
 			subCmd = parsed.positional[0]
 		default:
 			fmt.Fprintf(os.Stderr, "Error: unexpected argument %q\n", parsed.positional[1])
-			os.Exit(1)
+			os.Exit(2)
 		}
 		outDir := "generated"
 		if v, ok := parsed.values["--out"]; ok {
@@ -476,7 +476,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp generate <file.bp> [--write]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{"--write": false})
 		exitOnArgError(err)
@@ -509,7 +509,7 @@ func main() {
 		exitOnArgError(err)
 		if len(parsed.positional) > 1 {
 			fmt.Fprintf(os.Stderr, "Error: unexpected argument %q\n", parsed.positional[1])
-			os.Exit(1)
+			os.Exit(2)
 		}
 		inputPath := "."
 		if len(parsed.positional) == 1 {
@@ -528,7 +528,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp run <file.bp> [--out <dir>] [--force]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--force": false})
 		exitOnArgError(err)
@@ -550,7 +550,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp dev <file.bp> [--out <dir>] [--force]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--force": false})
 		exitOnArgError(err)
@@ -569,7 +569,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp eject <dir>")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		os.Exit(cmdEject(os.Args[2]))
 	case "diff":
@@ -592,7 +592,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp diff <file.bp> [--out <dir>] [--target <name>] [--react-query] [--frontend-only] [--gen-tests] [--gen-property-tests] [--apply [--force]] [--exit-code] [--no-color]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{
 			"--out": true, "--target": true, "--react-query": false,
@@ -629,7 +629,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp deploy <file.bp> [--out <dir>] [--tag <tag>] [--target <name>] [--no-run]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{"--out": true, "--tag": true, "--target": true, "--no-run": false})
 		exitOnArgError(err)
@@ -658,8 +658,9 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp completion <bash|zsh|fish>")
-			os.Exit(1)
+			os.Exit(2)
 		}
+		exitOnArgError(rejectPositional(os.Args[3:]))
 		os.Exit(cmdCompletion(os.Args[2]))
 	case "stats":
 		if hasHelpFlag(os.Args[2:]) {
@@ -670,7 +671,7 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp stats <file.bp> [--json]")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		parsed, err := parseArgs(os.Args[3:], flagSpec{"--json": false})
 		exitOnArgError(err)
@@ -701,8 +702,9 @@ func main() {
 		}
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: bp explain <code>")
-			os.Exit(1)
+			os.Exit(2)
 		}
+		exitOnArgError(rejectPositional(os.Args[3:]))
 		os.Exit(cmdExplain(os.Args[2]))
 	case "context":
 		if hasHelpFlag(os.Args[2:]) {
@@ -715,7 +717,7 @@ func main() {
 		exitOnArgError(err)
 		if len(parsed.positional) > 1 {
 			fmt.Fprintln(os.Stderr, "Error: at most one topic argument is supported")
-			os.Exit(1)
+			os.Exit(2)
 		}
 		topic := ""
 		if len(parsed.positional) == 1 {
@@ -748,7 +750,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "\nDid you mean: %s?\n", suggestion)
 		}
 		printUsage()
-		os.Exit(1)
+		os.Exit(2)
 	}
 }
 
@@ -2320,7 +2322,7 @@ func cmdCompletion(shell string) int {
 		fmt.Print(fishCompletionScript())
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown shell: %s. Supported: bash, zsh, fish\n", shell)
-		return 1
+		return 2
 	}
 	return 0
 }

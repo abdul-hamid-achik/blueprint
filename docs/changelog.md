@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Usage errors now exit `2`, as the exit-code table documents. Before, `bp`
+  with no command, an unknown command, a command run without its required
+  argument (`bp check`, `bp build`, ... with no path), an unknown `bp migrate`
+  subcommand, an extra argument to `bp migrate`/`bp import`/`bp context`, and
+  an unknown `bp completion` shell exited `1`. `bp explain` and
+  `bp completion` now reject an extra argument instead of ignoring it.
+  Scripts that treated `1` as "usage error" should check for `2`; `1` stays
+  the validation-failure code.
+- `bp migrate` usage and help list the `check` subcommand.
+
 ## [0.17.0] - 2026-10-18
 
 ### Changed (may reject input that earlier releases accepted)
