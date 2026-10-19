@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-19
+
 ### Added
 
 - `bp lsp` syncs documents incrementally (`textDocumentSync` change 2):

@@ -207,7 +207,7 @@ camelCase `fkAccessInfo` via `toFKAccessInfo`). Keep the IR naming-neutral.
 Anything genuinely target-specific (JS `await` sets, Python sync-vs-async route
 selection) stays in the target package.
 
-## Target parity for 0.16 and 0.17 features
+## Target parity for 0.16 through 0.19 features
 
 Checked against the Node and Python output for the same `.bp` source. Node is
 the reference; each Python row is a translation, not a copy of the Node
