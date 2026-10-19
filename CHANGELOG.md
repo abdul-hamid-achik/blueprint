@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Python target: `storage s3` with boto3. `upload(body, bucket)` stores the
+  body under a random UUID key with `application/octet-stream` and returns
+  `{ url: "s3://<bucket>/<key>", key }`, as Node does; `download(url)`
+  returns the object's bytes. The client reads the standard AWS settings
+  (`AWS_REGION`, `AWS_ENDPOINT_URL`, credentials), and `boto3` is added only
+  when `storage` is declared. Other storage backends, `delete_s3_object`, and
+  endpoint `file` inputs stay rejected.
 - Python target: `use` middleware on STREAM and WS endpoints, with the REST
   subset (a `before` block with `guard`, `fetch`, `log`, function steps, and at
   most one `inject`). On STREAM it runs before the stream opens, and a failing
@@ -42,6 +49,18 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Node `storage s3`: `download(url)` called the helper with the URL as a
+  bucket and no key, and did not await it, so the rejection crashed the
+  process. `download` now takes the `s3://` URL that `upload` returns (or a
+  bucket and key), is awaited, and returns the object's bytes as a `Buffer`.
+  `upload` accepts a string body, so a spec that uploads an input string
+  type-checks.
+- Python: `.length` in a REST body became an attribute read that fails on
+  strings, lists, and bytes. It is now `len(x)`, except on a single model row,
+  where `length` is a column.
+- Python: an unhandled exception answers `500` with
+  `{"error": "Internal server error"}`, as Node does, instead of Starlette's
+  plain-text body.
 - Node: a failing `guard` in a `use` middleware answered `500` with
   `{"error": "Internal server error"}` instead of its own status and message.
   The middleware throws outside the route's `try`/`catch`, and `app.onError`
