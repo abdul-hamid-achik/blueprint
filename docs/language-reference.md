@@ -1522,12 +1522,15 @@ Standard 5-field cron syntax: `minute hour day-of-month month day-of-week`.
 3.x cron job inside the app process, started and stopped with the FastAPI
 lifespan. The body runs the same statements as an endpoint body, minus the
 request: `->` responses, `<-` inputs, `header` reads, and `emit` are rejected at
-build time. A tick queues one run on a single worker thread, so runs of the same
-schedule never overlap, and a failing run is retried twice with 1s and 2s
-backoff before it is logged and dropped. The Node target keeps schedules in
-Redis, so one run fires per tick across all instances; the Python target runs
-them in each process, so use one process per schedule set. Both targets use the
-process-local timezone. The scheduler does not start under pytest.
+build time. A tick starts a run on one worker thread, so runs never overlap. If
+a run is still going and another run is already waiting, a further tick is
+skipped with a logged warning, so a slow schedule never builds a backlog; ticks
+missed while the app was down are not replayed. A failing run is retried twice
+with 1s and 2s backoff, and each failure is logged. The Node target keeps
+schedules in Redis, so one run fires per tick across all instances; the Python
+target runs them in each process, so use one process per schedule set. Both
+targets use the process-local timezone. The scheduler does not start under
+pytest.
 
 ---
 

@@ -182,24 +182,27 @@ func writeScheduleImports(b *strings.Builder, stmts []ast.ArrowStmt, usesDB bool
 }
 
 // genSchedulerPy emits src/lib/scheduler.py. Every schedule is registered with
-// APScheduler's cron trigger. A tick queues the run on one worker thread, so
-// runs never overlap and queued runs execute in order, as the Node target's
-// single scheduler worker does. A failing run is retried with the same budget
-// as the Node target (3 attempts, exponential backoff from 1s) and each failure
-// is logged.
+// APScheduler's cron trigger. A tick starts its run on one worker thread, so
+// runs never overlap, and at most one tick waits behind the run in progress:
+// a further tick is skipped with a warning, as the Node target's repeat job
+// keeps a single pending run. A failing run is retried with the same budget as
+// the Node target (3 attempts, exponential backoff from 1s) and each failure is
+// logged.
 func (g *Generator) genSchedulerPy(schedules []*ast.Schedule) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	b.WriteString(`"""Runs the schedule declarations in-process on APScheduler 3.x.
 
-Schedules use the process-local timezone, as the Node target does. start() is a
-no-op under pytest (the Node target skips its scheduler under Vitest the same
-way), so importing the app in a test never starts background runs.
+Schedules use the process-local timezone, as the Node target does. A tick that
+is more than APScheduler's default one-second grace late is skipped, with no
+catch-up, as on the Node target. start() is a no-op under pytest (the Node
+target skips its scheduler under Vitest the same way), so importing the app in
+a test never starts background runs.
 """
 import sys
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -220,6 +223,9 @@ RETRY_BASE_SECONDS = 1.0
 
 _scheduler: BackgroundScheduler | None = None
 _executor: ThreadPoolExecutor | None = None
+# The newest run submitted for each schedule. A run that is still waiting
+# (not started, not done) is the one pending run; a new tick is skipped behind it.
+_latest: dict[str, Future[None]] = {}
 
 
 def _run(name: str, run: Callable[[], None]) -> None:
@@ -234,8 +240,13 @@ def _run(name: str, run: Callable[[], None]) -> None:
 
 
 def _tick(name: str, run: Callable[[], None]) -> None:
-    if _executor is not None:
-        _executor.submit(_run, name, run)
+    if _executor is None:
+        return
+    latest = _latest.get(name)
+    if latest is not None and not latest.running() and not latest.done():
+        logger.warning("schedule %s: a run is already waiting; skipping this tick", name)
+        return
+    _latest[name] = _executor.submit(_run, name, run)
 
 
 def start() -> None:
@@ -244,16 +255,10 @@ def start() -> None:
     if "pytest" in sys.modules or _scheduler is not None:
         return
     _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bp-schedule")
+    _latest.clear()
     _scheduler = BackgroundScheduler()
     for name, cron, run in SCHEDULES:
-        _scheduler.add_job(
-            _tick,
-            CronTrigger.from_crontab(cron),
-            args=[name, run],
-            id=name,
-            max_instances=1,
-            coalesce=True,
-        )
+        _scheduler.add_job(_tick, CronTrigger.from_crontab(cron), args=[name, run], id=name)
     _scheduler.start()
 
 
