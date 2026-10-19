@@ -30,7 +30,7 @@ func emptyInit(path, source string) codegen.OutputFile {
 // genPyProjectTOML emits pyproject.toml for uv. SQLAlchemy + psycopg + alembic
 // are added when the spec declares a database; otherwise the lighter Phase 1
 // dep set is used so projects without a DB don't pull in unused libraries.
-func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStream bool) codegen.OutputFile {
+func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStream, hasStorage bool) codegen.OutputFile {
 	name := bp.Name
 	version := blueprintEntry(bp, "version")
 	if version == "" {
@@ -55,6 +55,11 @@ func (g *Generator) genPyProjectTOML(bp *ast.Blueprint, hasDB, hasCache, hasStre
 		// uses redis.asyncio, and only when REDIS_URL is set. SSE framing is
 		// plain StreamingResponse in src/lib/events.py, so no SSE package is needed.
 		deps = append(deps, `"redis>=5.0"`)
+	}
+	if hasStorage {
+		// src/lib/storage.py uses the synchronous S3 client; FastAPI runs the
+		// handlers that call it in its threadpool.
+		deps = append(deps, `"boto3>=1.35"`)
 	}
 	depBlock := "  " + strings.Join(deps, ",\n  ") + ","
 
@@ -136,7 +141,7 @@ uv run pytest
 // fields. When the spec declares a database, DATABASE_URL is added as a
 // required field even if the .bp source didn't declare it as a secret
 // (Alembic and db.py both need it).
-func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache bool) codegen.OutputFile {
+func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache, hasStorage bool) codegen.OutputFile {
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	hasRequired := false
@@ -157,7 +162,7 @@ func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache bool) codege
 			break
 		}
 	}
-	if hasOptional {
+	if hasOptional || hasStorage {
 		b.WriteString("from typing import Optional\n")
 	}
 	b.WriteString("\n\nclass Settings(BaseSettings):\n")
@@ -185,7 +190,17 @@ func (g *Generator) genEnvPy(secrets []*ast.Secret, hasDB, hasCache bool) codege
 		// of the box against a local Redis.
 		b.WriteString("    REDIS_URL: str = \"redis://localhost:6379/0\"\n")
 	}
-	if len(secrets) == 0 && !hasDB && !hasCache {
+	if hasStorage {
+		// The AWS settings the Node target's S3 client reads from the environment
+		// (and from .env, which Node loads through dotenv). Unset values fall back
+		// to boto3's default chain.
+		b.WriteString("    AWS_REGION: Optional[str] = None\n")
+		b.WriteString("    AWS_ENDPOINT_URL: Optional[str] = None\n")
+		b.WriteString("    AWS_ACCESS_KEY_ID: Optional[str] = None\n")
+		b.WriteString("    AWS_SECRET_ACCESS_KEY: Optional[str] = None\n")
+		b.WriteString("    AWS_SESSION_TOKEN: Optional[str] = None\n")
+	}
+	if len(secrets) == 0 && !hasDB && !hasCache && !hasStorage {
 		b.WriteString("    pass\n")
 	}
 

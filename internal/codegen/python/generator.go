@@ -172,14 +172,15 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// still needs an empty Base schema so Alembic's import is always valid.
 	hasDB := blueprintEntry(bp, "database") != "" || len(models) > 0
 	hasCache := blueprintEntry(bp, "cache") != ""
+	hasStorage := blueprintEntry(bp, "storage") != ""
 
 	var out []codegen.OutputFile
-	out = append(out, g.genPyProjectTOML(bp, hasDB, hasCache, len(streams) > 0 || len(wss) > 0))
+	out = append(out, g.genPyProjectTOML(bp, hasDB, hasCache, len(streams) > 0 || len(wss) > 0, hasStorage))
 	out = append(out, g.genReadme(bp, hasDB))
 	out = append(out, emptyInit("src/__init__.py", g.sourceFile))
 	out = append(out, emptyInit("src/lib/__init__.py", g.sourceFile))
 	out = append(out, emptyInit("src/routes/__init__.py", g.sourceFile))
-	out = append(out, g.genEnvPy(secrets, hasDB, hasCache))
+	out = append(out, g.genEnvPy(secrets, hasDB, hasCache, hasStorage))
 	out = append(out, g.genLogPy())
 	if g.usesFormats(models, endpoints) {
 		out = append(out, g.genFormatsPy())
@@ -237,6 +238,9 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	}
 	if hasCache {
 		out = append(out, g.genCachePy())
+	}
+	if hasStorage {
+		out = append(out, g.genStoragePy())
 	}
 
 	// Phase 3d/5: declared functions + middleware. fn declarations produce
@@ -351,6 +355,11 @@ func (g *Generator) unsupportedFeatures() []string {
 			case "cache":
 				if value := blueprintEntry(g.file.Blueprint, "cache"); value != "redis" {
 					add(fmt.Sprintf("cache backend %q (Python currently emits Redis)", value))
+				}
+			case "storage":
+				// Node emits only S3 for any storage value, so gcs/local stay rejected.
+				if value := blueprintEntry(g.file.Blueprint, "storage"); value != "s3" {
+					add(fmt.Sprintf("storage backend %q (Python currently emits S3 only)", value))
 				}
 			default:
 				add(fmt.Sprintf("blueprint entry %q", entry.Key))
@@ -1282,6 +1291,8 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 		return nil
 	case "emit":
 		return emitStepFeatures(fn)
+	case "upload", "download":
+		return g.storageStepFeatures(fn)
 	case "sum":
 		if len(fn.Args) != 1 {
 			return []string{"`sum` requires exactly one collection expression"}
@@ -1293,6 +1304,24 @@ func (g *Generator) complexStepFeatures(s *ast.StepStmt) []string {
 	default:
 		return []string{fmt.Sprintf("step calls to %q", fn.Name)}
 	}
+}
+
+// storageStepFeatures accepts the storage built-ins on `storage s3` specs:
+// upload(body, bucket) and download(url), as the Node target's storage.ts
+// signatures take them. Without a storage entry the checker already rejects
+// them, so this only guards generator callers that skip the checker.
+func (g *Generator) storageStepFeatures(fn *ast.FnCall) []string {
+	if blueprintEntry(g.file.Blueprint, "storage") == "" {
+		return []string{fmt.Sprintf("`%s` without a `storage` entry", fn.Name)}
+	}
+	want := 2
+	if fn.Name == "download" {
+		want = 1
+	}
+	if len(fn.Args) != want {
+		return []string{fmt.Sprintf("`%s` with %d arguments (expected %d)", fn.Name, len(fn.Args), want)}
+	}
+	return nil
 }
 
 // isSupportedWherePredicate reports whether a single `where(...)` predicate is

@@ -60,6 +60,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsJwtClaims := false
 	needsWebhook := false
 	needsRequest := false
+	needsStorage := false
 	namedImports := newImportSet()
 	userFnCalls := map[string]bool{}
 	middlewares := map[string]bool{}
@@ -148,6 +149,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			}
 			if fc, ok := e.(*ast.FnCall); ok && fc.Name == "log" {
 				needsLog = true
+			}
+			if fc, ok := e.(*ast.FnCall); ok && (fc.Name == "upload" || fc.Name == "download") {
+				needsStorage = true
 			}
 		})
 		for _, m := range ep.Meta {
@@ -255,6 +259,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	}
 	if needsFormats {
 		b.WriteString("from src.lib import formats\n")
+	}
+	if needsStorage {
+		b.WriteString("from src.lib import storage\n")
 	}
 	for _, line := range namedImports.lines() {
 		b.WriteString(line + "\n")
@@ -525,7 +532,7 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 	// an event loop; `async def` for everything else so FastAPI doesn't pay
 	// a threadpool hop on static responses.
 	keyword := "async def"
-	if endpointTouchesDB(ep) {
+	if endpointTouchesDB(ep) || endpointUsesStorage(ep) {
 		keyword = "def"
 	}
 	fmt.Fprintf(b, "%s %s(%s):\n", keyword, fnName, params)

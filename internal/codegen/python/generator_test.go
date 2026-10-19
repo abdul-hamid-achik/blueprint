@@ -206,8 +206,15 @@ GET /api/x { -> 200 "ok" }
 worker process { trigger "job"  |> log "doing work" }
 GET /api/x { -> 200 "ok" }
 `,
-		"storage": `blueprint "x" { version "1.0" port 3000 runtime node storage s3 }
+		"storage backend other than s3": `blueprint "x" { version "1.0" port 3000 runtime node storage gcs }
 GET /api/x { -> 200 "ok" }
+`,
+		"delete_s3_object step": `blueprint "x" { version "1.0" port 3000 runtime node storage s3 }
+GET /api/x {
+  <- url string required
+  |> out = delete_s3_object(url)
+  -> 204
+}
 `,
 		"environment declaration": `blueprint "x" { version "1.0" port 3000 runtime node }
 env LOG_LEVEL "info"

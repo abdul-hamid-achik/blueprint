@@ -1,0 +1,38 @@
+@ "Python storage fixture: store text in S3 and keep the returned URL"
+blueprint "python-storage-s3" {
+  version  "1.0.0"
+  port     3000
+  runtime  node
+  database postgres
+  storage  s3
+}
+
+secret DATABASE_URL required
+secret S3_BUCKET    required
+
+model stored_file {
+  id      uuid      primary
+  url     string    required
+  created timestamp default(now)
+}
+
+@ "Upload the body text to S3 and save the s3:// URL"
+POST /api/stored-files {
+  <- body_text string required
+
+  |> stored = upload(body_text, env.S3_BUCKET)
+  |> record = save stored_file { url: stored.url }
+
+  -> 201 { id: record.id, url: record.url }
+}
+
+@ "Download the stored object and return its text"
+GET /api/stored-files/:id {
+  <- id uuid required
+
+  |> record = fetch stored_file(id)
+  |> guard record -> 404 "Stored file not found"
+  |> stored_text = download(record.url)
+
+  -> 200 { url: record.url, text: stored_text }
+}

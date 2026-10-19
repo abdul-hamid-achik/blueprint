@@ -270,6 +270,8 @@ func emitStep(b *strings.Builder, s *ast.StepStmt, ctx *bodyCtx, indent string) 
 		emitEmit(b, fn, ctx, indent)
 	case "sum":
 		emitSum(b, s.Binding, fn, ctx, indent)
+	case "upload", "download":
+		emitStorage(b, s.Binding, fn, ctx, indent)
 	default:
 		if ctx.userFns[fn.Name] {
 			emitUserFnCall(b, s.Binding, fn, ctx, indent)
@@ -277,6 +279,31 @@ func emitStep(b *strings.Builder, s *ast.StepStmt, ctx *bodyCtx, indent string) 
 		}
 		fmt.Fprintf(b, "%s# TODO(python): unsupported step %q\n", indent, fn.Name)
 	}
+}
+
+// emitStorage translates `|> stored = upload(body, bucket)` and
+// `|> body = download(url)` into calls on src/lib/storage.py. The storage
+// functions block on the network, which is why handlers that use them are
+// emitted as sync `def` (FastAPI runs them in its threadpool).
+func emitStorage(b *strings.Builder, binding string, fn *ast.FnCall, ctx *bodyCtx, indent string) {
+	args := make([]string, len(fn.Args))
+	for i, a := range fn.Args {
+		args[i] = exprToPyWithCtx(a, ctx)
+	}
+	v := bindingOrPlaceholder(binding, "_result")
+	fmt.Fprintf(b, "%s%s = storage.%s(%s)\n", indent, v, fn.Name, strings.Join(args, ", "))
+}
+
+// endpointUsesStorage reports whether an endpoint calls upload or download
+// anywhere in its statements.
+func endpointUsesStorage(ep *ast.Endpoint) bool {
+	found := false
+	walkEndpointExprs(ep, func(e ast.Expr) {
+		if fc, ok := e.(*ast.FnCall); ok && (fc.Name == "upload" || fc.Name == "download") {
+			found = true
+		}
+	})
+	return found
 }
 
 // emitSum translates `|> total = sum(<coll>.<field> ...arith...)` into a
