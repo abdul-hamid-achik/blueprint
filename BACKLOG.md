@@ -409,12 +409,19 @@ Prep work (must precede the Python generator):
   - [x] Phase 5b: `storage s3` → boto3 (`upload`/`download`, same `s3://` URL
     as Node) and `schedule` on APScheduler 3.x, in-process (one run per tick
     per process). _(shipped 2026-10-19)_
-  - [ ] Phase 5b (remaining): `worker` (needs a design decision: BullMQ queue
-    semantics vs an in-process executor, and a cross-target producer
-    contract); `auth webhook_sig` on WS (Node hashes the empty handshake
-    body, so it is one fixed value, not a per-message signature; decide the
-    contract first); the rest of the `pipe` body surface; and
+  - [x] Phase 5b: `worker` + `enqueue` + `schedule` on the official BullMQ
+    Python client (3.4.x), interoperable with Node (moved to BullMQ v6 job
+    schedulers). Verified both directions on one Redis (Node producer →
+    Python worker, Python producer → Node worker), one tick per minute across a
+    Node and a Python instance, and a Python worker after 150 s idle.
+    _(2026-10-19)_
+  - [x] `auth webhook_sig` on GET/STREAM/WS: checker error C056 on both
+    targets (the lint rule from 0.21.0 is removed). _(2026-10-19)_
+  - [ ] Phase 5b (remaining): the rest of the `pipe` body surface, and
     `payload.X` → `payload["X"]` for fn returns typed `json`.
+  - [ ] Worker cooperative cancellation: BullMQ v6 (Node) and 3.x (Python)
+    both pass an AbortSignal to processors; the generated timeout still only
+    rejects the wait.
   - [x] `timestamp` columns are `timestamptz` on both targets; Python
     `default(now)` is aware UTC. Verified on a Postgres with session TimeZone
     America/Mexico_City (before: 0 rows expired; after: 1). _(2026-10-19)_
