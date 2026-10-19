@@ -51,6 +51,8 @@ out/
     generated/<resource>.property.test.ts (when --gen-property-tests)
 ```
 
+`package.json` pins `vitest ^5.0.5` (0.16.0 and later; `^4.1.10` broke `npm install` under npm 10.9).
+
 `--gen-property-tests` is Node-only and implies `--gen-tests`. It adds
 fast-check properties with stable method/path seeds and 32 valid-request runs,
 resetting PGlite for each run when a database is active. It returns no files if
@@ -82,6 +84,7 @@ out/
     models/
       schema.py             SQLAlchemy Mapped[...] = mapped_column(...) classes
       pydantic.py           Pydantic models (from_attributes=True)
+    lib/formats.py          (when format(...) is used; stdlib-only validators)
     routes/
       <resource>.py         APIRouter; sync handlers when touching DB, async otherwise
     middleware/

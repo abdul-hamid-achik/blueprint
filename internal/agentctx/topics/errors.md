@@ -1,6 +1,6 @@
 # Errors and Diagnostics
 
-Every error from `bp check`, `bp build`, `bp lint`, and `bp fmt --check` renders through `internal/diag`. The shape is consistent:
+`bp check`, `bp build`, `bp lint`, and `bp fmt --check` print diagnostics in one shape:
 
 ```
 error[C004]: examples/todo-api.bp:14:1
@@ -12,42 +12,37 @@ error[C004]: examples/todo-api.bp:14:1
    Hint: rename one of them, or remove the duplicate definition.
 ```
 
-- Header: `error[<code>]: file:line:col`
-- Source line + caret pointing at the bad token
-- Message
-- Hint with an actionable suggestion
+- Header: `error[<code>]: file:line:col`, then the source line with a caret.
+- Message, then a `Hint:` with the fix.
+- `bp lint` prints `file:line:col [warning] rule: message` with a hint. Lint findings do not change `bp check` results.
 
-Color is auto-detected (TTY → color; pipe → plain). `NO_COLOR=1` forces plain.
+Color is automatic for a TTY. `NO_COLOR=1` or `--no-color` forces plain output.
 
-## Code namespaces
+## Code ranges
 
-| Prefix | Source pass | Examples |
+| Prefix | Pass | Notes |
 |---|---|---|
-| `L###` | Lexer | `L001` `'|'` not part of `'|>'` (use `'|>'`?) |
-| `P###` | Parser | `P001` file does not start with a `blueprint` block |
-| `C###` | Checker (semantic) | `C001`–`C052` — duplicate names, unknown types, unknown refs, type mismatches, locale/translation/save rules, etc. |
-| `R###` | Resolver / typed IR | reserved |
-| `G###` | Codegen | reserved (codegen panics are bugs, not user diagnostics) |
+| `C001`-`C052` | Checker | Every checker error has a code. C048 is an enum or name-case rule. C052 is a constraint value that does not fit its type. C035 is an unbound identifier, including `close` outside a WS handler. C005 is a duplicate route. C011 is a step after an output. |
+| `L###` | Lexer | Some tokens. |
+| `P###` | Parser | For example P001: the file does not start with a `blueprint` block. Some parser errors have no code yet and render without a bracket. |
+| `R###`, `G###` | Resolver, codegen | Reserved. A codegen failure prints as a codegen error, with exit 4. |
 
-`C###` is by far the largest pool. Run `bp explain <code>` to read the full docs for any code:
+## Looking up a code
 
 ```bash
-bp explain C001
-bp explain L001
-bp explain P001
+bp explain C052
+bp explain C005
 ```
 
-`bp explain` reads from `internal/diag/error-codes.md` (embedded at build time). The mirrored `docs/error-codes.md` is the same content for the VitePress docs site; a CI test (`TestErrorCodesDocInSync`) keeps the two from drifting.
+`bp explain` prints the entry from the embedded catalog. For an unknown code it exits 1. The catalog lives in `internal/diag/error-codes.md` and mirrors `docs/error-codes.md`.
 
-## Why some errors don't have a code yet
+## Workflow
 
-Every checker error carries a code: the checker has no uncoded error path, and a test rejects one. Lexer and parser errors are still being migrated, and an uncoded error renders without the `[Cxxx]` bracket. Adding a checker code is a small change: one constant, `addErrorCode` at the site, and a catalog section whose first `bp` example really produces it.
-
-## LSP rendering
-
-The Blueprint LSP server (`bp lsp`) emits each diagnostic as an LSP `Diagnostic` with `code` set to the structured code (when present), `source: "blueprint"`, and a `Range` covering the bad token. Editors will surface squiggles and (for clients that respect `codeDescription`) link the code to the error-codes docs page.
+1. Open the file at the reported line and column before changing anything.
+2. Run `bp explain <code>` if the hint is not enough.
+3. Fix the `.bp` source and re-run `bp check`. Never edit generated output to silence an error.
 
 ## See also
 
-- `bp context cli` — running `bp check` / `bp lint`
-- `bp context language` — what `.bp` constructs the checker validates
+- `bp context workflow` — where diagnostics fit in the loop
+- `bp context language` — the constructs and constraint rules the checker enforces
