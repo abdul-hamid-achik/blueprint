@@ -2,6 +2,7 @@ package js
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -438,6 +439,11 @@ func exprToJSWithCtx(e ast.Expr, ctx *emitCtx) string {
 		}
 		return callStr
 	case *ast.FieldAccess:
+		// claims.<field> on an auth jwt endpoint: verbatim keys (see claimsFieldAccess).
+		if ctx != nil && ctx.jwtClaims && isClaimsAccess(v) {
+			_, direct := v.Base.(*ast.Ident)
+			return claimsFieldAccess(exprToJSWithCtx(v.Base, ctx), v.Field, direct)
+		}
 		// N.days.ago -> new Date(Date.now() - N * 86400000)
 		if v.Field == "ago" {
 			if inner, ok := v.Base.(*ast.FieldAccess); ok && isDurationField(inner.Field) {
@@ -991,6 +997,15 @@ func extractInjectedModelMap(stmts []ast.ArrowStmt) map[string]string {
 func (g *Generator) honoVariablesType(metas []*ast.EndpointMeta) (envType string, needsSchema bool) {
 	allCtxVars := make(map[string]bool)
 	ctxVarModel := make(map[string]string)
+	// claims is set by requireAuth on auth jwt endpoints (see endpointJwtClaims);
+	// it is typed as the JWT payload, whatever a middleware might also inject.
+	hasClaims := false
+	for _, meta := range metas {
+		if meta.Kind == "auth" && endpointJwtClaims([]*ast.EndpointMeta{meta}) {
+			hasClaims = true
+			allCtxVars["claims"] = true
+		}
+	}
 	for _, meta := range metas {
 		if meta.Kind != "use" || meta.Use == nil {
 			continue
@@ -1025,7 +1040,9 @@ func (g *Generator) honoVariablesType(metas []*ast.EndpointMeta) (envType string
 	var fields []string
 	for _, k := range sortedKeys2(allCtxVars) {
 		typeStr := "any"
-		if model, ok := ctxVarModel[k]; ok {
+		if k == "claims" && hasClaims {
+			typeStr = "Record<string, any>"
+		} else if model, ok := ctxVarModel[k]; ok {
 			rowT := "typeof schema." + toCamelCase(model) + ".$inferSelect"
 			typeStr = fmt.Sprintf("{ [K in keyof %s]: NonNullable<%s[K]> }", rowT, rowT)
 			needsSchema = true
@@ -1033,6 +1050,43 @@ func (g *Generator) honoVariablesType(metas []*ast.EndpointMeta) (envType string
 		fields = append(fields, k+": "+typeStr)
 	}
 	return "{ Variables: { " + strings.Join(fields, "; ") + " } }", needsSchema
+}
+
+// claimsFieldAccess renders `claims.<field>` for an auth jwt endpoint. Claim keys
+// are emitted verbatim: the JS expression emitter camelCases field names for
+// model columns, which would rename a claim such as user_id. Keys that are not
+// JavaScript identifiers use bracket notation. Nested access uses optional
+// chaining, so a missing object claim yields undefined rather than throwing.
+func claimsFieldAccess(base string, field string, direct bool) string {
+	if jsIdentifierPattern.MatchString(field) {
+		if direct {
+			return base + "." + field
+		}
+		return base + "?." + field
+	}
+	key, _ := json.Marshal(field)
+	if direct {
+		return base + "[" + string(key) + "]"
+	}
+	return base + "?.[" + string(key) + "]"
+}
+
+// jsIdentifierPattern matches property names that can follow a dot.
+var jsIdentifierPattern = regexp.MustCompile("^[A-Za-z_$][A-Za-z0-9_$]*$")
+
+// isClaimsAccess reports whether expr is a field chain rooted at the claims
+// identifier, such as claims.sub or claims.org.id.
+func isClaimsAccess(expr ast.Expr) bool {
+	for {
+		switch v := expr.(type) {
+		case *ast.FieldAccess:
+			expr = v.Base
+		case *ast.Ident:
+			return v.Name == "claims"
+		default:
+			return false
+		}
+	}
 }
 
 // findAutoFields returns the names of fields with the "auto" constraint for a model.

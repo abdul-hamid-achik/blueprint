@@ -622,6 +622,10 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 			}
 		}
 
+		// claims: the verified JWT payload requireAuth stored on the context.
+		if endpointJwtClaims(ep.Meta) {
+			b.WriteString("  const claims = c.get('claims');\n")
+		}
 		b.WriteString("  try {\n")
 
 		// Build context vars from middleware inject statements
@@ -668,6 +672,7 @@ func (g *Generator) genRoute(resource string, endpoints []*ast.Endpoint, hasDB b
 			kind:        "endpoint",
 			method:      ep.Method,
 			path:        ep.Path,
+			jwtClaims:   endpointJwtClaims(ep.Meta),
 			ctxVars:     ctxVars,
 			boundVars:   boundVars,
 			varModels:   varModels,
@@ -905,6 +910,10 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 			}
 		}
 		b.WriteString(", async (c) => {\n")
+		// claims: the verified JWT payload requireAuth stored on the context.
+		if endpointJwtClaims(ep.Meta) {
+			b.WriteString("  const claims = c.get('claims');\n")
+		}
 
 		// Validate declared path inputs first (400 before the stream starts,
 		// with the same body zValidator returns for REST inputs), then extract
@@ -996,6 +1005,7 @@ func (g *Generator) genStreamRoute(resource, fileKey string, endpoints []*ast.St
 
 		ctx := emitCtx{
 			kind:        "function",
+			jwtClaims:   endpointJwtClaims(ep.Meta),
 			ctxVars:     ctxVars,
 			boundVars:   boundVars,
 			varModels:   varModels,
@@ -1367,7 +1377,13 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		// connection.id: a fresh id per socket, shared by onOpen, onMessage and
 		// onClose because this factory runs once per upgrade request.
 		b.WriteString("  const _connectionId = randomUUID();\n")
-		b.WriteString("  const connection = { id: _connectionId };\n\n")
+		b.WriteString("  const connection = { id: _connectionId };\n")
+		// claims: the verified JWT payload requireAuth stored on the context.
+		// Declared here so onOpen, onMessage, and onClose all see it.
+		if endpointJwtClaims(ep.Meta) {
+			b.WriteString("  const claims = c.get('claims');\n")
+		}
+		b.WriteString("\n")
 
 		// Hoist variables from onConnect that are used across handlers.
 		// Variables assigned in onConnect (step bindings + inject) need to be
@@ -1423,6 +1439,7 @@ func (g *Generator) genWsRoute(resource, fileKey string, endpoints []*ast.WsEndp
 		// Build base context with WS kind, path params, and hoisted vars marked as declared
 		baseCtx := emitCtx{
 			kind:        "ws",
+			jwtClaims:   endpointJwtClaims(ep.Meta),
 			ctxVars:     ctxVars,
 			boundVars:   boundVars,
 			varModels:   varModels,

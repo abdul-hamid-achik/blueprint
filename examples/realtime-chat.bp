@@ -26,14 +26,6 @@ model message {
   created timestamp default(now)
 }
 
-fn verify_jwt {
-  <- token  string
-
-  -> json
-
-  impl node { module: "./internal/auth", func: "verifyJwt" }
-}
-
 @ "Create a new chat room"
 POST /api/rooms {
   <- name         string  required  min(1)  max(50)
@@ -91,12 +83,7 @@ WS /ws/rooms/:id {
   on_connect {
     |> room = fetch room(id)
     |> guard room -> 404 "Room not found"
-    # auth jwt already verified the token. This decodes its claims from the
-    # Authorization header, so it works for clients that send the header, not
-    # for browser clients that pass ?token=.
-    |> payload = verify_jwt(header.Authorization)
-    |> guard payload -> 401 "Authentication required"
-    |> inject payload.username as sender
+    |> inject claims.username as sender
     |> join room(id)
     |> log "User {sender} joined room {room.name}" level(info)
     |> broadcast room(id) { type: "joined", sender: sender }

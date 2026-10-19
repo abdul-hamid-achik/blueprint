@@ -134,14 +134,14 @@ func TestRename_WebSocketHandlersReadConnectBindings(t *testing.T) {
 	src := string(data)
 	doc := parseTestDoc(t, src)
 	uri := "file:///realtime.bp"
-	p := posAt(t, src, "inject payload.username as sender", len("inject payload.username as "))
+	p := posAt(t, src, "inject claims.username as sender", len("inject claims.username as "))
 	edit, fail := computeRename(uri, doc, p.Line, p.Character, "user_name")
 	if fail != nil {
 		t.Fatalf("rename refused: %s", fail.Message)
 	}
 	out := applyRenameEdits(t, src, workspaceEdits(t, edit, uri))
 	for _, want := range []string{
-		"inject payload.username as user_name",
+		"inject claims.username as user_name",
 		`|> log "User {user_name} left room {room.name}" level(info)`,
 		"sender: user_name }",
 	} {

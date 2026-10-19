@@ -97,6 +97,41 @@ func pythonAuthFeature(meta *ast.EndpointMeta) string {
 	}
 }
 
+// endpointJwtClaims reports whether the endpoint's first enforced auth is jwt.
+// Such an endpoint receives its verified payload as the `claims` handler
+// parameter, and `claims` in its body is read with dict lookups (see claimsFieldPy).
+func endpointJwtClaims(meta []*ast.EndpointMeta) bool {
+	ea, ok := endpointEnforcedAuthMeta(meta)
+	return ok && ea.Strategy == "jwt"
+}
+
+// isClaimsAccess reports whether expr is a field chain rooted at claims.
+func isClaimsAccess(expr ast.Expr) bool {
+	for {
+		switch v := expr.(type) {
+		case *ast.FieldAccess:
+			expr = v.Base
+		case *ast.Ident:
+			return v.Name == "claims"
+		default:
+			return false
+		}
+	}
+}
+
+// claimsFieldPy renders a field chain rooted at claims as dict lookups, so keys
+// stay verbatim (claims.user_id -> claims.get("user_id")). Nested access stays
+// safe when an object claim is missing: claims.org.id renders as
+// (claims.get("org") or {}).get("id"). The checker guarantees the root is the
+// claims parameter of an auth jwt endpoint.
+func claimsFieldPy(v *ast.FieldAccess) string {
+	base := "claims"
+	if inner, ok := v.Base.(*ast.FieldAccess); ok {
+		base = "(" + claimsFieldPy(inner) + " or {})"
+	}
+	return base + ".get(" + pyStringLiteral(v.Field) + ")"
+}
+
 // requireAuthDependency renders the route dependency that verifies an enforced
 // auth declaration. It is imported under an alias so a user middleware named
 // require_auth cannot collide with it.
@@ -131,6 +166,7 @@ import json
 import math
 import re
 import time
+from typing import Any
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -185,28 +221,34 @@ def _numeric_claim(value: object) -> bool:
     return isinstance(value, float) and math.isfinite(value)
 
 
-def _verify_jwt(token: str, secret: bytes) -> bool:
+def _verify_jwt(token: str, secret: bytes) -> dict[str, Any] | None:
+    """Return the verified payload of an HS256 token, or None."""
     parts = token.split(".")
     if len(parts) != 3:
-        return False
+        return None
     header_part, payload_part, signature_part = parts
     try:
         header = _json_object(_b64url_decode(header_part))
         payload = _json_object(_b64url_decode(payload_part))
         signature = _b64url_decode(signature_part)
     except (ValueError, RecursionError):
-        return False
+        return None
     if header.get("alg") != "HS256":
-        return False
+        return None
     expected = hmac.new(secret, (header_part + "." + payload_part).encode("ascii"), hashlib.sha256).digest()
     if not _same_secret(signature, expected):
-        return False
+        return None
     now = math.floor(time.time())
     if "exp" in payload and (not _numeric_claim(payload["exp"]) or payload["exp"] <= now):
-        return False
+        return None
     if "nbf" in payload and (not _numeric_claim(payload["nbf"]) or payload["nbf"] > now):
-        return False
-    return True
+        return None
+    return payload
+
+
+def _jwt_claims(request: Request, secret: bytes) -> dict[str, Any] | None:
+    token = _bearer_token(request)
+    return _verify_jwt(token, secret) if token is not None else None
 
 
 def _bearer_token(request: Request) -> str | None:
@@ -236,9 +278,6 @@ def _verify(request: Request, strategy: str, secret: str) -> bool:
     if strategy == "bearer":
         token = _bearer_token(request)
         return token is not None and _same_secret(token.encode("utf-8"), expected)
-    if strategy == "jwt":
-        token = _bearer_token(request)
-        return token is not None and _verify_jwt(token, expected)
     if strategy == "api_key":
         key = request.headers.get("X-API-Key")
         return bool(key) and _same_secret(key.encode("utf-8"), expected)
@@ -261,15 +300,25 @@ def require_auth(strategy: str, secret_name: str, realm: str):
     """Return a FastAPI dependency that rejects requests failing the check.
 
     The secret is read from env on every request. An unset or empty secret
-    fails closed. Route dependencies run before body validation, so an invalid
-    body from an unauthenticated caller gets 401, not 422.
+    fails closed. For jwt the dependency returns the verified payload (the
+    endpoint claims value); every other strategy returns None. Dependencies run
+    before body validation, so an invalid body from an unauthenticated caller
+    gets 401, not 422.
     """
     challenge = _challenge(strategy, realm)
 
-    def dependency(request: Request) -> None:
+    def dependency(request: Request) -> dict[str, Any] | None:
         secret = getattr(env, secret_name, None)
-        if not secret or not _verify(request, strategy, secret):
+        if not secret:
             raise Unauthorized(challenge)
+        if strategy == "jwt":
+            claims = _jwt_claims(request, secret.encode("utf-8"))
+            if claims is None:
+                raise Unauthorized(challenge)
+            return claims
+        if not _verify(request, strategy, secret):
+            raise Unauthorized(challenge)
+        return None
 
     return dependency
 `

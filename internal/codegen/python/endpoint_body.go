@@ -60,10 +60,15 @@ type bodyCtx struct {
 	// f-string interpolation path rewrite `error.message` to `str(error)`
 	// only within this scope.
 	inRecover bool
+
+	// jwtClaims is set on an auth jwt endpoint, where `claims` is the handler's
+	// verified payload (see claimsFieldPy).
+	jwtClaims bool
 }
 
 func (g *Generator) newBodyCtx(ep *ast.Endpoint) *bodyCtx {
 	c := &bodyCtx{
+		jwtClaims:     endpointJwtClaims(ep.Meta),
 		cacheValue:    endpointCacheValue(ep),
 		path:          ep.Path,
 		inputs:        map[string]bool{},
@@ -1179,6 +1184,9 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 	case *ast.Ident:
 		return v.Name
 	case *ast.FieldAccess:
+		if ctx != nil && ctx.jwtClaims && isClaimsAccess(v) {
+			return claimsFieldPy(v)
+		}
 		// N.days.ago → datetime.now(timezone.utc) - timedelta(days=N)
 		// Handles the "ago" suffix on N.duration_unit patterns.
 		if v.Field == "ago" {

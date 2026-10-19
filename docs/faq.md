@@ -416,7 +416,8 @@ GET /api/items {
 
 The jwt form expects an HS256 token, signed with the secret. STREAM and WS also
 accept the token in `?token=`, because browsers cannot set headers there. The
-verified claims are not passed to the handler; use a `use` middleware for them.
+verified payload is available to the handler as `claims` (for example
+`claims.sub`); see Auth Strategies in the language reference.
 A bare `auth jwt` with no `using` is only metadata, and the `unenforced-auth`
 lint warns about it.
 

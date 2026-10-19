@@ -960,8 +960,28 @@ STREAM and WS also accept the credential in the query string, because browsers
 cannot set headers on `EventSource` or `WebSocket`: `?token=` for `bearer` and
 `jwt`, `?api_key=` for `api_key`. `basic` and REST endpoints accept headers only.
 
-Claims from a verified JWT are not exposed to the handler in this version. A
-`use` middleware is still the way to read claims, and it can verify them too.
+The verified token payload of an `auth jwt using(secret.NAME)` endpoint is
+available as `claims` in every handler of that endpoint: the REST body, the
+STREAM body and its `stream` block, and the WS top-level statements, `on_connect`,
+`on_message`, and `on_disconnect`. Read any field as `claims.<field>`, including
+nested fields such as `claims.org.id`. Claim names are used as written, so
+`claims.user_id` reads the `user_id` claim. Only `jwt` carries claims: `bearer`,
+`api_key`, and `basic` do not.
+
+```bp
+GET /api/me {
+  auth jwt using(secret.JWT_SECRET)
+  |> user = query user where(id == claims.sub) first
+  -> user
+}
+```
+
+`claims` is reserved on a jwt endpoint. A path parameter or `<- claims` input,
+a step binding `|> claims = ...`, an `inject ... as claims`, or a `use`
+middleware that injects `claims` is C055. Elsewhere `claims` is an ordinary
+name: unbound (C035) unless the endpoint binds it itself. On `--target python`,
+`claims` is the first handler parameter of a REST jwt endpoint, and `claims.<field>`
+renders as a dict lookup, `claims.get("<field>")`.
 
 The generated check lives in `src/lib/auth.ts`, which is emitted only when an
 endpoint enforces a strategy. Without `using(...)`, the strategy stays metadata
@@ -1152,12 +1172,10 @@ once at startup; an invalid or non-positive value falls back to the default.
 such as `auth jwt using(secret.JWT_SECRET)`; the client sends the token in the
 `Authorization` header or, since browsers cannot set WebSocket headers, in
 `?token=`. A bare `auth bearer` (no `using`) is metadata only, and the
-`unenforceable-ws-auth` lint warns about it. Claims are not passed to
-`on_connect`. A client that sends the `Authorization` header can have them
-decoded there from `header.Authorization`, as `examples/realtime-chat.bp` does,
-or in a `use` middleware. A browser client that sends `?token=` passes the
-`auth` check, but its claims cannot be read in `on_connect` in this version,
-because WS handlers cannot read the query string.
+`unenforceable-ws-auth` lint warns about it. With `auth jwt`, the verified payload
+is `claims` in `on_connect`, `on_message`, and `on_disconnect`, for browser clients
+that pass `?token=` too. A WS endpoint that needs the sender's identity reads
+`claims.sub` rather than decoding the header.
 
 ```bp
 WS /ws/rooms/:id {

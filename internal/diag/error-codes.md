@@ -26,7 +26,7 @@ Codes are namespaced by the pass that emits them:
 |--------|------|-------|
 | `L###` | Lexer | Token-level errors. `L001` documented below. |
 | `P###` | Parser | Syntax errors. `P001`-`P002` documented below; broader coverage in progress. |
-| `C###` | Checker | Semantic errors. `C001`–`C053` documented below. |
+| `C###` | Checker | Semantic errors. `C001`–`C055` documented below. |
 | `R###` | Resolver | Reserved. Resolver does not currently emit user-facing errors. |
 | `G###` | Codegen | Reserved. |
 
@@ -1360,6 +1360,38 @@ WS /ws/chat {
   on_message {
     |> whisper connection(message.to) { from: connection.id, body: message.body }
   }
+}
+```
+
+### C055 — reserved claims name on a jwt endpoint
+
+On an endpoint with `auth jwt using(secret.NAME)`, `claims` holds the verified
+token payload, and the name is reserved. A path parameter named `:claims`, a
+`<- claims` input, a step binding `|> claims = ...`, an `inject ... as claims`,
+or a `use` middleware that injects `claims` is C055. Rename it. On endpoints
+without `auth jwt`, `claims` is an ordinary name and is not reserved.
+
+```bp
+blueprint "api" {
+  version "1.0.0"
+  runtime node
+}
+
+secret JWT_SECRET required
+
+GET /api/me {
+  auth jwt using(secret.JWT_SECRET)
+  <- claims string required   # C055: claims is reserved on auth jwt endpoints
+  -> { sub: claims.sub }
+}
+```
+
+Read the payload as `claims.<field>` and leave the input out:
+
+```bp
+GET /api/me {
+  auth jwt using(secret.JWT_SECRET)
+  -> { sub: claims.sub }
 }
 ```
 

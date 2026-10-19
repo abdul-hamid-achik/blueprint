@@ -215,6 +215,10 @@ const (
 	// CodeInvalidWsTarget = a WS connection is used with a field other than id,
 	// or whisper names a target other than connection(id) or lacks its data.
 	CodeInvalidWsTarget = "C054"
+	// CodeReservedClaims = a path parameter, input, step binding, injected
+	// name, or middleware injection named claims on an auth jwt endpoint, which
+	// reserves claims for the verified token payload.
+	CodeReservedClaims = "C055"
 )
 
 // enforcedAuthStrategies are the auth strategies that accept using(secret.NAME)
@@ -719,7 +723,8 @@ func (c *Checker) checkEndpoint(n *ast.Endpoint) {
 		}
 		c.checkEndpointAuth(m)
 	}
-	c.checkArrowStmtExprsInScope(n.Stmts, c.newEndpointScope(n.Meta))
+	c.checkReservedClaims(n, n.Path, n.Meta, n.Stmts, nil)
+	c.checkArrowStmtExprsInScope(n.Stmts, c.newEndpointScope(n, n.Meta))
 }
 
 // --- StreamEndpoint ---
@@ -738,7 +743,8 @@ func (c *Checker) checkStreamEndpoint(n *ast.StreamEndpoint) {
 		}
 		c.checkEndpointAuth(m)
 	}
-	scope := c.newRealtimeEndpointScope(n.Path, n.Meta)
+	c.checkReservedClaims(n, n.Path, n.Meta, n.Stmts, n.Handlers)
+	scope := c.newRealtimeEndpointScope(n, n.Path, n.Meta)
 	c.checkArrowStmtExprsInScope(n.Stmts, scope)
 	for _, h := range n.Handlers {
 		c.checkExpr(h.Condition)
@@ -763,7 +769,13 @@ func (c *Checker) checkWsEndpoint(n *ast.WsEndpoint) {
 		}
 		c.checkEndpointAuth(m)
 	}
-	scope := c.newRealtimeEndpointScope(n.Path, n.Meta)
+	var wsStmts []ast.ArrowStmt
+	wsStmts = append(wsStmts, n.Stmts...)
+	wsStmts = append(wsStmts, n.OnConnect...)
+	wsStmts = append(wsStmts, n.OnMessage...)
+	wsStmts = append(wsStmts, n.OnDisconnect...)
+	c.checkReservedClaims(n, n.Path, n.Meta, wsStmts, nil)
+	scope := c.newRealtimeEndpointScope(n, n.Path, n.Meta)
 	// `|> close` closes this connection; it means nothing outside a WS handler.
 	bindArrowName(scope, "close", SymVariable, n.Loc)
 	// `connection` names this socket in WS handlers; connection.id is its id and
@@ -1173,7 +1185,7 @@ func (c *Checker) newArrowScope(names ...string) *Scope {
 	return scope
 }
 
-func (c *Checker) newEndpointScope(meta []*ast.EndpointMeta) *Scope {
+func (c *Checker) newEndpointScope(owner ast.Node, meta []*ast.EndpointMeta) *Scope {
 	scope := c.newArrowScope("header")
 	for _, item := range meta {
 		if item.Kind == "auth" {
@@ -1188,14 +1200,20 @@ func (c *Checker) newEndpointScope(meta []*ast.EndpointMeta) *Scope {
 		}
 		c.bindMiddlewareInjections(scope, item.Use.Name)
 	}
+	// claims is the verified JWT payload of an auth jwt endpoint. Every handler
+	// scope of the endpoint inherits it; elsewhere it stays unbound (C035).
+	if jwtClaimsEndpoint(meta) {
+		bindArrowName(scope, "claims", SymVariable, owner.Location())
+		scope.symbols["claims"].Node = owner
+	}
 	return scope
 }
 
 // STREAM and WS generators extract path parameters before their handlers.
 // REST generators only declare path parameters that also have an explicit
 // `<- name type` input, which the statement walk binds in source order.
-func (c *Checker) newRealtimeEndpointScope(path string, meta []*ast.EndpointMeta) *Scope {
-	scope := c.newEndpointScope(meta)
+func (c *Checker) newRealtimeEndpointScope(owner ast.Node, path string, meta []*ast.EndpointMeta) *Scope {
+	scope := c.newEndpointScope(owner, meta)
 	for _, segment := range strings.Split(path, "/") {
 		if strings.HasPrefix(segment, ":") && len(segment) > 1 {
 			bindArrowName(scope, strings.TrimPrefix(segment, ":"), SymInput, lexer.Loc{})
@@ -1234,6 +1252,10 @@ func (c *Checker) declareArrowInput(scope *Scope, input *ast.InputStmt) {
 		return
 	}
 	if existing, ok := scope.symbols[input.Name]; ok {
+		if isJwtClaimsBinding(existing) {
+			// The reserved claims name is reported by checkReservedClaims (C055).
+			return
+		}
 		if existing.Kind == SymInput && existing.Loc.Line == 0 {
 			existing.Loc = input.Loc
 			existing.Node = c.modelNodeForType(input.Type)
@@ -1716,6 +1738,13 @@ func (c *Checker) checkLocalIdent(ident *ast.Ident, scope *Scope) {
 		c.addErrorCode(ident.Loc, CodeUnboundIdentifier,
 			`"connection" is only available in WS handlers`,
 			"Use connection.id in on_connect, on_message, or on_disconnect of a WS endpoint",
+		)
+		return
+	}
+	if ident.Name == "claims" {
+		c.addErrorCode(ident.Loc, CodeUnboundIdentifier,
+			`"claims" is only available on endpoints with auth jwt using(secret.NAME)`,
+			"claims is available only on endpoints with auth jwt using(secret.NAME)",
 		)
 		return
 	}

@@ -84,6 +84,7 @@ type emitCtx struct {
 	fkAliases         map[string]string   // FK relation aliases: "varName.refField" -> "_refField" (pre-fetched sub-queries)
 	generator         *Generator          // back-reference for FK model lookups
 	preserveBlockKeys bool                // when true, BlockExpr keys are not camelCased (for JSON response output)
+	jwtClaims         bool                // auth jwt endpoint: `claims` is the verified token payload (see endpointJwtClaims)
 }
 
 // Files implements codegen.Generator: it returns the generated TypeScript/Node
@@ -1679,6 +1680,16 @@ func endpointEnforcedAuthMeta(meta []*ast.EndpointMeta) (enforcedAuth, bool) {
 		}
 	}
 	return enforcedAuth{}, false
+}
+
+// endpointJwtClaims reports whether the endpoint declares an enforced
+// `auth jwt using(secret.NAME)`. Such an endpoint exposes its verified payload as
+// the `claims` identifier: requireAuth stores it with c.set('claims', ...), and
+// the handler declares `const claims = c.get('claims')`. Mirrors the checker's
+// jwtClaimsEndpoint, which binds claims for the same declaration.
+func endpointJwtClaims(meta []*ast.EndpointMeta) bool {
+	ea, ok := endpointEnforcedAuthMeta(meta)
+	return ok && ea.Strategy == "jwt"
 }
 
 // requireAuthMiddleware renders the Hono middleware expression that verifies an

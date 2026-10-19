@@ -56,6 +56,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsCache := false
 	needsRateLimit := false
 	needsAuth := false
+	needsJwtClaims := false
 	needsRequest := false
 	namedImports := newImportSet()
 	userFnCalls := map[string]bool{}
@@ -75,8 +76,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 			needsRateLimit = true
 			needsRequest = true
 		}
-		if _, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
+		if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
 			needsAuth = true
+			needsJwtClaims = needsJwtClaims || ea.Strategy == "jwt"
 		}
 		if endpointHasPaginatedQuery(ep) {
 			needsPaginate = true
@@ -222,7 +224,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	if needsUUID {
 		b.WriteString("from uuid import UUID\n")
 	}
-	if needsAnnotated {
+	if needsJwtClaims {
+		b.WriteString("from typing import Annotated, Any\n")
+	} else if needsAnnotated {
 		b.WriteString("from typing import Annotated\n")
 	}
 	if needsLiteral {
@@ -393,7 +397,9 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 	}
 
 	var inputs []*ast.InputStmt
-	hasSteps := endpointHasComplexBody(ep)
+	// An auth jwt endpoint always takes the body emitter, which renders
+	// `claims` reads with dict lookups; the fast path would not.
+	hasSteps := endpointHasComplexBody(ep) || endpointJwtClaims(ep.Meta)
 	for _, s := range ep.Stmts {
 		if v, ok := s.(*ast.InputStmt); ok {
 			inputs = append(inputs, v)
@@ -401,6 +407,18 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 	}
 
 	params := g.signatureParams(ep.Method, ep.Path, inputs)
+	// An auth jwt endpoint receives the verified payload as its first parameter.
+	// It is Annotated rather than `= Depends(...)` so it needs no default: path
+	// parameters have none, and Python rejects a default before them.
+	ea, hasEnforced := endpointEnforcedAuthMeta(ep.Meta)
+	if hasEnforced && ea.Strategy == "jwt" {
+		claimsParam := "claims: Annotated[dict[str, Any], " + requireAuthDependency(ea, g.blueprintNameForAuth()) + "]"
+		if params != "" {
+			params = claimsParam + ", " + params
+		} else {
+			params = claimsParam
+		}
+	}
 	for _, header := range endpointHeaderFields(ep) {
 		if params != "" {
 			params += ", "
@@ -451,10 +469,13 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 		}
 		decoArgs = append(decoArgs, fmt.Sprintf("tags=[%s]", strings.Join(quoted, ", ")))
 	}
-	if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
-		decoArgs = append(decoArgs,
-			fmt.Sprintf("dependencies=[%s]", requireAuthDependency(ea, g.blueprintNameForAuth())),
-			`responses={401: {"description": "Unauthorized"}}`)
+	if hasEnforced {
+		// jwt runs as the claims parameter; the other strategies stay route-level.
+		if ea.Strategy != "jwt" {
+			decoArgs = append(decoArgs,
+				fmt.Sprintf("dependencies=[%s]", requireAuthDependency(ea, g.blueprintNameForAuth())))
+		}
+		decoArgs = append(decoArgs, `responses={401: {"description": "Unauthorized"}}`)
 	}
 	suffix := ""
 	if len(decoArgs) > 0 {

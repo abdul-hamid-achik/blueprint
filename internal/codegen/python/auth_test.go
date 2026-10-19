@@ -41,7 +41,8 @@ func TestPython_AuthEmitsVerifierAndEnforcedRoutes(t *testing.T) {
 		`JSONResponse({"error": "Unauthorized"}, status_code=401, headers=headers)`,
 		`if header.get("alg") != "HS256":`,
 		`secret = getattr(env, secret_name, None)`,
-		`if not secret or not _verify(request, strategy, secret):`,
+		`if not secret:`,
+		`if not _verify(request, strategy, secret):`,
 	} {
 		if !strings.Contains(authPy, want) {
 			t.Errorf("src/lib/auth.py missing %q", want)
@@ -54,7 +55,8 @@ func TestPython_AuthEmitsVerifierAndEnforcedRoutes(t *testing.T) {
 	routes := readPy(t, outDir, "src/routes/guard.py")
 	for _, want := range []string{
 		`@router.get("/api/guard", dependencies=[Depends(_bp_require_auth("bearer", "API_KEY", "shop"))], responses={401: {"description": "Unauthorized"}})`,
-		`@router.post("/api/guard", tags=["auth"], dependencies=[Depends(_bp_require_auth("jwt", "SIGNING_KEY", "shop"))], responses={401: {"description": "Unauthorized"}})`,
+		`@router.post("/api/guard", tags=["auth"], responses={401: {"description": "Unauthorized"}})`,
+		`async def post_guard(claims: Annotated[dict[str, Any], Depends(_bp_require_auth("jwt", "SIGNING_KEY", "shop"))]):`,
 		"from src.lib.auth import require_auth as _bp_require_auth",
 	} {
 		if !strings.Contains(routes, want) {
