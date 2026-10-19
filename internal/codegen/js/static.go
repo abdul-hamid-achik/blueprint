@@ -587,15 +587,26 @@ import { env } from './env.js';
 
 const s3 = new S3Client({});
 
-export async function upload(file: Buffer | ReadableStream, bucket: string, key?: string): Promise<{ url: string; key: string }> {
+export async function upload(file: string | Uint8Array | Buffer | ReadableStream, bucket: string, key?: string): Promise<{ url: string; key: string }> {
   const fileKey = key ?? crypto.randomUUID();
   await s3.send(new PutObjectCommand({ Bucket: bucket, Key: fileKey, Body: file as any }));
   return { url: ` + "`s3://${bucket}/${fileKey}`" + `, key: fileKey };
 }
 
-export async function download(bucket: string, key: string): Promise<ReadableStream> {
-  const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-  return res.Body as any;
+export async function download(urlOrBucket: string, key?: string): Promise<Buffer> {
+  let bucket = urlOrBucket;
+  let objectKey = key;
+  if (!objectKey && urlOrBucket.startsWith('s3://')) {
+    const parsed = new URL(urlOrBucket);
+    bucket = parsed.hostname;
+    objectKey = parsed.pathname.replace(/^\//, '');
+  }
+  if (!objectKey) {
+    throw new Error('download requires a key or s3:// URL');
+  }
+  const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: objectKey }));
+  if (!res.Body) throw new Error('download found no body at s3://' + bucket + '/' + objectKey);
+  return Buffer.from(await res.Body.transformToByteArray());
 }
 
 export async function deleteS3Object(urlOrBucket: string, key?: string): Promise<void> {

@@ -385,12 +385,13 @@ func (r *translationKeyResolver) VisitTranslationKeyType(node *ast.TranslationKe
 // awaited in generated code.
 //
 // Composition:
-//   - JS-specific built-ins (`upload`, `deleteS3Object`) — owned by this target.
+//   - JS-specific built-ins (`upload`, `download`, `deleteS3Object`) — owned by this target.
 //   - declared fn + pipe names — resolved by internal/resolve.AsyncFunctions
 //     (raw, snake_case) and camelCased here for the JS naming convention.
 func (g *Generator) buildAsyncFns() map[string]bool {
 	fns := map[string]bool{
 		"upload":         true,
+		"download":       true,
 		"deleteS3Object": true,
 	}
 	for name := range resolve.AsyncFunctions(g.file) {
