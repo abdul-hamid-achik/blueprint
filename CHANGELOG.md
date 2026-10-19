@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `bp lsp` syncs documents incrementally (`textDocumentSync` change 2):
+  ranged edits use UTF-16 positions, handle CRLF, clamp out-of-range
+  positions, and apply in order within one notification.
+- Find-references and rename in `bp lsp` cover the include-connected files:
+  the document's `include`s plus workspace files that include it, with unsaved
+  editor text preferred and include cycles guarded. A rename that would break
+  the merged program, or that hits a parse error in any of those files, is
+  refused. Diagnostics are still computed per document.
+
+### Changed
+
+- STREAM and WS fan-out on the Node target apply backpressure. Each STREAM
+  client gets a serialized write queue, and `emit` no longer waits on SSE
+  writes. A client that stays more than `BP_SSE_MAX_PENDING` events (default
+  256) behind for 5 seconds, or reaches 16 times that, is dropped with a
+  `slow consumer` warning. A WS socket whose unsent buffer exceeds
+  `BP_WS_MAX_BUFFERED_BYTES` (default 1 MiB) is removed from its rooms and
+  closed with code 1013. Both limits are read from the environment at startup.
+
 ## [0.18.0] - 2026-10-18
 
 ### Added
