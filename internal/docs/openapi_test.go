@@ -289,6 +289,10 @@ GET /api/tags/:slug {
   -> 200 "ok"
 }
 
+GET /api/pages/:page {
+  -> 200 "ok"
+}
+
 STREAM /api/items/:id/live {
   <- id uuid required
 }
@@ -302,7 +306,8 @@ WS /ws/lobby {
 `)
 	for path, want := range map[string]bool{
 		"/api/items/{id}":      true,
-		"/api/tags/{slug}":     false,
+		"/api/tags/{slug}":     true,
+		"/api/pages/{page}":    false,
 		"/api/items/{id}/live": true,
 		"/ws/items/{id}":       true,
 		"/ws/lobby":            false,
@@ -330,6 +335,28 @@ POST /api/items {
 	required, _ := schema["required"].([]any)
 	if len(required) != 2 || required[0] != "a" || required[1] != "d" {
 		t.Errorf("required = %v, want [a d]", required)
+	}
+}
+
+func TestGenerateOpenAPI_StringFormats(t *testing.T) {
+	spec := parseAndGenOpenAPI(t, openAPIHeader+`
+POST /api/checks {
+  <- ref   string  required  format(uuid)
+  <- addr  string  required  format(ip)
+  <- day   string  required  format(date)
+  -> 200 "ok"
+}
+`)
+	body := openAPIOperation(t, spec, "/api/checks", "post")["requestBody"].(map[string]any)
+	props := body["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)["properties"].(map[string]any)
+	if got := props["ref"].(map[string]any)["format"]; got != "uuid" {
+		t.Errorf("ref format = %v, want uuid", got)
+	}
+	if got := props["day"].(map[string]any)["format"]; got != "date" {
+		t.Errorf("day format = %v, want date", got)
+	}
+	if got, _ := props["addr"].(map[string]any)["anyOf"].([]any); len(got) != 2 {
+		t.Errorf("addr = %v, want anyOf ipv4/ipv6", props["addr"])
 	}
 }
 

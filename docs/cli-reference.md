@@ -573,9 +573,8 @@ bp fmt api services --check
 - Blank lines kept where the source had them (at most one in a row); none added
 - Output is re-parsed and compared with the source (syntax tree, `#` comment
   count, `@` intent count) before it is used; if it differs, `bp fmt` leaves
-  the file unchanged and exits `3`. An `@` intent before a declaration that
-  cannot carry one (such as `secret` or `env`) is not kept, so such a file is
-  refused
+  the file unchanged and exits `3`. Every top-level declaration kind keeps its
+  `@` intent, so a well-formed file is formatted rather than refused
 
 ---
 

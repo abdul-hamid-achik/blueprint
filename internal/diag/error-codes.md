@@ -26,7 +26,7 @@ Codes are namespaced by the pass that emits them:
 |--------|------|-------|
 | `L###` | Lexer | Token-level errors. `L001` documented below. |
 | `P###` | Parser | Syntax errors. `P001`-`P002` documented below; broader coverage in progress. |
-| `C###` | Checker | Semantic errors. `C001`–`C051` documented below. |
+| `C###` | Checker | Semantic errors. `C001`–`C052` documented below. |
 | `R###` | Resolver | Reserved. Resolver does not currently emit user-facing errors. |
 | `G###` | Codegen | Reserved. |
 
@@ -1270,6 +1270,41 @@ GET /api/health {
 ```
 
 Use one of the supported levels, for example `level(warn)`.
+
+### C052 — constraint value does not fit the type
+
+A `default(...)`, `min(...)`, `max(...)`, or `format(...)` constraint on an
+input, model field, `type` field, or alias names a value the declared type
+cannot hold. Codegen would emit a Zod or TypeScript default that the field
+type rejects, so the checker stops it before generation.
+
+```bp
+blueprint "todo-api" {
+  version "1.0.0"
+  runtime node
+}
+
+POST /api/tasks {
+  <- age int default("abc")   # C052: default("abc") does not fit int
+  -> 200 { ok: true }
+}
+```
+
+Use a value of the field's type:
+
+- `int`, `float`, `money`: a numeric literal (`default(-1)` is allowed).
+- `bool`: `true` or `false`.
+- `string`, `text`: a quoted string or a bare word such as `default(center)`.
+- `uuid`: a quoted UUID.
+- `timestamp`: `now` or an ISO-8601 string.
+- inline or named `enum`: one of its variants, bare or quoted.
+
+`min` and `max` take numbers on `int`, `float`, and `money`, where sizes such
+as `100mb` and durations such as `5s` are also accepted. On `string`, `uuid`,
+and list fields they bound the length and take a whole, non-negative number.
+They do not apply to `bool`, `enum`, or `timestamp`. When both are literals,
+`min` must not exceed `max`. `format` applies only to `string` fields and
+accepts `email`, `url`, `uuid`, `ip`, or `date`.
 
 ---
 

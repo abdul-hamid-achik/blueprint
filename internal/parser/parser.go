@@ -228,13 +228,13 @@ func (p *Parser) parseTopLevelBlock() (block ast.TopLevel) {
 
 	switch p.peek().Kind {
 	case lexer.TokenSecret:
-		return p.parseSecret()
+		return p.parseSecret(intent)
 	case lexer.TokenEnv:
-		return p.parseEnv()
+		return p.parseEnv(intent)
 	case lexer.TokenLocale:
-		return p.parseLocale()
+		return p.parseLocale(intent)
 	case lexer.TokenTranslation:
-		return p.parseTranslation()
+		return p.parseTranslation(intent)
 	case lexer.TokenState:
 		return p.parseStateMachine(intent)
 	case lexer.TokenAnalytics:
@@ -242,11 +242,11 @@ func (p *Parser) parseTopLevelBlock() (block ast.TopLevel) {
 	case lexer.TokenSave:
 		return p.parseSaveSchema(intent)
 	case lexer.TokenInclude:
-		return p.parseInclude()
+		return p.parseInclude(intent)
 	case lexer.TokenType:
-		return p.parseTypeDecl()
+		return p.parseTypeDecl(intent)
 	case lexer.TokenAlias:
-		return p.parseAlias()
+		return p.parseAlias(intent)
 	case lexer.TokenEnum:
 		return p.parseEnum(intent)
 	case lexer.TokenModel:
@@ -271,7 +271,7 @@ func (p *Parser) parseTopLevelBlock() (block ast.TopLevel) {
 	case lexer.TokenSchedule:
 		return p.parseSchedule(intent)
 	case lexer.TokenExternal:
-		return p.parseExternal()
+		return p.parseExternal(intent)
 	case lexer.TokenSubscribe:
 		return p.parseSubscribe(intent)
 	case lexer.TokenTest:
@@ -279,7 +279,7 @@ func (p *Parser) parseTopLevelBlock() (block ast.TopLevel) {
 	case lexer.TokenTestGroup:
 		return p.parseTestGroup(intent)
 	case lexer.TokenFixture:
-		return p.parseFixture()
+		return p.parseFixture(intent)
 	case lexer.TokenGenerate:
 		return p.parseGenerateTopLevel()
 	case lexer.TokenEOF:
@@ -452,11 +452,11 @@ func (p *Parser) parseBlueprintBlock(intent *ast.Intent) *ast.Blueprint {
 
 // --- Declarations ---
 
-func (p *Parser) parseSecret() *ast.Secret {
+func (p *Parser) parseSecret(intent *ast.Intent) *ast.Secret {
 	loc := p.expect(lexer.TokenSecret).Loc
 	name := p.expectIdent()
 
-	s := &ast.Secret{Loc: loc, Name: name}
+	s := &ast.Secret{Loc: loc, Intent: intent, Name: name}
 
 	if p.check(lexer.TokenRequired) {
 		p.advance()
@@ -477,17 +477,17 @@ func (p *Parser) parseSecret() *ast.Secret {
 	return s
 }
 
-func (p *Parser) parseEnv() *ast.Env {
+func (p *Parser) parseEnv(intent *ast.Intent) *ast.Env {
 	loc := p.expect(lexer.TokenEnv).Loc
 	name := p.expectIdent()
 	value := p.parseExpr()
-	return &ast.Env{Loc: loc, Name: name, Value: value}
+	return &ast.Env{Loc: loc, Intent: intent, Name: name, Value: value}
 }
 
-func (p *Parser) parseLocale() *ast.Locale {
+func (p *Parser) parseLocale(intent *ast.Intent) *ast.Locale {
 	loc := p.expect(lexer.TokenLocale).Loc
 	code := p.parseLocaleCode()
-	l := &ast.Locale{Loc: loc, Code: code}
+	l := &ast.Locale{Loc: loc, Intent: intent, Code: code}
 	for !p.atEnd() {
 		if p.check(lexer.TokenDefault) {
 			p.advance()
@@ -506,11 +506,11 @@ func (p *Parser) parseLocale() *ast.Locale {
 	return l
 }
 
-func (p *Parser) parseTranslation() *ast.Translation {
+func (p *Parser) parseTranslation(intent *ast.Intent) *ast.Translation {
 	loc := p.expect(lexer.TokenTranslation).Loc
 	name := p.expectIdent()
 	p.expect(lexer.TokenLBrace)
-	t := &ast.Translation{Loc: loc, Name: name}
+	t := &ast.Translation{Loc: loc, Intent: intent, Name: name}
 	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
 		if (p.check(lexer.TokenIdent) || p.isKeywordUsableAsIdent()) && p.peek().Value == "key" {
 			p.advance()
@@ -649,18 +649,18 @@ func (p *Parser) parseLocaleCode() string {
 	return p.expectIdent()
 }
 
-func (p *Parser) parseInclude() *ast.Include {
+func (p *Parser) parseInclude(intent *ast.Intent) *ast.Include {
 	loc := p.expect(lexer.TokenInclude).Loc
 	path := p.expect(lexer.TokenString)
-	return &ast.Include{Loc: loc, Path: path.Value}
+	return &ast.Include{Loc: loc, Intent: intent, Path: path.Value}
 }
 
-func (p *Parser) parseTypeDecl() *ast.TypeDecl {
+func (p *Parser) parseTypeDecl(intent *ast.Intent) *ast.TypeDecl {
 	loc := p.expect(lexer.TokenType).Loc
 	name := p.expectIdent()
 	p.expect(lexer.TokenLBrace)
 
-	td := &ast.TypeDecl{Loc: loc, Name: name}
+	td := &ast.TypeDecl{Loc: loc, Intent: intent, Name: name}
 
 	for !p.check(lexer.TokenRBrace) && !p.atEnd() {
 		f := p.parseField()
@@ -671,13 +671,13 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	return td
 }
 
-func (p *Parser) parseAlias() *ast.Alias {
+func (p *Parser) parseAlias(intent *ast.Intent) *ast.Alias {
 	loc := p.expect(lexer.TokenAlias).Loc
 	name := p.expectIdent()
 	p.expect(lexer.TokenAssign)
 	typ := p.parseTypeExpr()
 
-	a := &ast.Alias{Loc: loc, Name: name, Type: typ}
+	a := &ast.Alias{Loc: loc, Intent: intent, Name: name, Type: typ}
 
 	for p.isConstraintStart() {
 		c := p.parseConstraint()
@@ -1156,11 +1156,11 @@ func (p *Parser) parseSchedule(intent *ast.Intent) *ast.Schedule {
 
 // --- External ---
 
-func (p *Parser) parseExternal() *ast.External {
+func (p *Parser) parseExternal(intent *ast.Intent) *ast.External {
 	loc := p.expect(lexer.TokenExternal).Loc
 	name := p.expect(lexer.TokenString)
 	body := p.parseBlockBody()
-	return &ast.External{Loc: loc, Name: name.Value, Entries: body.Entries}
+	return &ast.External{Loc: loc, Intent: intent, Name: name.Value, Entries: body.Entries}
 }
 
 // --- Subscribe ---
@@ -1319,11 +1319,11 @@ func (p *Parser) parseTestGroup(intent *ast.Intent) *ast.TestGroup {
 	return tg
 }
 
-func (p *Parser) parseFixture() *ast.Fixture {
+func (p *Parser) parseFixture(intent *ast.Intent) *ast.Fixture {
 	loc := p.expect(lexer.TokenFixture).Loc
 	name := p.expect(lexer.TokenString)
 
-	f := &ast.Fixture{Loc: loc, Name: name.Value}
+	f := &ast.Fixture{Loc: loc, Intent: intent, Name: name.Value}
 
 	if p.check(lexer.TokenFrom) {
 		p.advance()

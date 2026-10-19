@@ -25,7 +25,7 @@ Color is auto-detected (TTY → color; pipe → plain). `NO_COLOR=1` forces plai
 |---|---|---|
 | `L###` | Lexer | `L001` `'|'` not part of `'|>'` (use `'|>'`?) |
 | `P###` | Parser | `P001` file does not start with a `blueprint` block |
-| `C###` | Checker (semantic) | `C001`–`C051` — duplicate names, unknown types, unknown refs, type mismatches, locale/translation/save rules, etc. |
+| `C###` | Checker (semantic) | `C001`–`C052` — duplicate names, unknown types, unknown refs, type mismatches, locale/translation/save rules, etc. |
 | `R###` | Resolver / typed IR | reserved |
 | `G###` | Codegen | reserved (codegen panics are bugs, not user diagnostics) |
 

@@ -308,22 +308,12 @@ func hasBodyInputs(inputs []*ast.InputStmt, pathParams map[string]bool) bool {
 	return false
 }
 
-// validatesPathInputs reports whether a REST path input is parsed at runtime.
-// The Node target answers a malformed uuid or int path segment with the
-// zValidator-shaped 400; other path inputs are passed through as strings.
+// validatesPathInputs reports whether a REST operation has a declared path
+// input. The Node target validates every such input at runtime and answers a
+// malformed segment with the zValidator-shaped 400.
 func validatesPathInputs(inputs []*ast.InputStmt, pathParams map[string]bool) bool {
 	for _, input := range inputs {
-		if !pathParams[input.Name] {
-			continue
-		}
-		var name string
-		switch t := input.Type.(type) {
-		case *ast.PrimitiveType:
-			name = t.Name
-		case *ast.NamedType:
-			name = t.Name
-		}
-		if name == "uuid" || name == "int" {
+		if pathParams[input.Name] {
 			return true
 		}
 	}
@@ -1039,6 +1029,15 @@ func primitiveToSchema(name string, constraints []*ast.Constraint_) map[string]a
 					return map[string]any{"type": "string", "format": "email"}
 				case "url", "uri":
 					return map[string]any{"type": "string", "format": "uri"}
+				case "uuid":
+					return map[string]any{"type": "string", "format": "uuid"}
+				case "date":
+					return map[string]any{"type": "string", "format": "date"}
+				case "ip":
+					return map[string]any{"type": "string", "anyOf": []any{
+						map[string]any{"format": "ipv4"},
+						map[string]any{"format": "ipv6"},
+					}}
 				}
 			}
 		}

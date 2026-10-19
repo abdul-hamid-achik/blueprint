@@ -2302,3 +2302,105 @@ WS /ws/chat {
 		t.Fatalf("expected the room argument to be checked, got %v", errs)
 	}
 }
+
+// constraintSrc wraps a body in a minimal valid blueprint so each case only
+// varies the constraint under test.
+func constraintSrc(body string) string {
+	return `blueprint "constraints" {
+  version "1.0.0"
+  runtime node
+}
+
+` + body
+}
+
+func TestCheckConstraintValues(t *testing.T) {
+	const enumPlan = `enum Plan {
+  free
+  pro
+}
+
+`
+	endpoint := func(input string) string {
+		return "POST /api/x {\n  " + input + "\n  -> 200 { ok: true }\n}"
+	}
+	model := func(field string) string {
+		return "model thing {\n  id uuid primary\n  " + field + "\n}"
+	}
+
+	rejected := []struct {
+		name string
+		src  string
+	}{
+		{"input default string on int", constraintSrc(endpoint(`<- age int default("abc")`))},
+		{"input default bool on int", constraintSrc(endpoint(`<- n int default(true)`))},
+		{"input default ident on float", constraintSrc(endpoint(`<- r float default(high)`))},
+		{"input default string literal on bool", constraintSrc(endpoint(`<- on bool default("yes")`))},
+		{"input min string on int", constraintSrc(endpoint(`<- age int min("x")`))},
+		{"input max on bool", constraintSrc(endpoint(`<- flag bool max(3)`))},
+		{"input inline enum default not a variant", constraintSrc(endpoint(`<- status enum(a, b) default(c)`))},
+		{"input format on int", constraintSrc(endpoint(`<- n int format(email)`))},
+		{"input max on enum", constraintSrc(endpoint(`<- status enum(a, b) max(2)`))},
+		{"model timestamp default string not a date", constraintSrc(model(`created timestamp default("soon")`))},
+		{"model bool default number", constraintSrc(model(`active bool default(1)`))},
+		{"model string negative max", constraintSrc(model(`code string max(-1)`))},
+		{"model string float min", constraintSrc(model(`name string min(2.5)`))},
+		{"model uuid default not a uuid", constraintSrc(model(`ref_id uuid default("nope")`))},
+		{"model timestamp min", constraintSrc(model(`created timestamp min(1)`))},
+		{"named enum default not a variant", constraintSrc(enumPlan + "model account {\n  id uuid primary\n  plan Plan default(gold)\n}")},
+		{"alias min greater than max", constraintSrc("alias Count = int min(5) max(1)")},
+		{"alias unknown format", constraintSrc(`alias Phone = string format(phone)`)},
+		{"alias format on int", constraintSrc(`alias Age = int format(email)`)},
+	}
+	for _, tc := range rejected {
+		t.Run("reject/"+tc.name, func(t *testing.T) {
+			errs := check(t, tc.src)
+			found := false
+			for _, e := range errs {
+				if e.Code == CodeInvalidConstraintValue {
+					found = true
+					if e.Hint == "" {
+						t.Errorf("C052 should carry a hint: %v", e)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("want a %s error, got %v", CodeInvalidConstraintValue, errs)
+			}
+		})
+	}
+
+	accepted := []struct {
+		name string
+		src  string
+	}{
+		{"input int bounds and default", constraintSrc(endpoint(`<- age int min(0) max(150) default(18)`))},
+		{"input negative int default", constraintSrc(endpoint(`<- score int default(-1)`))},
+		{"input string bounds and default", constraintSrc(endpoint(`<- name string min(1) max(100) default("x")`))},
+		{"input string bare-word default", constraintSrc(endpoint(`<- position string default(center)`))},
+		{"input inline enum bare default", constraintSrc(endpoint(`<- status enum(active, banned) default(active)`))},
+		{"input inline enum quoted default", constraintSrc(endpoint(`<- status enum(active, banned) default("banned")`))},
+		{"input bool default", constraintSrc(endpoint(`<- flag bool default(false)`))},
+		{"input float bounds and default", constraintSrc(endpoint(`<- price float min(0.0) max(1.0) default(0.5)`))},
+		{"input money default int", constraintSrc(endpoint(`<- amount money default(10)`))},
+		{"input int size bound", constraintSrc(endpoint(`<- size int min(0) max(100mb)`))},
+		{"model timestamp default now", constraintSrc(model(`created timestamp default(now)`))},
+		{"model timestamp default ISO string", constraintSrc(model(`ok timestamp default("2026-01-01T00:00:00Z")`))},
+		{"model uuid default", constraintSrc(model(`ref_id uuid default("123e4567-e89b-12d3-a456-426614174000")`))},
+		{"model string bounds", constraintSrc(model(`code string min(1) max(64) format(url)`))},
+		{"model bool default true", constraintSrc(model(`active bool default(true)`))},
+		{"named enum default variant", constraintSrc(enumPlan + "model account {\n  id uuid primary\n  plan Plan default(free)\n  tier Plan default(\"pro\")\n}")},
+		{"alias size bound", constraintSrc("alias FileSize = int min(0) max(100mb)")},
+		{"alias email format", constraintSrc(`alias Email = string format(email)`)},
+		{"alias url format", constraintSrc(`alias Url = string format(url)`)},
+	}
+	for _, tc := range accepted {
+		t.Run("accept/"+tc.name, func(t *testing.T) {
+			for _, e := range check(t, tc.src) {
+				if e.Code == CodeInvalidConstraintValue {
+					t.Errorf("unexpected %s: %v", CodeInvalidConstraintValue, e)
+				}
+			}
+		})
+	}
+}

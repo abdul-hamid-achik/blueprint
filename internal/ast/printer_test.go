@@ -1204,3 +1204,50 @@ GET /items {
 	out := formatSource(t, src)
 	requireLines(t, out, "low {}", "use cors {}")
 }
+
+func TestPrint_CommentsStayOutOfMultiLineStrings(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "trailing comment on the line that opens the string",
+			src: `blueprint "svc" {
+  version "0.1.0"
+}
+
+env A # note
+"multi
+line"
+`,
+			want: []string{"env A \"multi\nline\"  # note\n"},
+		},
+		{
+			name: "comment and blank line before a token on the closing line",
+			src: `blueprint "svc" {
+  version "0.1.0"
+}
+
+POST /api/x {
+  <- a string default("m
+n")
+
+  # c
+  required
+  -> 200 { ok: true }
+}
+`,
+			want: []string{"POST /api/x {\n  # c\n  <- a", "default(\"m\nn\")  required\n"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := formatSource(t, tt.src)
+			requireLines(t, first, tt.want...)
+			if second := ast.Print(parseForPrint(t, first)); second != first {
+				t.Fatalf("formatting is not idempotent\nfirst:\n%s\nsecond:\n%s", first, second)
+			}
+		})
+	}
+}

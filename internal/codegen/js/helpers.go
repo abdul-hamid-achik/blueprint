@@ -782,10 +782,17 @@ func constraintsToZod(constraints []*ast.Constraint_) string {
 		case "max":
 			validation = append(validation, fmt.Sprintf(".max(%s)", exprToJS(c.Value)))
 		case "format":
-			if s := exprToString(c.Value); s == "email" {
+			switch exprToString(c.Value) {
+			case "email":
 				validation = append(validation, ".email()")
-			} else if s == "url" {
+			case "url":
 				validation = append(validation, ".url()")
+			case "uuid":
+				validation = append(validation, ".uuid()")
+			case "ip":
+				validation = append(validation, ".ip()")
+			case "date":
+				validation = append(validation, ".date()")
 			}
 		case "default":
 			val := exprToJS(c.Value)
@@ -879,21 +886,6 @@ func sizeToBytes(s string) string {
 		return s
 	}
 	return fmt.Sprintf("/* INVALID SIZE: %s */ 0", s)
-}
-
-// pathParamTypeName extracts the type name string from a TypeExpr for path parameter validation.
-// Returns "uuid", "int", "string", etc., or empty string if type is nil.
-func pathParamTypeName(t ast.TypeExpr) string {
-	if t == nil {
-		return ""
-	}
-	if nt, ok := t.(*ast.NamedType); ok {
-		return nt.Name
-	}
-	if pt, ok := t.(*ast.PrimitiveType); ok {
-		return pt.Name
-	}
-	return ""
 }
 
 // parseRateLimit parses a rate string like "60/min" and returns the limit and window in ms.
