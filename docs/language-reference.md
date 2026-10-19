@@ -1345,11 +1345,9 @@ with these differences:
   envelope. With `REDIS_URL` set in the process environment (a value only in `.env`
   is not read on Python, as with STREAM), each instance receives a publish through its own
   subscription, so a message reaches each socket once, including on the sender's
-  instance. A join waits for Redis to confirm the room subscription before it
-  publishes, so the joiner's own `joined` frame always arrives. Node does not wait:
-  when the subscription is not yet active, the joiner's own `joined` can be
-  dropped, which we observed on repeated runs against one instance with
-  `REDIS_URL` set.
+  instance. On both targets, a broadcast after the first join of a room on an
+  instance waits for Redis to confirm that room's subscription, so the joiner's
+  own `joined` frame arrives.
 - Frames are encoded like `JSON.stringify`: compact, in insertion order, with
   `Date` values as ISO strings with milliseconds and a `Z` suffix. A value that is
   `undefined` on Node is `null` on Python, so the key stays in the frame.
