@@ -49,8 +49,8 @@ func TestClientIPLibContent(t *testing.T) {
 	for _, want := range []string{
 		"import type { Context } from 'hono';",
 		"import { getConnInfo } from '@hono/node-server/conninfo';",
-		"const _forwardedAllowIps = process.env.FORWARDED_ALLOW_IPS ?? '127.0.0.1,::1';",
-		"const _alwaysTrust = _forwardedAllowIps === '*';",
+		"const _forwardedAllowIps = _splitHosts(process.env.FORWARDED_ALLOW_IPS ?? '127.0.0.1,::1');",
+		"const _alwaysTrust = _forwardedAllowIps.includes('*');",
 		"export function clientIp(c: Context): string {",
 		"if (peer.startsWith('::ffff:')) peer = peer.slice(7);",
 		"[...hops].reverse().find((item) => !_isTrusted(item))",

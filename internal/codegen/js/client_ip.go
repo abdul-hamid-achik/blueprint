@@ -57,8 +57,13 @@ const clientIPSource = `// Client address for endpoint ` + "`limit`" + `, resolv
 import type { Context } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
 
-const _forwardedAllowIps = process.env.FORWARDED_ALLOW_IPS ?? '127.0.0.1,::1';
-const _alwaysTrust = _forwardedAllowIps === '*';
+// Comma-separated values without empty items, as uvicorn's _parse_raw_hosts splits them.
+function _splitHosts(value: string): string[] {
+  return value.split(',').map((item) => item.trim()).filter((item) => item !== '');
+}
+
+const _forwardedAllowIps = _splitHosts(process.env.FORWARDED_ALLOW_IPS ?? '127.0.0.1,::1');
+const _alwaysTrust = _forwardedAllowIps.includes('*');
 const _trustedLiterals = new Set<string>();
 const _trustedNetworks: { base: number; mask: number }[] = [];
 
@@ -84,7 +89,7 @@ function _parseCidr(entry: string): { base: number; mask: number } | null {
 }
 
 if (!_alwaysTrust) {
-  for (const entry of _forwardedAllowIps.split(',').map((item) => item.trim())) {
+  for (const entry of _forwardedAllowIps) {
     const network = _parseCidr(entry);
     if (network) _trustedNetworks.push(network);
     else _trustedLiterals.add(entry.toLowerCase());
@@ -126,7 +131,7 @@ export function clientIp(c: Context): string {
   if (peer.startsWith('::ffff:')) peer = peer.slice(7);
   const forwarded = c.req.header('x-forwarded-for');
   if (forwarded && _isTrusted(peer)) {
-    const hops = forwarded.split(',').map((hop) => _hopHost(hop.trim()));
+    const hops = _splitHosts(forwarded).map(_hopHost);
     const hop = _alwaysTrust ? hops[0] : ([...hops].reverse().find((item) => !_isTrusted(item)) ?? hops[0]);
     if (hop) return hop;
   }
