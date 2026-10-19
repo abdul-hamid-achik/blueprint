@@ -270,7 +270,7 @@ func (g *Generator) genContractTestFile(resource string, eps []*ast.Endpoint, ha
 	if hasDB {
 		b.WriteString("vi.mock('../../src/lib/db', async () => ({ db: (await import('../_harness/db.js')).db }));\n\n")
 	}
-	b.WriteString("import app from '../../src/index.js';\n")
+	b.WriteString("import { app } from '../../src/index.js';\n")
 	if endpointsUseEnforcedJwt(eps) {
 		b.WriteString("import { signTestJwt } from '../_harness/auth.js';\n")
 	}

@@ -122,7 +122,7 @@ func TestRealtimePathValidationRuntime(t *testing.T) {
 	testSource := `import { expect, test } from 'bun:test';
 
 process.env.VITEST = '1';
-const { default: app } = await import('./src/index.ts');
+const { app } = await import('./src/index.ts');
 
 const ROOM = '6f9619ff-8b86-4d11-b0d2-517f1f4e3c2a';
 

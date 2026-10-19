@@ -35,4 +35,4 @@ if (!process.env.VITEST) {
   process.on('SIGINT', shutdown);
 }
 
-export default app;
+export { app };

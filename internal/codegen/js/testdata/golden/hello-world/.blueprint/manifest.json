@@ -13,7 +13,7 @@
     "frontend/src/schemas.ts": "sha256:610ae1d20ae9c747fe62e76f995c0cd3d0435b3273da6c0f6d830b882ab9d921",
     "frontend/tsconfig.json": "sha256:c01c3263c79bfe7999b6f3367c19a4a9b99d2d5ff4fcea18fbcdf50b2a634aa1",
     "package.json": "sha256:83bebfa482e3662451fe9b1fa142caa36bf954ac9139985879bde94fdc0b4c2a",
-    "src/index.ts": "sha256:5de2fc9e729e51c8e3489eb2c576e83fbac1ea9e43c7ff52997a02851ac3dbe2",
+    "src/index.ts": "sha256:5df45fd45fc6c34269b5313803363c2d123b842cb0758c6e1f2336b27f20e4a5",
     "src/lib/env.ts": "sha256:111ba9b4b470de36f1a6aaf8e958f0e302e4f4da797e827d9c56c429f8c2b919",
     "src/lib/errors.ts": "sha256:872aebec06beaf2da1fe6accf825a71b591f9fb3a2d6b9f8e56b066379522be4",
     "src/routes/health.ts": "sha256:dcc8fb9c717697a0b19df55638c924e059c5dbd87cf0f9285e19bf8168d1fd24",

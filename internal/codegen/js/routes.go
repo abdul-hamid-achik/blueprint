@@ -346,7 +346,10 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	b.WriteString("  process.on('SIGINT', shutdown);\n")
 	b.WriteString("}\n\n")
 
-	b.WriteString("export default app;\n")
+	// A named export, not a default one: Bun serves an entrypoint's default export
+	// when it has a fetch method, which would open a second listener on :3000
+	// and crash `bun dist/index.js` with EADDRINUSE when the declared port is 3000.
+	b.WriteString("export { app };\n")
 
 	return codegen.OutputFile{Path: "src/index.ts", Content: []byte(b.String())}
 }

@@ -78,7 +78,7 @@ func (g *Generator) genTest(t *ast.Test, fixtures []*ast.Fixture) codegen.Output
 		b.WriteString("import * as schema from '../src/models/schema.js';\n")
 		b.WriteString("import { eq, and } from 'drizzle-orm';\n")
 	}
-	b.WriteString("import app from '../src/index.js';\n\n")
+	b.WriteString("import { app } from '../src/index.js';\n\n")
 
 	name := toCamelCase(t.Name)
 	if t.Intent != nil {

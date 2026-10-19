@@ -163,8 +163,13 @@ if (!process.env.VITEST) {
   process.on('SIGINT', shutdown);
 }
 
-export default app;
+export { app };
 ```
+
+`app` is a named export. Bun serves an entrypoint's default export when it has
+a `fetch` method, so a default export would open a second listener on port 3000
+under `bun dist/index.js`. Import it in your own tests as
+`import { app } from '../src/index.js'`.
 
 ### `src/models/schema.ts`
 
@@ -611,7 +616,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../src/lib/db', async () => ({ db: (await import('../_harness/db.js')).db }));
 
-import app from '../../src/index.js';
+import { app } from '../../src/index.js';
 import { resetDb, db } from '../_harness/db.js';
 import * as schema from '../../src/models/schema.js';
 

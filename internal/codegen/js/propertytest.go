@@ -389,7 +389,7 @@ func (g *Generator) genPropertyTestFile(resource string, endpoints []*ast.Endpoi
 	if hasDB {
 		b.WriteString("vi.mock('../../src/lib/db', async () => ({ db: (await import('../_harness/db.js')).db }));\n\n")
 	}
-	b.WriteString("import app from '../../src/index.js';\n")
+	b.WriteString("import { app } from '../../src/index.js';\n")
 	if hasDB {
 		b.WriteString("import { resetDb } from '../_harness/db.js';\n")
 	}

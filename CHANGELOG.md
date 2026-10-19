@@ -41,6 +41,16 @@ All notable changes to this project will be documented in this file.
   `using(secret.NAME)`. `examples/realtime-chat.bp` uses
   `auth jwt using(secret.JWT_SECRET)` on its WS endpoint.
 
+### Fixed
+
+- The generated Node `src/index.ts` exports `app` by name instead of as the
+  default export. Bun serves an entrypoint's default export when it has a
+  `fetch` method, so `bun dist/index.js` (the generated Dockerfile's `CMD`)
+  opened a second listener on port 3000, and a service that declared port 3000
+  exited at startup with `EADDRINUSE`. Generated tests now use
+  `import { app } from '../src/index.js'`; update hand-written tests that used
+  the default import.
+
 ## [0.18.0] - 2026-10-18
 
 ### Added

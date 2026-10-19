@@ -107,7 +107,7 @@ func TestGen_AutoTests_ContractTest(t *testing.T) {
 
 	for _, want := range []string{
 		"vi.mock('../../src/lib/db'",
-		"import app from '../../src/index.js'",
+		"import { app } from '../../src/index.js'",
 		"beforeEach(async () => { await resetDb(); });",
 		"await app.request(",
 		".toContain(res.status)",
