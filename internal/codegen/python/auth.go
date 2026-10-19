@@ -14,7 +14,7 @@ import (
 // so the small pieces needed here are restated instead of importing that package.
 
 // enforcedAuthStrategies are the strategies src/lib/auth.py verifies when they
-// carry using(secret.NAME). webhook_sig is rejected on Python for now.
+// carry using(secret.NAME). webhook_sig is verified by src/lib/webhook.py.
 var enforcedAuthStrategies = map[string]bool{
 	"bearer":  true,
 	"jwt":     true,
@@ -28,25 +28,38 @@ type enforcedAuth struct {
 	Secret   string // env variable name, the secret's NAME
 }
 
+// usingSecretName returns the secret NAME of a strategy written as
+// `<strategy>(using(secret.NAME))`. Input AST: FnCall{Name:"using", Args:[FieldAccess{Base:"secret",Field:"KEY"}]}
+func usingSecretName(fn *ast.FnCall) (string, bool) {
+	if fn == nil || len(fn.Args) == 0 {
+		return "", false
+	}
+	inner, ok := fn.Args[0].(*ast.FnCall)
+	if !ok || inner.Name != "using" || len(inner.Args) == 0 {
+		return "", false
+	}
+	fa, ok := inner.Args[0].(*ast.FieldAccess)
+	if !ok || fa.Field == "" {
+		return "", false
+	}
+	if base, ok := fa.Base.(*ast.Ident); !ok || base.Name != "secret" {
+		return "", false
+	}
+	return fa.Field, true
+}
+
 // endpointEnforcedAuth returns the enforced auth declared by an auth meta value.
 // Input AST: FnCall{Name:"jwt", Args:[FnCall{Name:"using", Args:[FieldAccess{Base:"secret",Field:"KEY"}]}]}
 func endpointEnforcedAuth(expr ast.Expr) (enforcedAuth, bool) {
 	fn, ok := expr.(*ast.FnCall)
-	if !ok || !enforcedAuthStrategies[fn.Name] || len(fn.Args) == 0 {
+	if !ok || !enforcedAuthStrategies[fn.Name] {
 		return enforcedAuth{}, false
 	}
-	inner, ok := fn.Args[0].(*ast.FnCall)
-	if !ok || inner.Name != "using" || len(inner.Args) == 0 {
+	secret, ok := usingSecretName(fn)
+	if !ok {
 		return enforcedAuth{}, false
 	}
-	fa, ok := inner.Args[0].(*ast.FieldAccess)
-	if !ok || fa.Field == "" {
-		return enforcedAuth{}, false
-	}
-	if base, ok := fa.Base.(*ast.Ident); !ok || base.Name != "secret" {
-		return enforcedAuth{}, false
-	}
-	return enforcedAuth{Strategy: fn.Name, Secret: fa.Field}, true
+	return enforcedAuth{Strategy: fn.Name, Secret: secret}, true
 }
 
 // endpointEnforcedAuthMeta returns the first enforced auth declared in meta.
@@ -80,6 +93,9 @@ func pythonAuthFeature(meta *ast.EndpointMeta) string {
 	if _, ok := endpointEnforcedAuth(meta.Value); ok {
 		return ""
 	}
+	if _, ok := endpointWebhookSecret(meta.Value); ok {
+		return ""
+	}
 	name := ""
 	switch v := meta.Value.(type) {
 	case *ast.FnCall:
@@ -89,7 +105,7 @@ func pythonAuthFeature(meta *ast.EndpointMeta) string {
 	}
 	switch {
 	case name == "webhook_sig":
-		return "endpoint `auth webhook_sig` (HMAC webhook verification is Node-only for now; Python enforces `auth bearer|jwt|api_key|basic using(secret.NAME)`)"
+		return "endpoint `auth webhook_sig` without `using(secret.NAME)` (add `using(secret.NAME)`; Python does not verify bare webhook auth)"
 	case enforcedAuthStrategies[name]:
 		return fmt.Sprintf("endpoint `auth %s` without `using(secret.NAME)` (add `using(secret.NAME)`; Python does not enforce bare auth)", name)
 	default:

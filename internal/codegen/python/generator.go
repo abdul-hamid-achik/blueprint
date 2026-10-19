@@ -193,6 +193,9 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	if hasEnforcedAuth(endpoints) {
 		out = append(out, g.genAuthPy())
 	}
+	if hasWebhookSig(endpoints) {
+		out = append(out, g.genWebhookPy())
+	}
 	out = append(out, g.genAppPy(bp, endpoints))
 
 	// Named enum / type / alias declarations live in src/models/ next to the

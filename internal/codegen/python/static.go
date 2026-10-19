@@ -200,6 +200,9 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 	if hasEnforcedAuth(endpoints) {
 		b.WriteString("from src.lib.auth import Unauthorized, unauthorized_handler\n")
 	}
+	if hasWebhookSig(endpoints) {
+		b.WriteString("from src.lib.webhook import InvalidWebhook, invalid_webhook_handler\n")
+	}
 	for _, r := range resources {
 		fmt.Fprintf(&b, "from src.routes import %s\n", pyModuleName(r))
 	}
@@ -221,6 +224,10 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 		// Auth failures raise Unauthorized so the body is exactly {"error": ...}
 		// rather than FastAPI's {"detail": ...}.
 		b.WriteString("app.add_exception_handler(Unauthorized, unauthorized_handler)\n")
+	}
+	if hasWebhookSig(endpoints) {
+		// Webhook rejections raise InvalidWebhook so the body is {"error": ...}.
+		b.WriteString("app.add_exception_handler(InvalidWebhook, invalid_webhook_handler)\n")
 	}
 	for _, r := range resources {
 		fmt.Fprintf(&b, "app.include_router(%s.router)\n", pyModuleName(r))

@@ -57,6 +57,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	needsRateLimit := false
 	needsAuth := false
 	needsJwtClaims := false
+	needsWebhook := false
 	needsRequest := false
 	namedImports := newImportSet()
 	userFnCalls := map[string]bool{}
@@ -79,6 +80,9 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 		if ea, ok := endpointEnforcedAuthMeta(ep.Meta); ok {
 			needsAuth = true
 			needsJwtClaims = needsJwtClaims || ea.Strategy == "jwt"
+		}
+		if _, ok := endpointWebhookSecretMeta(ep.Meta); ok {
+			needsWebhook = true
 		}
 		if endpointHasPaginatedQuery(ep) {
 			needsPaginate = true
@@ -174,7 +178,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	if needsRequest {
 		fastapiImports = append(fastapiImports, "Request")
 	}
-	if needsDB || needsGuard || needsAuth {
+	if needsDB || needsGuard || needsAuth || needsWebhook {
 		fastapiImports = append(fastapiImports, "Depends")
 	}
 	if needsGuard {
@@ -241,6 +245,10 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	if needsAuth {
 		b.WriteString("from src.lib.auth import require_auth as _bp_require_auth\n")
 	}
+	if needsWebhook {
+		b.WriteString("from typing import Any\n")
+		b.WriteString("from src.lib.webhook import require_webhook_signature as _bp_webhook_signature\n")
+	}
 	if needsFormats {
 		b.WriteString("from src.lib import formats\n")
 	}
@@ -255,7 +263,7 @@ func (g *Generator) writeRouteImports(b *strings.Builder, eps []*ast.Endpoint) {
 	}
 	// `use <middleware>` requires Depends + the middleware module import.
 	if len(middlewares) > 0 {
-		if !needsDB && !needsGuard && !needsAuth {
+		if !needsDB && !needsGuard && !needsAuth && !needsWebhook {
 			// fastapi import line didn't include Depends yet; add a separate line.
 			b.WriteString("from fastapi import Depends\n")
 		}
@@ -424,6 +432,14 @@ func (g *Generator) emitEndpoint(b *strings.Builder, ep *ast.Endpoint) {
 			params += ", "
 		}
 		params += fmt.Sprintf("%s: str | None = Header(None, alias=%q)", pythonHeaderParamName(header), header)
+	}
+	// webhook_sig verifies the raw body before `use` middleware and the DB
+	// session run, and binds the parsed payload to `data` as Node does.
+	if secret, ok := endpointWebhookSecretMeta(ep.Meta); ok {
+		if params != "" {
+			params += ", "
+		}
+		params += webhookDependency(secret)
 	}
 	// `use <middleware>` becomes a Depends() parameter. Multiple `use` markers
 	// chain. The alias name + model come from `inject X as Y` inside the

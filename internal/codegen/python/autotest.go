@@ -389,6 +389,9 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, model
 	if enforced {
 		callArgs = append(callArgs, fmt.Sprintf("headers=auth_headers(%q, %q)", ea.Strategy, ea.Secret))
 	}
+	// The generated request carries no webhook signature, so a webhook endpoint
+	// answers 401 here; the signed happy path is not generated.
+	_, webhook := endpointWebhookSecretMeta(ep.Meta)
 	fmt.Fprintf(b, "%sres = client.%s(%s)\n", indent, strings.ToLower(method), strings.Join(callArgs, ", "))
 
 	// Status containment.
@@ -405,7 +408,7 @@ func (g *Generator) emitContractTest(b *strings.Builder, ep *ast.Endpoint, model
 	}
 
 	b.WriteString("\n\n")
-	if enforced {
+	if enforced || webhook {
 		emitUnauthenticatedTestPy(b, ep, bareURL)
 	}
 	return seeded
@@ -782,6 +785,9 @@ var formatSamplePy = map[string]string{
 // statuses + always-possible validation/runtime fallbacks (400, 500).
 func collectAllowedStatusesPy(ep *ast.Endpoint) []string {
 	set := map[string]bool{"400": true, "422": true, "500": true}
+	if _, ok := endpointWebhookSecretMeta(ep.Meta); ok {
+		set["401"] = true
+	}
 	collectStatusesPy(ep.Stmts, set)
 	out := make([]string, 0, len(set))
 	for s := range set {

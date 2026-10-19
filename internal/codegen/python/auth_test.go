@@ -101,9 +101,9 @@ func TestPython_AuthRejectListAcceptsOnlyEnforcedForms(t *testing.T) {
 			src:  "GET /api/x {\n  auth session\n  -> 200 \"ok\"\n}\n",
 			want: "endpoint `auth` metadata that Python does not enforce",
 		},
-		"webhook_sig": {
-			src:  "GET /api/x {\n  auth webhook_sig using(secret.SIGNING_KEY)\n  -> 200 \"ok\"\n}\n",
-			want: "endpoint `auth webhook_sig` (HMAC webhook verification is Node-only",
+		"bare webhook_sig": {
+			src:  "GET /api/x {\n  auth webhook_sig\n  -> 200 \"ok\"\n}\n",
+			want: "endpoint `auth webhook_sig` without `using(secret.NAME)`",
 		},
 	}
 	for name, tc := range cases {
