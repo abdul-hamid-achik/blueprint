@@ -24,6 +24,11 @@ These reject input or change exit codes that earlier releases accepted:
   and C035 for `|> close` outside a WS handler.
 - `bp fmt` refuses (exit `3`) a file with an `@` intent before a declaration
   that cannot carry one, such as `secret` or `env`, instead of deleting it.
+- Generated Node projects depend on `vitest ^5.0.5` instead of `^4.1.10`.
+  `^4.1.10` now resolves to vitest 4.1.12, whose peer dependencies make npm
+  10.9.x (bundled with Node 22) crash during `npm install` with "Cannot read
+  properties of null (reading 'edgesOut')". The generated contract and
+  property suites run unchanged on vitest 5.
 
 ### Added (2026-10-18 tooling and completion pass)
 

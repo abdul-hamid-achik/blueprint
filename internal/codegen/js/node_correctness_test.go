@@ -217,7 +217,7 @@ model item {
 	for _, want := range []string{
 		`"drizzle-orm": "^0.45.2"`,
 		`"drizzle-kit": "^0.31.10"`,
-		`"vitest": "^4.1.10"`,
+		`"vitest": "^5.0.5"`,
 	} {
 		if !strings.Contains(packageJSON, want) {
 			t.Errorf("generated package is missing patched dependency floor %q\n%s", want, packageJSON)
