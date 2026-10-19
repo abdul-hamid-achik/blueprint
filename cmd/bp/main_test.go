@@ -223,6 +223,7 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		{"migrate", valid, "generate", "extra"},
 		{"import", "a", "b"},
 		{"context", "a", "b"},
+		{"mcp", "extra"},
 	}
 	for _, args := range cases {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

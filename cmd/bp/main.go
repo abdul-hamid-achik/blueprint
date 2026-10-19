@@ -693,6 +693,17 @@ func main() {
 			os.Exit(0)
 		}
 		os.Exit(cmdLSP())
+	case "mcp":
+		if hasHelpFlag(os.Args[2:]) {
+			printCommandHelp("mcp", "mcp",
+				"Run a stdio Model Context Protocol (MCP) server. Tools: check, lint, format, explain, context, build, diff. Resources: blueprint://context, blueprint://context/<topic>, blueprint://llms. Client config: {\"command\":\"bp\",\"args\":[\"mcp\"]}",
+				nil)
+			os.Exit(0)
+		}
+		parsed, err := parseArgs(os.Args[2:], flagSpec{})
+		exitOnArgError(err)
+		exitOnArgError(rejectPositional(parsed.positional))
+		os.Exit(cmdMCP())
 	case "explain":
 		if hasHelpFlag(os.Args[2:]) {
 			printCommandHelp("explain", "explain <code>",
@@ -771,7 +782,13 @@ func checkFile(filename string, jsonOutput bool, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
+	return checkSource(filename, src, jsonOutput, stdout, stderr)
+}
 
+// checkSource is the check pipeline for source already in memory. filename
+// names the source in diagnostics and resolves its include statements. The
+// MCP check tool calls it directly.
+func checkSource(filename string, src []byte, jsonOutput bool, stdout, stderr io.Writer) int {
 	file, parseErrors := parser.ParseFile(filename, src)
 
 	if len(parseErrors) > 0 {
@@ -1115,7 +1132,12 @@ func lintFile(filename string, jsonOutput bool, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
+	return lintSource(filename, src, jsonOutput, stdout, stderr)
+}
 
+// lintSource is the lint pipeline for source already in memory (see
+// checkSource). The MCP lint tool calls it directly.
+func lintSource(filename string, src []byte, jsonOutput bool, stdout, stderr io.Writer) int {
 	file, parseErrors := parser.ParseFile(filename, src)
 	if len(parseErrors) > 0 {
 		if jsonOutput {
@@ -2064,12 +2086,16 @@ func (r *diffReport) print(w io.Writer) {
 		r.writeColored(w, patch)
 	}
 	if !r.any() {
-		fmt.Fprintln(w, "No changes — output is up to date.")
+		fmt.Fprintln(w, diffUpToDateMessage)
 		return
 	}
 	fmt.Fprintf(w, "\n%d added, %d modified, %d deleted.\n",
 		len(r.added), len(r.modified), len(r.deleted))
 }
+
+// diffUpToDateMessage is the line `bp diff` prints when the output directory
+// already matches. The MCP diff tool keys its changed flag on it.
+const diffUpToDateMessage = "No changes — output is up to date."
 
 // unifiedDiff shells out to `diff -u`, which returns exit 1 for "files differ" —
 // that is normal and not an error.
@@ -2289,6 +2315,7 @@ var cliCommands = []cliCommand{
 	{name: "context", desc: "Agent-facing language + CLI surface"},
 	{name: "llms", desc: "Print the complete agent/LLM guide"},
 	{name: "lsp", desc: "Start LSP server"},
+	{name: "mcp", desc: "Start the stdio MCP server"},
 	{name: "completion", desc: "Generate shell completion"},
 	{name: "version", desc: "Print version"},
 	{name: "help", desc: "Show help"},
@@ -2521,6 +2548,7 @@ func printUsage() {
 	fmt.Println("  llms       [--out <file>]                  Print the complete agent/LLM guide (every topic in one doc)")
 	fmt.Println("  doctor                                     Check environment dependencies")
 	fmt.Println("  lsp                                        Start LSP server")
+	fmt.Println("  mcp                                        Start the stdio MCP server (tools for AI agents)")
 	fmt.Println("  version                                    Print version")
 	fmt.Println("  help                                       Show this help")
 }

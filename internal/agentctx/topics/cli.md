@@ -20,6 +20,7 @@
 | `bp context [topic] [--format md\|json]` | Agent-facing topics (this surface). |
 | `bp llms [--out file]` | Every topic in one document. |
 | `bp lsp` | Language server over stdio: diagnostics with quick fixes, hover, definition, references, rename, completion, formatting, document outline, folding, and workspace symbols. |
+| `bp mcp` | Model Context Protocol server over stdio: tools `check`, `lint`, `format`, `explain`, `context`, `build`, `diff`; resources for every context topic. |
 | `bp frontend <file.bp> [--out dir] [--react-query]` | Generate only the standalone frontend SDK package. |
 | `bp import [path] --from ts [--out file.bp]` | Scaffold a `.bp` from TypeScript structure. Every handler becomes a TODO/501 stub. |
 | `bp deploy`, `bp eject`, `bp generate`, `bp stats`, `bp doctor`, `bp completion`, `bp version` | Docker image, strip markers, resolve `@>` slots via LLM, code stats, toolchain check, shell completion, version. |
