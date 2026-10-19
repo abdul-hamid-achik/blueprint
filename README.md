@@ -466,8 +466,9 @@ Run `bp <command> --help` for the authoritative flags. The command inventory is:
 - The Python target is an advanced beta for supported HTTP/data slices. It
   emits FastAPI `Body`/`Query`/`Path` validation, `format` checks through a
   generated stdlib-only `src/lib/formats.py`, and aliased header parameters,
-  translates STREAM (SSE) endpoints and `emit`, with Redis fan-out when
-  `REDIS_URL` is set, and rejects WS handlers, undeclared env access, unsafe function config,
+  translates STREAM (SSE) endpoints, WS endpoints (rooms, whisper, and
+  backpressure, with Redis fan-out when `REDIS_URL` is set) and `emit`, and rejects
+  undeclared env access, unsafe function config,
   richer middleware steps, and other semantics it cannot preserve. The Effect
   target is a runnable, health-only experimental scaffold with typed Effect
   Config for secrets/env defaults; it rejects models/endpoints and test

@@ -219,11 +219,14 @@ behavior.
 | `format(email\|url\|uuid\|ip\|date)` | Zod `.email()`, `.url()`, `.uuid()`, `.ip()`, `.date()` | `formats.Email`, `formats.Url`, `formats.Uuid`, `formats.IpAddress`, `formats.Date` from `src/lib/formats.py`; a violation answers `422` |
 | `auth webhook_sig using(secret.NAME)` | HMAC-SHA256 (hex) over the raw body in `X-Webhook-Signature`; `401` `{"error": "Invalid signature"}` for a bad, non-hex, or missing signature and for an unset or empty secret (fails closed); `400` `{"error": "Invalid payload"}` for a verified non-JSON body; the parsed body is `data` | Same contract and bodies in `src/lib/webhook.py`. The check runs before body validation and binds `data` |
 | `min`/`max` on model fields | Not carried into model Zod schemas or tables (endpoint inputs, `type` fields, and aliases are enforced) | pydantic `Field(min_length/max_length/ge/le)` in `src/models/pydantic.py`; a violation raises `ValidationError` when the model is built |
-| `use` middleware variables on STREAM/WS | Typed like REST (`c.get('auth')` has the injected row type) | Not supported: STREAM `use` and WS endpoints fail closed |
+| `use` middleware variables on STREAM/WS | Typed like REST (`c.get('auth')` has the injected row type) | Not supported: STREAM and WS `use` fail closed |
 | STREAM endpoints (SSE) | `streamSSE`: `event:`/`data:` frames for each `on event` and `on timeout`, `text/event-stream`, pre-stream guards answer `{"error"}` before the stream opens | Same frames and headers from `src/lib/events.py`; `StreamingResponse`, no keepalive comments; pre-stream guards answer `{"error"}`; input errors answer `422` |
 | `auth` on STREAM | `?token=` (bearer, jwt) and `?api_key=` (api_key) as a fallback to the header; basic is header-only | Same fallback, opt-in on STREAM only (`require_auth(..., allow_query=True)`); REST is header-only |
 | STREAM event fan-out | Redis `bp:stream:<event>` channels when `REDIS_URL` is set | Same channel names and delivery rule (no double delivery); `redis.asyncio` subscriber per instance; payload keys keep their `.bp` spelling, so a Node and a Python instance on one Redis would see mismatched keys; run one runtime per deployment |
 | STREAM backpressure | `BP_SSE_MAX_PENDING` (default 256) messages per client, 5s grace, hard cap at 16x, one `slow consumer` warning | Same knobs and log text; the queue counts messages, as Node's does; neither counts socket bytes |
+| WS endpoints (handshake, handlers, frames) | Hono `upgradeWebSocket`; `auth`, path inputs, and `limit` before the upgrade; `{"error"}` frames; a failed `on_connect` guard sends the error and closes `1008` | `@router.websocket` in `src/routes/<resource>_ws.py`; the same order before `accept()`; refusals are status-only on the wire, as on Node (`send_denial_response`; a server without it closes before accept and answers `403`); each handler runs in a worker thread on a short-lived session; `{"error"}` frames and `1008` as Node |
+| WS rooms and whisper | Per-file room map; `room:<id>` Redis channels; `bp:ws:whisper` with `{to, data}` | `src/lib/realtime.py`: process-wide room map; the same channels and payloads; a join waits for its Redis subscription before it publishes |
+| WS backpressure | `BP_WS_MAX_BUFFERED_BYTES` against `bufferedAmount`; close `1013` `slow consumer` | Same knob and close; counts queued bytes; the warning text matches |
 | `emit <event> { ... }` | in-process bus plus the Redis fan-out above | `bp_emit(...)` from REST handlers and STREAM pre-stream statements; safe from sync handlers (threadpool) and the event loop |
 | Endpoint `cache <duration>` | `Cache-Control` on GET 2xx responses | `Cache-Control` on GET 2xx responses through `src/lib/http_cache.py`; `private` under the same rules |
 | Endpoint `limit <n>/<unit>` | in-process counter, `429` `{"error": "Rate limit exceeded"}` | `src/lib/rate_limit.py`, same key (client address and path, with `FORWARDED_ALLOW_IPS` trust on both targets) and window, same `429` body |
@@ -248,7 +251,7 @@ reasons come from `unsupportedFeatures()` in
 
 - struct `enum` declarations (variants with bodies, such as `Plan[x].field` lookups)
 - model fields typed by a `type` declaration, primary keys typed by an alias, and `json<T>` model fields over a declared type
-- `WS` endpoints
+- WS endpoints that use `use` middleware, `auth webhook_sig`, `try/recover`, an inline `when`, `header`/`env` references, function calls, or a handler output that is not an object literal
 - STREAM endpoints that use `use` middleware, `cache`, `auth webhook_sig`, `try/recover` before the stream block, calls to functions or `header`/`env` inside a handler, or handler output that is not an object literal
 - `emit ... to(service)` (no Python transport)
 - `schedule`, `worker`, `subscribe`, and `external` declarations

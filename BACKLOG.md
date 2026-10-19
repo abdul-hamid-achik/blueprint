@@ -381,19 +381,29 @@ Prep work (must precede the Python generator):
       generated wrapper + user-owned scaffold; step calls dispatch. _(shipped — Phase 3d/5)_
     - [x] `bp test --target python` wraps `uv run pytest`; Docker remains a
       runtime requirement for the generated Postgres testcontainer.
-  - [~] Phase 5: `cache redis` → `src/lib/cache.py` with a Redis client is
-    shipped. STREAM endpoints are translated (see Phase 5b below); WS
-    endpoints stay rejected until their lifecycle bodies are translated, so
-    successful builds never imply that incomplete handlers execute.
+  - [x] Phase 5: `cache redis` → `src/lib/cache.py` with a Redis client is
+    shipped. STREAM and WS endpoints are translated (see Phase 5b below);
+    unsupported WS and STREAM bodies still fail closed with named reasons.
   - [x] Phase 5b (STREAM part): STREAM endpoints and the `emit` step on
     Python. SSE frames match Node; `where` filters per subscriber; pre-stream
     guards answer `{"error"}` before the stream opens; `?token=`/`?api_key=`
     on STREAM; `emit` delivers in-process and through `bp:stream:<event>` when
     `REDIS_URL` is set; bounded per-client queue with `BP_SSE_MAX_PENDING`.
     Unsupported STREAM forms fail closed with named reasons. _(shipped 2026-10-19)_
-  - [ ] Phase 5b (remaining): WS body translation (`on_connect`/`on_message`/
-    `on_disconnect`, `broadcast`/`join`/`leave`/`whisper`, and `emit` from WS
-    handlers through `src/lib/events.py`), the rest of the `pipe` body surface,
+  - [x] Phase 5b (WS part): WS endpoints on Python. `on_connect`, `on_message`,
+    and `on_disconnect` run in sync helpers on short-lived sessions; the handshake
+    runs auth, path inputs, and limit before accept, in Node's order; rooms
+    (`join`/`leave`/`broadcast`) and `whisper` use `src/lib/realtime.py` with the
+    Node channels (`room:<id>`, `bp:ws:whisper`) and payloads; `emit` and `log`
+    work from handlers; `BP_WS_MAX_BUFFERED_BYTES` drops a stalled socket with
+    `1013 slow consumer`. Verified against Node with one client script, a
+    two-instance Redis run, and a slow-consumer run. Unsupported forms fail closed.
+    _(shipped 2026-10-19)_
+  - [ ] Phase 5b (WS follow-ups): `use` middleware on WS endpoints, `auth
+    webhook_sig` on WS, `try/recover` inside WS handlers, inline `when`, and
+    `header`/`env` reads in WS handlers; a pytest case for the WS refusal (the
+    generated suite skips WS endpoints today).
+  - [ ] Phase 5b (remaining): the rest of the `pipe` body surface,
     `worker` + `schedule` via APScheduler, `storage s3` → boto3, and
     `payload.X` → `payload["X"]` for fn returns typed `json`.
 

@@ -1175,7 +1175,7 @@ keep-alive`. Differences:
 Not supported on Python yet: `use` middleware, `cache`, `auth webhook_sig`,
 `try/recover` before the stream block, calls to functions or `header`/`env` in a
 handler, and handler output that is not an object literal. `bp build` names the
-reason. WS endpoints are rejected on Python.
+reason. WS endpoints are translated on Python; section 15 lists their notes.
 
 ---
 
@@ -1312,7 +1312,67 @@ is dropped. Whisper sends use the same slow-consumer limit as room broadcasts;
 a slow target is closed with 1013 and removed from the registry.
 
 A WS endpoint can use `use` middleware too. The variables it injects are typed
-inside the handlers as they are on REST routes.
+inside the handlers as they are on REST routes. The Python target does not
+support `use` on WS endpoints yet.
+
+### Python target
+
+The Python target translates WS endpoints. Each endpoint becomes a route in
+`src/routes/<resource>_ws.py`, backed by `src/lib/realtime.py` (rooms, whisper,
+the send queue, and Redis fan-out). The client-visible behavior matches Node,
+with these differences:
+
+- The handshake runs in Node's order: `auth`, then path inputs, then `limit`,
+  then the upgrade. A refusal carries its status and no body, as on Node: `401`
+  for auth, `400` for a path input, and `429` for `limit`. Python sends it
+  through the `websocket.http.response` extension, which uvicorn implements. A
+  server without the extension closes the socket before accept, and the server
+  answers `403`.
+- Node's source also sets a JSON body (`{"error": ...}`) and, for bearer and jwt,
+  `WWW-Authenticate: Bearer` on a refused handshake. `@hono/node-ws` drops both on
+  an upgrade request, so the client never sees them. Python does not send them
+  either, so a client gets the same response from both targets.
+- Each handler (`on_connect`, each `on_message`, `on_disconnect`) runs on a
+  worker thread with its own short-lived database session. No session lives for
+  the connection. Bindings made in `on_connect` (for example `room` and `sender`)
+  are detached objects for the rest of the connection. Columns loaded by the
+  `fetch` are readable; a relationship that was not loaded, or an attribute
+  expired by a commit in `on_connect`, is not.
+- Room membership is per process, shared by every WS endpoint of the app. On
+  Node each WS route file keeps its own room map.
+- A room broadcast or whisper sends the same JSON text as Node, on the same
+  `room:<id>` and `bp:ws:whisper` channels, with the same `{to, data}` whisper
+  envelope. With `REDIS_URL` set, each instance receives a publish through its own
+  subscription, so a message reaches each socket once, including on the sender's
+  instance. A join waits for Redis to confirm the room subscription before it
+  publishes, so the joiner's own `joined` frame always arrives. Node does not wait:
+  when the subscription is not yet active, the joiner's own `joined` can be
+  dropped, which we observed on repeated runs against one instance with
+  `REDIS_URL` set.
+- Frames are encoded like `JSON.stringify`: compact, in insertion order, with
+  `Date` values as ISO strings with milliseconds and a `Z` suffix. A value that is
+  `undefined` on Node is `null` on Python, so the key stays in the frame.
+- Invalid JSON, an empty or overlong `message.body`, and an unexpected error in a
+  handler answer the same `{"error": ...}` frames as Node, and the process keeps
+  serving. A guard in `on_connect` sends the error and closes with `1008`.
+- A path input must be `string`, `int`, or `uuid`. A value that fails the type
+  answers `400` before the upgrade, with no body, as on Node.
+- `|> close` closes with code `1000`, and so does Node's `ws.close()` to the
+  client; both sides send an empty reason.
+- `BP_WS_MAX_BUFFERED_BYTES` (default 1 MiB) has the same meaning. Python counts
+  the bytes it has queued for a socket, Node counts `bufferedAmount`, and both
+  drop a stalled reader with `1013 slow consumer` once the limit is passed. Direct
+  replies to the current socket are not limited on either target.
+- Timestamps in WS frames use the Node form (`toISOString()`), not the FastAPI
+  form used by STREAM frames.
+
+Still rejected on Python, with a reason from `bp build`: `try/recover` in a
+handler, `use` middleware, `auth webhook_sig`, an inline `when`, a `header` or
+`env` reference, a call to a function or to `call`, `.length` on a value that is
+not a message field, a step outside the translated set, and a handler output that
+is not an object literal. The translated set is the realtime built-ins (`join`,
+`leave`, `broadcast`, `whisper`, `close`), `emit`, `inject`, `log`, the data
+operations (`save`, `fetch`, `query`, `update`, `delete`), `when`, and `guard`.
 
 In OpenAPI output: exposed as `GET` with `101` response and `x-websocket: true`.
 
@@ -1819,8 +1879,8 @@ explicit external HTTP `call` when that is the intended transport.
 
 Python generates `emit` in REST handlers and in STREAM pre-stream statements. It
 delivers to in-process STREAM listeners and, with `REDIS_URL` set, to other
-instances. Payload keys keep their `.bp` spelling. `emit` in WS handlers follows
-with WS support.
+instances. Payload keys keep their `.bp` spelling. `emit` in WS handlers is
+generated on Python too, and it uses the same bus as STREAM listeners.
 
 ### Utility
 
