@@ -32,7 +32,7 @@ import (
 const zeroUUID = "00000000-0000-0000-0000-000000000000"
 
 // genAutoTests builds the in-memory test harness and per-endpoint contract tests.
-func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, secrets []*ast.Secret, hasDB bool) []codegen.OutputFile {
+func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, realtime []realtimeTestEndpoint, secrets []*ast.Secret, hasDB bool) []codegen.OutputFile {
 	var files []codegen.OutputFile
 	if hasDB {
 		files = append(files, g.genTestDDLFile())
@@ -40,7 +40,11 @@ func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, secrets []*ast.Secre
 	}
 	files = append(files, g.genTestSetupFile(secrets))
 	files = append(files, g.genVitestConfig())
-	if endpointsUseEnforcedJwt(endpoints) {
+	all := append([]*ast.Endpoint{}, endpoints...)
+	for _, rt := range realtime {
+		all = append(all, rt.ep)
+	}
+	if endpointsUseEnforcedJwt(all) {
 		files = append(files, g.genTestAuthHelper())
 	}
 
@@ -56,6 +60,20 @@ func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, secrets []*ast.Secre
 	sort.Strings(order)
 	for _, res := range order {
 		files = append(files, g.genContractTestFile(res, groups[res], hasDB))
+	}
+
+	rtGroups := make(map[string][]realtimeTestEndpoint)
+	var rtOrder []string
+	for _, rt := range realtime {
+		res := extractResource(rt.ep.Path)
+		if _, ok := rtGroups[res]; !ok {
+			rtOrder = append(rtOrder, res)
+		}
+		rtGroups[res] = append(rtGroups[res], rt)
+	}
+	sort.Strings(rtOrder)
+	for _, res := range rtOrder {
+		files = append(files, g.genRealtimeTestFile(res, rtGroups[res], hasDB))
 	}
 	return files
 }
@@ -779,4 +797,233 @@ func refTarget(f *ast.Field) string {
 		}
 	}
 	return ""
+}
+
+// --- STREAM and WS refusal tests ---
+//
+// STREAM and WS endpoints get contract tests for the refusals that answer
+// before any stream or handshake starts, so no test reads a stream body:
+//
+//   - enforced auth: a request without credentials is answered 401;
+//   - a declared uuid/int path input: a malformed segment is answered 400
+//     (skipped when `use` middleware runs first, since it could refuse first);
+//   - a `use` middleware whose first step is `guard header.X -> NNN`: a request
+//     without that header is answered NNN.
+//
+// WS requests carry the upgrade headers, so the handshake runs the same
+// middleware chain as a real client's and answers the refusal as a plain
+// response.
+
+// realtimeTestEndpoint is a STREAM or WS endpoint in the refusal suite. ep holds
+// the path, meta and declared inputs; ws selects the upgrade request.
+type realtimeTestEndpoint struct {
+	ep *ast.Endpoint
+	ws bool
+}
+
+// realtimeTestEndpoints views the STREAM endpoints, then the WS endpoints, as
+// GET endpoints for the refusal suite.
+func realtimeTestEndpoints(streams []*ast.StreamEndpoint, wss []*ast.WsEndpoint) []realtimeTestEndpoint {
+	var out []realtimeTestEndpoint
+	for _, se := range streams {
+		out = append(out, realtimeTestEndpoint{ep: &ast.Endpoint{Loc: se.Loc, Method: "GET", Path: se.Path, Meta: se.Meta, Stmts: se.Stmts}})
+	}
+	for _, we := range wss {
+		out = append(out, realtimeTestEndpoint{ep: &ast.Endpoint{Loc: we.Loc, Method: "GET", Path: we.Path, Meta: we.Meta, Stmts: we.Stmts}, ws: true})
+	}
+	return out
+}
+
+// realtimeRefusal is one request the refusal suite sends to a STREAM or WS
+// endpoint and the status it must be refused with. url is a JS template literal
+// and headers are JS object entries.
+type realtimeRefusal struct {
+	name    string
+	status  string
+	url     string
+	headers []string
+}
+
+// typedPathInput is a declared path input the refusal suite can malform.
+type typedPathInput struct {
+	name string
+	typ  string // "uuid" or "int"
+}
+
+// wsUpgradeHeaders are the headers of a WebSocket handshake request.
+var wsUpgradeHeaders = []string{
+	"'Upgrade': 'websocket'",
+	"'Connection': 'Upgrade'",
+	"'Sec-WebSocket-Version': '13'",
+	"'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ=='",
+}
+
+// typedPathInputs lists the endpoint's declared uuid or int path inputs, in source order.
+func typedPathInputs(ep *ast.Endpoint) []typedPathInput {
+	var out []typedPathInput
+	for _, s := range ep.Stmts {
+		inp, ok := s.(*ast.InputStmt)
+		if !ok || !isPathParam(inp.Name, ep.Path) {
+			continue
+		}
+		pt, ok := inp.Type.(*ast.PrimitiveType)
+		if !ok || (pt.Name != "uuid" && pt.Name != "int") {
+			continue
+		}
+		out = append(out, typedPathInput{name: inp.Name, typ: pt.Name})
+	}
+	return out
+}
+
+// realtimeURL renders the request path as a JS template literal. Every :param
+// takes a valid sample value, except the malformed one, which takes an invalid one.
+func realtimeURL(path string, inputs []typedPathInput, malformed string) string {
+	types := map[string]string{}
+	for _, in := range inputs {
+		types[in.name] = in.typ
+	}
+	segs := strings.Split(path, "/")
+	for i, seg := range segs {
+		if !strings.HasPrefix(seg, ":") {
+			continue
+		}
+		name := seg[1:]
+		segs[i] = realtimeSample(types[name], name == malformed)
+	}
+	return "`" + strings.Join(segs, "/") + "`"
+}
+
+// realtimeSample is the path segment value for a param of the given type.
+func realtimeSample(typ string, malformed bool) string {
+	switch {
+	case typ == "uuid" && malformed:
+		return "not-a-uuid"
+	case typ == "int" && malformed:
+		return "not-an-int"
+	case typ == "uuid":
+		return zeroUUID
+	case typ == "int":
+		return "1"
+	}
+	return "test"
+}
+
+// realtimeHeaders combines the handshake headers (WS only) with the credentials.
+func realtimeHeaders(rt realtimeTestEndpoint, creds []string) []string {
+	var h []string
+	if rt.ws {
+		h = append(h, wsUpgradeHeaders...)
+	}
+	return append(h, creds...)
+}
+
+// authHeaderFor reports the header an enforced auth strategy carries credentials in.
+func authHeaderFor(strategy string) string {
+	if strategy == "api_key" {
+		return "x-api-key"
+	}
+	return "authorization"
+}
+
+// realtimeRefusals lists the refusal requests for one STREAM or WS endpoint.
+func (g *Generator) realtimeRefusals(rt realtimeTestEndpoint) []realtimeRefusal {
+	ep := rt.ep
+	kind := "STREAM"
+	if rt.ws {
+		kind = "WS"
+	}
+	label := kind + " GET " + ep.Path
+	inputs := typedPathInputs(ep)
+	creds := testAuthHeaders(ep)
+	ea, enforced := endpointEnforcedAuthMeta(ep.Meta)
+
+	var out []realtimeRefusal
+	add := func(name, status, url string, headers []string) {
+		out = append(out, realtimeRefusal{name: label + " " + name, status: status, url: url, headers: headers})
+	}
+	if enforced {
+		add("rejects requests without credentials", "401", realtimeURL(ep.Path, inputs, ""), realtimeHeaders(rt, nil))
+	}
+	if len(inputs) > 0 && !endpointHasUseMeta(ep.Meta) {
+		in := inputs[0]
+		add("rejects a malformed "+in.name, "400", realtimeURL(ep.Path, inputs, in.name), realtimeHeaders(rt, creds))
+	}
+	for _, meta := range ep.Meta {
+		if meta.Kind != "use" || meta.Use == nil {
+			continue
+		}
+		mw := g.middlewares[meta.Use.Name]
+		if mw == nil || len(mw.Before) == 0 {
+			continue
+		}
+		guard, ok := mw.Before[0].(*ast.GuardStmt)
+		if !ok || guard.Status == "" {
+			continue
+		}
+		fa, ok := guard.Condition.(*ast.FieldAccess)
+		if !ok {
+			continue
+		}
+		if base, ok := fa.Base.(*ast.Ident); !ok || base.Name != "header" {
+			continue
+		}
+		// The credentials would satisfy the guard when they carry the same header.
+		if enforced && strings.EqualFold(fa.Field, authHeaderFor(ea.Strategy)) {
+			continue
+		}
+		add(fmt.Sprintf("refuses requests without header %s (use %s)", fa.Field, meta.Use.Name),
+			guard.Status, realtimeURL(ep.Path, inputs, ""), realtimeHeaders(rt, creds))
+	}
+	return out
+}
+
+// realtimeRefusalViews keeps the STREAM and WS endpoints that have at least one refusal test.
+func (g *Generator) realtimeRefusalViews(streams []*ast.StreamEndpoint, wss []*ast.WsEndpoint) []realtimeTestEndpoint {
+	var out []realtimeTestEndpoint
+	for _, rt := range realtimeTestEndpoints(streams, wss) {
+		if len(g.realtimeRefusals(rt)) > 0 {
+			out = append(out, rt)
+		}
+	}
+	return out
+}
+
+// genRealtimeTestFile emits test/generated/<resource>-realtime.test.ts with the
+// refusal tests of one resource's STREAM and WS endpoints.
+func (g *Generator) genRealtimeTestFile(resource string, views []realtimeTestEndpoint, hasDB bool) codegen.OutputFile {
+	var body strings.Builder
+	for _, rt := range views {
+		for _, r := range g.realtimeRefusals(rt) {
+			if body.Len() > 0 {
+				body.WriteString("\n")
+			}
+			fmt.Fprintf(&body, "  it('%s', async () => {\n", r.name)
+			fmt.Fprintf(&body, "    const res = await app.request(%s, { method: 'GET'", r.url)
+			if len(r.headers) > 0 {
+				fmt.Fprintf(&body, ", headers: { %s }", strings.Join(r.headers, ", "))
+			}
+			body.WriteString(" });\n")
+			fmt.Fprintf(&body, "    expect(res.status).toBe(%s);\n", r.status)
+			body.WriteString("  }, 5000);\n")
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(fileHeader(g.sourceFile))
+	if hasDB {
+		b.WriteString("import { describe, it, expect, vi } from 'vitest';\n\n")
+		b.WriteString("vi.mock('../../src/lib/db', async () => ({ db: (await import('../_harness/db.js')).db }));\n\n")
+	} else {
+		b.WriteString("import { describe, it, expect } from 'vitest';\n\n")
+	}
+	b.WriteString("import { app } from '../../src/index.js';\n")
+	if strings.Contains(body.String(), "signTestJwt(") {
+		b.WriteString("import { signTestJwt } from '../_harness/auth.js';\n")
+	}
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "describe('%s (generated realtime refusals)', () => {\n", resource)
+	b.WriteString(body.String())
+	b.WriteString("});\n")
+
+	return codegen.OutputFile{Path: fmt.Sprintf("test/generated/%s-realtime.test.ts", toKebabCase(resource)), Content: []byte(b.String())}
 }

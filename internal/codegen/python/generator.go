@@ -321,8 +321,13 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// --gen-tests). Mirrors the JS target: harness + one test_<resource>.py
 	// per route group. Real Postgres rather than an in-memory shim because
 	// SQLite/PGlite dialect drifts too far from Postgres FK/JSON/enum semantics.
-	if g.genTests && len(endpoints) > 0 {
-		out = append(out, g.genAutoTests(endpoints, models, secrets, hasDB)...)
+	// STREAM and WS endpoints contribute refusal tests only (see autotest.go).
+	var realtime []realtimeTestEndpoint
+	if g.genTests {
+		realtime = g.realtimeRefusalViewsPy(streams, wss)
+	}
+	if g.genTests && (len(endpoints) > 0 || len(realtime) > 0) {
+		out = append(out, g.genAutoTests(endpoints, realtime, models, secrets, hasDB)...)
 	}
 	return out, nil
 }

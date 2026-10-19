@@ -36,14 +36,18 @@ import (
 const zeroUUIDPy = "00000000-0000-0000-0000-000000000000"
 
 // genAutoTests builds the testcontainers harness + per-endpoint contract tests.
-func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, models []*ast.Model, secrets []*ast.Secret, hasDB bool) []codegen.OutputFile {
+func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, realtime []realtimeTestEndpoint, models []*ast.Model, secrets []*ast.Secret, hasDB bool) []codegen.OutputFile {
 	var files []codegen.OutputFile
 	files = append(files,
 		emptyInit("tests/__init__.py", g.sourceFile),
 		emptyInit("tests/_harness/__init__.py", g.sourceFile),
 	)
-	files = append(files, g.genConftestPy(models, secrets, hasDB, enforcedAuthSecrets(endpoints)))
-	if hasEnforcedAuth(endpoints) {
+	all := append([]*ast.Endpoint{}, endpoints...)
+	for _, rt := range realtime {
+		all = append(all, rt.ep)
+	}
+	files = append(files, g.genConftestPy(models, secrets, hasDB, enforcedAuthSecrets(all)))
+	if hasEnforcedAuth(all) {
 		files = append(files, g.genAuthHarnessPy())
 	}
 
@@ -59,6 +63,23 @@ func (g *Generator) genAutoTests(endpoints []*ast.Endpoint, models []*ast.Model,
 	sort.Strings(order)
 	for _, r := range order {
 		files = append(files, g.genContractTestFile(r, groups[r], models))
+	}
+
+	rtGroups := map[string][]realtimeTestEndpoint{}
+	var rtOrder []string
+	for _, rt := range realtime {
+		r := common.ExtractResource(rt.ep.Path)
+		if _, ok := rtGroups[r]; !ok {
+			rtOrder = append(rtOrder, r)
+		}
+		rtGroups[r] = append(rtGroups[r], rt)
+	}
+	sort.Strings(rtOrder)
+	if len(rtOrder) > 0 {
+		files = append(files, g.genRealtimeHarnessPy())
+	}
+	for _, r := range rtOrder {
+		files = append(files, g.genRealtimeTestFilePy(r, rtGroups[r]))
 	}
 	return files
 }
@@ -853,3 +874,303 @@ func collectShapeChecksPy(stmts []ast.ArrowStmt) []shapeCheckPy {
 	}
 	return checks
 }
+
+// --- STREAM and WS refusal tests ---
+//
+// STREAM and WS endpoints get contract tests for the refusals that answer
+// before any stream or handshake starts, so no test reads a stream body:
+//
+//   - enforced auth: a request without credentials is answered 401;
+//   - a declared uuid/int path input: a malformed segment is answered 422 on
+//     STREAM (FastAPI validates the path) and 400 on WS (the handshake's own
+//     conversion), skipped when `use` middleware runs first;
+//   - a `use` middleware whose first step is `guard header.X -> NNN`: a request
+//     without that header is answered NNN.
+//
+// Every call runs through bounded (tests/_harness/realtime.py), so a refusal
+// that stops returning fails the test instead of hanging the run.
+
+// realtimeTestEndpoint is a STREAM or WS endpoint in the refusal suite. ep holds
+// the path, meta and declared inputs; ws selects the WebSocket client call.
+type realtimeTestEndpoint struct {
+	ep *ast.Endpoint
+	ws bool
+}
+
+// realtimeTestEndpoints views the STREAM endpoints, then the WS endpoints, as
+// GET endpoints for the refusal suite.
+func realtimeTestEndpoints(streams []*ast.StreamEndpoint, wss []*ast.WsEndpoint) []realtimeTestEndpoint {
+	var out []realtimeTestEndpoint
+	for _, se := range streams {
+		out = append(out, realtimeTestEndpoint{ep: &ast.Endpoint{Loc: se.Loc, Method: "GET", Path: se.Path, Meta: se.Meta, Stmts: se.Stmts}})
+	}
+	for _, we := range wss {
+		out = append(out, realtimeTestEndpoint{ep: &ast.Endpoint{Loc: we.Loc, Method: "GET", Path: we.Path, Meta: we.Meta, Stmts: we.Stmts}, ws: true})
+	}
+	return out
+}
+
+// realtimeRefusal is one request the refusal suite sends to a STREAM or WS
+// endpoint. suffix completes the test name; url is a Python string literal and
+// headers is a Python expression for the credentials ("" when none are sent).
+type realtimeRefusal struct {
+	suffix  string
+	status  string
+	url     string
+	headers string
+}
+
+// realtimeTypedPathInput is a declared path input the refusal suite can malform.
+type realtimeTypedPathInput struct {
+	name string
+	typ  string // "uuid" or "int"
+}
+
+// realtimeTypedPathInputs lists the endpoint's declared uuid or int path inputs, in source order.
+func realtimeTypedPathInputs(ep *ast.Endpoint) []realtimeTypedPathInput {
+	var out []realtimeTypedPathInput
+	for _, s := range ep.Stmts {
+		inp, ok := s.(*ast.InputStmt)
+		if !ok || inp.Name == "" || !common.IsPathParam(inp.Name, ep.Path) {
+			continue
+		}
+		pt, ok := inp.Type.(*ast.PrimitiveType)
+		if !ok || (pt.Name != "uuid" && pt.Name != "int") {
+			continue
+		}
+		out = append(out, realtimeTypedPathInput{name: inp.Name, typ: pt.Name})
+	}
+	return out
+}
+
+// realtimeURLPy renders the request path as a Python string literal. Every
+// :param takes a valid sample value, except the malformed one, which takes an
+// invalid one.
+func realtimeURLPy(path string, inputs []realtimeTypedPathInput, malformed string) string {
+	types := map[string]string{}
+	for _, in := range inputs {
+		types[in.name] = in.typ
+	}
+	segs := strings.Split(path, "/")
+	for i, seg := range segs {
+		if !strings.HasPrefix(seg, ":") {
+			continue
+		}
+		name := seg[1:]
+		segs[i] = realtimeSamplePy(types[name], name == malformed)
+	}
+	return "\"" + strings.Join(segs, "/") + "\""
+}
+
+// realtimeSamplePy is the path segment value for a param of the given type.
+func realtimeSamplePy(typ string, malformed bool) string {
+	switch {
+	case typ == "uuid" && malformed:
+		return "not-a-uuid"
+	case typ == "int" && malformed:
+		return "not-an-int"
+	case typ == "uuid":
+		return zeroUUIDPy
+	case typ == "int":
+		return "1"
+	}
+	return "test"
+}
+
+// realtimePathSegments renders a path as the snake_case words of a test name,
+// e.g. /api/rooms/:id/live -> api_rooms_id_live.
+func realtimePathSegments(path string) string {
+	var segs []string
+	for _, s := range strings.Split(path, "/") {
+		if s == "" {
+			continue
+		}
+		s = strings.TrimPrefix(s, ":")
+		segs = append(segs, pyIdentChars(common.SnakeCase(s)))
+	}
+	return strings.Join(segs, "_")
+}
+
+// pyAuthHeaderFor reports the header an enforced auth strategy carries credentials in.
+func pyAuthHeaderFor(strategy string) string {
+	if strategy == "api_key" {
+		return "x-api-key"
+	}
+	return "authorization"
+}
+
+// realtimeRefusalsPy lists the refusal requests for one STREAM or WS endpoint.
+func (g *Generator) realtimeRefusalsPy(rt realtimeTestEndpoint) []realtimeRefusal {
+	ep := rt.ep
+	inputs := realtimeTypedPathInputs(ep)
+	ea, enforced := endpointEnforcedAuthMeta(ep.Meta)
+	creds := ""
+	if enforced {
+		creds = fmt.Sprintf("auth_headers(%q, %q)", ea.Strategy, ea.Secret)
+	}
+
+	var out []realtimeRefusal
+	add := func(suffix, status, url, headers string) {
+		out = append(out, realtimeRefusal{suffix: suffix, status: status, url: url, headers: headers})
+	}
+	if enforced {
+		add("rejects_without_credentials", "401", realtimeURLPy(ep.Path, inputs, ""), "")
+	}
+	hasUse := false
+	for _, meta := range ep.Meta {
+		if meta.Kind == "use" && meta.Use != nil {
+			hasUse = true
+		}
+	}
+	if len(inputs) > 0 && !hasUse {
+		in := inputs[0]
+		status := "422"
+		if rt.ws {
+			status = "400"
+		}
+		add("rejects_malformed_"+pyIdentChars(common.SnakeCase(in.name)), status,
+			realtimeURLPy(ep.Path, inputs, in.name), creds)
+	}
+	for _, meta := range ep.Meta {
+		if meta.Kind != "use" || meta.Use == nil {
+			continue
+		}
+		mw := g.findMiddleware(meta.Use.Name)
+		if mw == nil || len(mw.Before) == 0 {
+			continue
+		}
+		guard, ok := mw.Before[0].(*ast.GuardStmt)
+		if !ok || guard.Status == "" {
+			continue
+		}
+		fa, ok := guard.Condition.(*ast.FieldAccess)
+		if !ok {
+			continue
+		}
+		if base, ok := fa.Base.(*ast.Ident); !ok || base.Name != "header" {
+			continue
+		}
+		// The credentials would satisfy the guard when they carry the same header.
+		if enforced && strings.EqualFold(fa.Field, pyAuthHeaderFor(ea.Strategy)) {
+			continue
+		}
+		add("refuses_without_header_"+pyIdentChars(strings.ToLower(fa.Field)), guard.Status,
+			realtimeURLPy(ep.Path, inputs, ""), creds)
+	}
+	return out
+}
+
+// realtimeRefusalViewsPy keeps the STREAM and WS endpoints that have at least one refusal test.
+func (g *Generator) realtimeRefusalViewsPy(streams []*ast.StreamEndpoint, wss []*ast.WsEndpoint) []realtimeTestEndpoint {
+	var out []realtimeTestEndpoint
+	for _, rt := range realtimeTestEndpoints(streams, wss) {
+		if len(g.realtimeRefusalsPy(rt)) > 0 {
+			out = append(out, rt)
+		}
+	}
+	return out
+}
+
+// genRealtimeTestFilePy emits tests/test_<resource>_realtime.py with the refusal
+// tests of one resource's STREAM and WS endpoints.
+func (g *Generator) genRealtimeTestFilePy(resource string, views []realtimeTestEndpoint) codegen.OutputFile {
+	var body strings.Builder
+	for _, rt := range views {
+		kind := "stream"
+		if rt.ws {
+			kind = "ws"
+		}
+		for _, r := range g.realtimeRefusalsPy(rt) {
+			if body.Len() > 0 {
+				body.WriteString("\n\n")
+			}
+			name := "test_" + kind + "_" + realtimePathSegments(rt.ep.Path) + "_" + r.suffix
+			args := r.url
+			if r.headers != "" {
+				args += ", headers=" + r.headers
+			}
+			fmt.Fprintf(&body, "def %s(client: TestClient) -> None:\n", name)
+			if rt.ws {
+				fmt.Fprintf(&body, "    assert bounded(lambda: ws_refusal_status(client, %s)) == %s\n", args, r.status)
+			} else {
+				fmt.Fprintf(&body, "    res = bounded(lambda: client.get(%s))\n", args)
+				fmt.Fprintf(&body, "    assert res.status_code == %s\n", r.status)
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(fileHeader(g.sourceFile))
+	fmt.Fprintf(&b, "\"\"\"Generated refusal tests for the STREAM and WS endpoints of the %s resource.\"\"\"\n\n", resource)
+	b.WriteString("from fastapi.testclient import TestClient\n\n")
+	b.WriteString("from tests._harness.realtime import bounded, ws_refusal_status\n")
+	if strings.Contains(body.String(), "auth_headers(") {
+		b.WriteString("from tests._harness.auth import auth_headers\n")
+	}
+	b.WriteString("\n\n")
+	b.WriteString(body.String())
+	b.WriteString("\n")
+
+	path := fmt.Sprintf("tests/test_%s_realtime.py", pyModuleName(resource))
+	return codegen.OutputFile{Path: path, Content: []byte(b.String())}
+}
+
+// genRealtimeHarnessPy emits tests/_harness/realtime.py: the bounded calls the
+// refusal tests make.
+func (g *Generator) genRealtimeHarnessPy() codegen.OutputFile {
+	return codegen.OutputFile{Path: "tests/_harness/realtime.py", Content: []byte(fileHeader(g.sourceFile) + realtimeHarnessPySource)}
+}
+
+const realtimeHarnessPySource = `"""Bounded calls for the generated refusal tests of STREAM and WS endpoints.
+
+A refusal is answered at once. Each call runs on a worker thread with a
+deadline, so a regression that stops a refusal from returning fails the test
+instead of hanging the run.
+"""
+
+import threading
+from typing import Callable, TypeVar
+
+from fastapi.testclient import TestClient
+
+try:
+    from starlette.testclient import WebSocketDenialResponse
+except ImportError:  # older starlette releases export it from websockets
+    from starlette.websockets import WebSocketDenialResponse
+
+T = TypeVar("T")
+
+
+def bounded(call: Callable[[], T], seconds: float = 5.0) -> T:
+    """Return the result of call, or fail when it does not return within seconds."""
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            outcome["value"] = call()
+        except BaseException as exc:  # re-raised on the test thread below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise AssertionError(f"refusal did not return within {seconds} seconds")
+    if "error" in outcome:
+        raise outcome["error"]  # type: ignore[misc]
+    return outcome["value"]  # type: ignore[return-value]
+
+
+def ws_refusal_status(client: TestClient, url: str, headers: dict[str, str] | None = None) -> int:
+    """Return the HTTP status a WebSocket handshake is refused with.
+
+    The handshake must be refused with a response: an accepted connection fails
+    the test.
+    """
+    try:
+        with client.websocket_connect(url, headers=headers or {}):
+            pass
+    except WebSocketDenialResponse as exc:
+        return exc.status_code
+    raise AssertionError("WebSocket handshake was accepted, not refused")
+`

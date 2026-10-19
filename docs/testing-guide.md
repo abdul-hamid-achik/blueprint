@@ -4,7 +4,9 @@ Blueprint provides three complementary test paths:
 
 1. **Generated contract tests** come from endpoint declarations. They check
    that routes boot, accept a representative request, and return a declared
-   status and response shape.
+   status and response shape. STREAM and WS endpoints get refusal tests
+   instead: they check the status a request is refused with, before the stream
+   or socket opens (see [STREAM and WS refusal tests](#stream-and-ws-refusal-tests)).
 2. **Authored `test { }` blocks** describe specific examples in `.bp` source.
    The Node target emits them as Vitest files. The Python target rejects them
    until it can translate them faithfully.
@@ -76,7 +78,8 @@ generated/
     │   ├── ddl.ts
     │   └── setup.ts
     └── generated/
-        └── <resource>.test.ts
+        ├── <resource>.test.ts
+        └── <resource>-realtime.test.ts   # STREAM and WS refusal tests only
 ```
 
 The harness mocks `src/lib/db` with PGlite and resets every table between
@@ -89,7 +92,9 @@ Postgres server. Generated projects pin `vitest ^5.0.5`.
 generated/
 └── tests/
     ├── conftest.py
-    └── test_<resource>.py
+    ├── _harness/realtime.py          # STREAM and WS refusal helpers only
+    ├── test_<resource>.py
+    └── test_<resource>_realtime.py   # STREAM and WS refusal tests only
 ```
 
 The pytest harness starts `postgres:16-alpine` through
@@ -100,11 +105,40 @@ gets a harness with only the FastAPI `TestClient`, so it needs no Docker.
 pytest. An unhandled exception in a route, such as a `NotImplementedError`
 stub, answers `500` in the test client instead of aborting the test.
 
-Python contract tests cover generated endpoint contracts only. Blueprint
+Python contract tests cover REST endpoint contracts and the STREAM and WS
+refusal tests described below. Blueprint
 `test`, `fixture`, and `test_group` declarations currently make Python codegen
 fail with an unsupported-feature error, which prevents a successful build from
 silently omitting them. Keep Python-specific tests in an external application
 test suite; generated output remains manifest-owned and may be replaced.
+
+## STREAM and WS refusal tests
+
+STREAM and WS endpoints get no happy-path case: a stream never ends on its own,
+and a WebSocket handshake needs a live socket. They get refusal tests instead.
+Each one sends a request that must be refused and checks only the status, which
+is answered before any stream or handshake starts:
+
+| Refusal | Request sent | Expected status |
+|---|---|---|
+| Enforced `auth` | the endpoint with no credentials | `401` |
+| Declared `uuid` or `int` path input (`<- id uuid`) | valid credentials and a malformed segment | Node `400`; Python STREAM `422`; Python WS `400` |
+| `use` middleware whose first step is `guard header.X -> NNN` | the endpoint without the `X` header (with credentials when auth is enforced) | `NNN` |
+
+Two cases are not tested, because another refusal could answer first. A
+path-input refusal is skipped when the endpoint has `use` middleware, which runs
+before the path check. A middleware refusal is skipped when the endpoint's
+credentials carry the guarded header, since they would satisfy the guard. An
+endpoint with none of these refusals gets no test, and a spec with no refusals
+at all gets no test files.
+
+The tests never read a stream body. Node sends WS refusals with the handshake
+headers a browser sends (`Upgrade`, `Connection`, `Sec-WebSocket-Version`,
+`Sec-WebSocket-Key`), so the middleware chain answers with a plain response.
+Each Node test has a 5-second timeout. Python runs each request through
+`bounded` in `tests/_harness/realtime.py`, which fails the test if the request
+does not return within 5 seconds, and reads a WS refusal through Starlette's
+`WebSocketDenialResponse`.
 
 ## Generated property tests (Node)
 

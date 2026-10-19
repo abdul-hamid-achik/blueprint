@@ -1582,9 +1582,9 @@ func cmdTestWithPropertyTests(filename, outDir, target string, force, propertyTe
 	// false failure, so report the skip and exit 0 instead.
 	if !hasGeneratedTests(outDir, target) {
 		if target == targetPython {
-			fmt.Printf("No tests generated for %s: generated tests cover REST endpoints.\n", filename)
+			fmt.Printf("No tests generated for %s: generated tests cover REST endpoints and STREAM/WS refusals.\n", filename)
 		} else {
-			fmt.Printf("No tests generated for %s: generated tests cover REST endpoints and authored test blocks.\n", filename)
+			fmt.Printf("No tests generated for %s: generated tests cover REST endpoints, STREAM/WS refusals, and authored test blocks.\n", filename)
 		}
 		return 0
 	}

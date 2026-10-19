@@ -48,20 +48,17 @@ func TestHasGeneratedTests(t *testing.T) {
 	}
 }
 
-// streamOnlySpec has a STREAM endpoint and no REST endpoints, so the generated
-// project has no test files to run.
+// streamOnlySpec has a STREAM endpoint and no REST endpoints. It has no auth,
+// typed path input or use middleware, so there is no refusal to test and the
+// generated project has no test files to run.
 const streamOnlySpec = `blueprint "stream-only" {
   version  "1.0.0"
   runtime  %s
   database postgres
 }
 
-secret JWT_SECRET required
-
 @ "Stream pings"
 STREAM /api/ping {
-  auth jwt using(secret.JWT_SECRET)
-
   stream {
     |> on timeout(2s) {
       -> { type: "ping" }

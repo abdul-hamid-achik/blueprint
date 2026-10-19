@@ -979,8 +979,13 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 	// Auto-generated contract tests + in-memory (PGlite) harness (opt-in).
 	// Property tests build on the same harness and deliberately imply contract
 	// tests; the long-standing --gen-tests mode remains contract-only.
-	if (g.genTests || g.propertyTests) && len(endpoints) > 0 {
-		files = append(files, g.genAutoTests(endpoints, secrets, hasDB)...)
+	// STREAM and WS endpoints contribute refusal tests only (see autotest.go).
+	var realtime []realtimeTestEndpoint
+	if g.genTests {
+		realtime = g.realtimeRefusalViews(streams, ws)
+	}
+	if (g.genTests || g.propertyTests) && (len(endpoints) > 0 || len(realtime) > 0) {
+		files = append(files, g.genAutoTests(endpoints, realtime, secrets, hasDB)...)
 	}
 	if g.propertyTests {
 		propertyFiles, err := g.genPropertyTests(endpoints, hasDB, types, aliases)
