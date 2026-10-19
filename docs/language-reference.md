@@ -283,14 +283,18 @@ Secrets are sensitive values loaded from environment variables. Missing required
 ```bp
 secret DATABASE_URL required
 secret STRIPE_KEY   required
-secret WEBHOOK_KEY  optional default("")
+secret WEBHOOK_KEY  required
+secret SENTRY_DSN   optional default("")
 ```
 
 Declared secrets are exposed by generated projects through the same validated
 environment object as other configuration: use `env.DATABASE_URL` or
 `env.STRIPE_KEY` in arrow expressions. `secret.KEY` is not a general expression
-namespace; it is interpreted only by the webhook-auth form
-`auth webhook_sig using(secret.KEY)`.
+namespace; it is interpreted only by `auth <strategy> using(secret.KEY)`.
+
+Declare a secret used by `auth ... using(...)` as `required`, so a missing
+value stops the service at startup. An `optional` auth secret that is unset or
+empty does not open the endpoint: every request to it answers `401`.
 
 Generated `.env.example` lists all declared secrets.
 
