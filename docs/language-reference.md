@@ -1189,11 +1189,19 @@ keep-alive`. Differences:
   messages, but the payload keys differ (`roomId` versus `room_id`), so run one
   runtime per Redis deployment.
 - A client that disconnects is unsubscribed at once and its timers are cancelled.
+- `header.X` in a pre-stream statement or a handler reads the request that opened
+  the stream. The values are read once, before the stream opens. An absent header,
+  or an unset `env.X`, drops its key from the frame, as on Node.
+- `try/recover` before the stream block runs on the pre-stream session. A guard
+  inside its `try` goes to the `recover` branch, as on Node.
+- A handler that calls a `fn` runs the call in a worker thread and sends the frame
+  when the call returns. Two events whose calls finish out of order send their
+  frames out of order, on both targets.
 
-Not supported on Python yet: `cache`, `auth webhook_sig`,
-`try/recover` before the stream block, calls to functions or `header`/`env` in a
-handler, and handler output that is not an object literal. `bp build` names the
-reason. WS endpoints are translated on Python; section 15 lists their notes.
+Not supported on Python yet: `cache`, `auth webhook_sig`, a bare `header` or `env`
+name or a read deeper than one field (`header.X.y`), and handler output that is
+not an object literal. `bp build` names the reason. WS endpoints are translated on
+Python; section 15 lists their notes.
 
 ---
 
@@ -1387,14 +1395,27 @@ with these differences:
   replies to the current socket are not limited on either target.
 - Timestamps in WS frames use the Node form (`toISOString()`), not the FastAPI
   form used by STREAM frames.
+- `header.X` in a handler reads the handshake's header. The headers are read
+  before the socket accepts, so every handler sees the values of the request that
+  opened the connection. `env.X` reads the same settings as in REST. An absent
+  header, or an unset `env.X`, drops its key from the frame, as on Node.
+- `try/recover` runs as on Node. Frames that a failed `try` already sent stay sent.
+  Its database writes roll back when the `try` holds two or more writes and no
+  guard or output, the same rule as REST (a SAVEPOINT on Python). A guard inside
+  the `try` goes to the `recover` branch.
+- An inline `when` runs its step under the condition, for example
+  `|> when message.body == "close": close`.
+- A handler calls a declared `fn` on its worker thread, as a REST body does.
 
-Still rejected on Python, with a reason from `bp build`: `try/recover` in a
-handler, `auth webhook_sig`, an inline `when`, a `header` or
-`env` reference, a call to a function or to `call`, `.length` on a value that is
-not a message field, a step outside the translated set, and a handler output that
-is not an object literal. The translated set is the realtime built-ins (`join`,
-`leave`, `broadcast`, `whisper`, `close`), `emit`, `inject`, `log`, the data
-operations (`save`, `fetch`, `query`, `update`, `delete`), `when`, and `guard`.
+Still rejected on Python, with a reason from `bp build`: `auth webhook_sig`, a bare
+`header` or `env` name or a read deeper than one field, `.length` on a value that
+is not a message field, a step outside the translated set, and a handler output
+that is not an object literal. `auth webhook_sig` on WS is not translated because
+Node computes the HMAC over the handshake's request body, which is empty, so the
+signature is one fixed value a client can replay, not a check of the message. The
+translated set is the realtime built-ins (`join`, `leave`, `broadcast`, `whisper`,
+`close`), `emit`, `inject`, `log`, the data operations (`save`, `fetch`, `query`,
+`update`, `delete`), `when`, `guard`, `try`/`recover`, and declared `fn` calls.
 
 In OpenAPI output: exposed as `GET` with `101` response and `x-websocket: true`.
 
