@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-18
+
 ### Changed (may reject input that earlier releases accepted)
 
 - New checker error C052: a `default`, `min`, `max`, or `format` value that
