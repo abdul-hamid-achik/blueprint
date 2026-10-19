@@ -162,3 +162,31 @@ WS /ws/chat {
 		})
 	}
 }
+
+// join, leave, and broadcast need the room registry of a generated WS route
+// file, so they are unbound (C035) in REST and STREAM handlers.
+func TestRoomBuiltinsOutsideWSAreUnbound(t *testing.T) {
+	src := whisperHeader + `
+POST /api/rooms/:id/notify {
+  <- id string required
+  |> broadcast room(id) { type: "notice" }
+  -> 200 { ok: true }
+}
+
+STREAM /api/live/:id {
+  <- id string required
+  |> join room(id)
+  stream {
+    |> on timeout(1s) {
+      -> { type: "ping" }
+    }
+  }
+}
+`
+	errs := check(t, src)
+	for _, name := range []string{"broadcast", "join"} {
+		if !hasErrorCode(errs, CodeUnboundIdentifier, `"`+name+`" is only available in WS handlers`) {
+			t.Fatalf("expected C035 for %s outside WS, got %v", name, errs)
+		}
+	}
+}

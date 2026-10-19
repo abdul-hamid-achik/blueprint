@@ -1738,6 +1738,14 @@ func (c *Checker) checkLocalCallArgs(call *ast.FnCall, scope *Scope) {
 			"Use whisper connection(id) { data } in on_connect, on_message, or on_disconnect of a WS endpoint",
 		)
 	}
+	// join, leave, and broadcast use the room registry and Redis clients that
+	// only a generated WS route file declares, so they are WS-only as well.
+	if isRoomBuiltin(call.Name) && !isWSConnectionBinding(scope) {
+		c.addErrorCode(call.Loc, CodeUnboundIdentifier,
+			fmt.Sprintf("%q is only available in WS handlers", call.Name),
+			"Use "+call.Name+" room(name) in on_connect, on_message, or on_disconnect of a WS endpoint",
+		)
+	}
 	switch call.Name {
 	case "query", "fetch", "save", "update", "delete", "count", "seed", "import_bundle", "export_bundle":
 		c.checkDataOperationRefs(call, scope)

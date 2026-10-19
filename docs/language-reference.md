@@ -1167,7 +1167,9 @@ close                                      # close this connection
 ```
 
 `join`, `leave`, and `broadcast` take a room name as a value, so a WS endpoint
-needs no `model room` declaration.
+needs no `model room` declaration. They are only valid inside `on_connect`,
+`on_message`, and `on_disconnect`; in a REST or STREAM handler, `bp check`
+reports C035.
 
 `|> close` closes the current connection. It is only valid inside `on_connect`,
 `on_message`, and `on_disconnect`; anywhere else, including STREAM and REST

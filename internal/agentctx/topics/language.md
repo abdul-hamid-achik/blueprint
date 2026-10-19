@@ -116,7 +116,7 @@ Endpoint bodies, middleware `before`/`after`, and fn logic are `|>` steps. Outpu
 | `log "msg" level(info)` | Levels: debug, info, warn, error. Other levels are C051. |
 | `inject x as y` | Middleware: expose a value to the handler. |
 | `emit "event" { data }` / `enqueue "queue" { data }` | Event / BullMQ job. With `REDIS_URL`, STREAM listeners on other instances receive emitted events; `subscribe` handlers stay local. |
-| `join room(id)` / `leave room(id)` / `broadcast room(id) { data }` | WS only. Need no `model room`. |
+| `join room(id)` / `leave room(id)` / `broadcast room(id) { data }` | WS only (in REST, STREAM, and other blocks they are C035). Need no `model room`. |
 | `close` | WS only: closes the connection and ends the handler. Anywhere else: C035. |
 | `whisper connection(id) { data }` | WS only: sends JSON `data` to the one connection whose `connection.id` is `id`. Target must be `connection(...)` (`whisper room(x)` is C054; use `broadcast`). Data block required. An id connected nowhere is a no-op. With `REDIS_URL`, delivered across instances on `bp:ws:whisper`. Anywhere else: C035. |
 | `call svc GET /path` / `sleep 5s` | External call / delay. |

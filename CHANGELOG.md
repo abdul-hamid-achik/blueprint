@@ -82,6 +82,10 @@ All notable changes to this project will be documented in this file.
 - Python target: enum members named `mro` and type fields that start with an
   underscore are rejected instead of failing at import or being dropped by
   Pydantic.
+- `join`, `leave`, and `broadcast` outside a WS handler are C035. `bp check`
+  used to accept them in REST and STREAM handlers, and the generated Node
+  route then referenced room helpers that only WS route files declare, so
+  `tsc` failed.
 
 ## [0.18.0] - 2026-10-18
 
