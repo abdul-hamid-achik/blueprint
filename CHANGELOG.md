@@ -27,6 +27,20 @@ All notable changes to this project will be documented in this file.
   or that sits on a strategy with no secret.
 - Lint `unenforced-auth` warns when a REST or STREAM endpoint declares `auth`
   with no `using(...)` and no `use` middleware covers it.
+- Python target: named `enum` declarations, emitted in
+  `src/models/enums.py`. Model columns use a SQLAlchemy `Enum` with the same
+  Postgres type name as Node, and endpoint inputs answer 422 on other values.
+  Struct enums (variants with bodies) are still rejected.
+- Python target: inline `enum(...)` endpoint inputs (as `Literal[...]`), and
+  `type` and `alias` declarations, emitted in `src/models/types.py` as Pydantic
+  models and `Annotated` aliases. Alias bounds apply to query, body, and path
+  inputs. Model fields can use an alias over a scalar type; an alias-typed
+  primary key and a field typed by a `type` declaration are still rejected.
+- Python target: endpoint `tags` (OpenAPI tags), `cache` (`Cache-Control` on
+  GET 2xx responses, `public` or `private` under the same rules as Node), and
+  `limit` (in-process fixed window, 429 `{"error":"Rate limit exceeded"}`),
+  through `src/lib/http_cache.py` and `src/lib/rate_limit.py`. Endpoint `auth`
+  and `timeout` metadata are still rejected.
 
 ### Changed
 
@@ -50,6 +64,14 @@ All notable changes to this project will be documented in this file.
   exited at startup with `EADDRINUSE`. Generated tests now use
   `import { app } from '../src/index.js'`; update hand-written tests that used
   the default import.
+- Python target: an inline `enum(...)` model column is a named Postgres
+  type (`<model><Field>` in lowercase, as on Node), so `CREATE TABLE` no longer
+  fails with "PostgreSQL Enum type requires a name".
+- Python target: `src/models/schema.py` imports `datetime` and `uuid` whenever
+  a column annotation needs them, including columns without `default(now)`.
+- Python target: enum members named `mro` and type fields that start with an
+  underscore are rejected instead of failing at import or being dropped by
+  Pydantic.
 
 ## [0.18.0] - 2026-10-18
 
