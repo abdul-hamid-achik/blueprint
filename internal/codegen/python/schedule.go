@@ -238,11 +238,15 @@ async def _process(job: Any, token: str) -> None:
 
 
 async def start() -> None:
-    """Register every schedule, drop stale ones, and start the Worker (no-op under pytest)."""
+    """Register every schedule, drop stale ones, and start the Worker (no-op under pytest).
+
+    Safe to call again after a failure: registration is idempotent.
+    """
     global _queue, _worker
     if "pytest" in sys.modules or _worker is not None:
         return
-    _queue = Queue(SCHEDULER_QUEUE, {"connection": connection_options()})
+    if _queue is None:
+        _queue = Queue(SCHEDULER_QUEUE, {"connection": connection_options()})
     declared = {name for name, _, _ in SCHEDULES}
     for name, cron, _ in SCHEDULES:
         await _queue.upsertJobScheduler(

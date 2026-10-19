@@ -304,20 +304,35 @@ func (g *Generator) genIndex(bp *ast.Blueprint, endpoints []*ast.Endpoint, strea
 	// sit there forever (cron handlers would be dead code at runtime).
 	if len(schedules) > 0 {
 		b.WriteString("  // Register scheduled jobs. Job scheduler id == job name == schedule name.\n")
+		b.WriteString("  // Registration retries in the background, so an unreachable Redis at boot\n")
+		b.WriteString("  // delays the schedules instead of the HTTP server.\n")
 		b.WriteString("  const schedulerQueue = new Queue('__bp_scheduler', { connection: { url: env.REDIS_URL } });\n")
+		b.WriteString("  const registerSchedules = async () => {\n")
 		knownSchedules := make([]string, 0, len(schedules))
 		for _, s := range schedules {
 			name := toCamelCase(s.Name)
 			cronName := name + "Cron"
 			knownSchedules = append(knownSchedules, fmt.Sprintf("'%s'", s.Name))
-			fmt.Fprintf(&b, "  await schedulerQueue.upsertJobScheduler('%s', { pattern: %s }, { name: '%s', data: {}, opts: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } } });\n", s.Name, cronName, s.Name)
+			fmt.Fprintf(&b, "    await schedulerQueue.upsertJobScheduler('%s', { pattern: %s }, { name: '%s', data: {}, opts: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } } });\n", s.Name, cronName, s.Name)
 		}
 		// Drop schedulers whose schedule was removed from the .bp file, so they
 		// stop firing into the "Unknown scheduled job" default branch below.
-		fmt.Fprintf(&b, "  const knownSchedules = new Set([%s]);\n", strings.Join(knownSchedules, ", "))
-		b.WriteString("  for (const scheduler of await schedulerQueue.getJobSchedulers()) {\n")
-		b.WriteString("    if (!knownSchedules.has(scheduler.key)) await schedulerQueue.removeJobScheduler(scheduler.key);\n")
-		b.WriteString("  }\n")
+		fmt.Fprintf(&b, "    const knownSchedules = new Set([%s]);\n", strings.Join(knownSchedules, ", "))
+		b.WriteString("    for (const scheduler of await schedulerQueue.getJobSchedulers()) {\n")
+		b.WriteString("      if (!knownSchedules.has(scheduler.key)) await schedulerQueue.removeJobScheduler(scheduler.key);\n")
+		b.WriteString("    }\n")
+		b.WriteString("  };\n")
+		b.WriteString("  void (async () => {\n")
+		b.WriteString("    for (;;) {\n")
+		b.WriteString("      try {\n")
+		b.WriteString("        await registerSchedules();\n")
+		b.WriteString("        return;\n")
+		b.WriteString("      } catch (err) {\n")
+		b.WriteString("        console.error('Schedule registration failed; retrying in 5s:', err);\n")
+		b.WriteString("        await new Promise((resolve) => setTimeout(resolve, 5000));\n")
+		b.WriteString("      }\n")
+		b.WriteString("    }\n")
+		b.WriteString("  })();\n")
 		b.WriteString("  new Worker('__bp_scheduler', async (job) => {\n")
 		b.WriteString("    switch (job.name) {\n")
 		for _, s := range schedules {

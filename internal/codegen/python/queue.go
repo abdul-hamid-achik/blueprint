@@ -473,18 +473,25 @@ Queues are created on the app's event loop and closed at shutdown. A REST
 handler that enqueues is a sync function run in FastAPI's threadpool, so
 enqueue_job hands the add to the loop and waits for it. Under pytest, and
 before the app lifespan has started, enqueue_job raises instead of waiting.
+start_when_reachable starts the scheduler and the workers once Redis answers,
+so an unreachable Redis at boot delays them instead of the whole app.
 """
 import asyncio
 import sys
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from bullmq import Queue
 from fastapi.encoders import jsonable_encoder
+from redis.asyncio import Redis
 
 from src.lib.env import env
+from src.lib.log import logger
 
 ENQUEUE_TIMEOUT_SECONDS = 30.0
+# Delay between attempts to reach Redis while the scheduler and workers wait to start.
+REDIS_RETRY_SECONDS = 5.0
 # Socket timeout for every BullMQ connection. Workers block for up to 10 s on
 # the job marker; a connection whose reply never arrives (a half-open socket)
 # then fails after this timeout and reconnects, instead of leaving the worker
@@ -509,8 +516,40 @@ def connection_options() -> dict[str, Any]:
         opts["ssl"] = True
     return opts
 
+
 _queues: dict[str, Queue] = {}
 _loop: asyncio.AbstractEventLoop | None = None
+
+
+async def _ping() -> None:
+    client = Redis(**connection_options(), socket_connect_timeout=REDIS_RETRY_SECONDS)
+    try:
+        await client.ping()
+    finally:
+        await client.aclose()
+
+
+async def start_when_reachable(*starts: Callable[[], Awaitable[None]]) -> None:
+    """Await each start in order once Redis answers PING (no-op under pytest).
+
+    Runs as a background task of the app lifespan, so the app serves requests
+    meanwhile. A failed attempt is logged and retried every REDIS_RETRY_SECONDS;
+    each start must be safe to call again after a failure.
+    """
+    if "pytest" in sys.modules:
+        return
+    pending = list(starts)
+    while pending:
+        try:
+            await _ping()
+            while pending:
+                await pending[0]()
+                pending.pop(0)
+        except Exception as error:
+            logger.warning(
+                f"Schedules and workers not started ({error}); retrying in {REDIS_RETRY_SECONDS:g}s"
+            )
+            await asyncio.sleep(REDIS_RETRY_SECONDS)
 
 
 def bind_loop() -> None:

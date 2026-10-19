@@ -227,7 +227,8 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint, hasSc
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	if hasSchedules || hasWorkers {
-		b.WriteString("from contextlib import asynccontextmanager\n")
+		b.WriteString("import asyncio\n")
+		b.WriteString("from contextlib import asynccontextmanager, suppress\n")
 		b.WriteString("from src.lib import queue as bp_queue\n")
 	}
 	b.WriteString("from fastapi import FastAPI, Request\n")
@@ -267,21 +268,27 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint, hasSc
 	}
 	lifespanArg := ""
 	if hasSchedules || hasWorkers {
-		// Workers and the scheduler run for the life of the app: started before
-		// the first request, and stopped after the last, waiting for jobs in
-		// progress. Producer queues are closed last.
+		// Workers and the scheduler run for the life of the app. They start in
+		// a background task once Redis answers, so the app serves requests
+		// even while Redis is down, and stop after the last request, waiting
+		// for jobs in progress. Producer queues are closed last.
+		var starts []string
+		if hasSchedules {
+			starts = append(starts, "scheduler.start")
+		}
+		if hasWorkers {
+			starts = append(starts, "workers.start")
+		}
 		b.WriteString("\n@asynccontextmanager\n")
 		b.WriteString("async def lifespan(app: FastAPI):\n")
 		b.WriteString("    bp_queue.bind_loop()\n")
-		if hasSchedules {
-			b.WriteString("    await scheduler.start()\n")
-		}
-		if hasWorkers {
-			b.WriteString("    await workers.start()\n")
-		}
+		fmt.Fprintf(&b, "    bp_jobs = asyncio.create_task(bp_queue.start_when_reachable(%s))\n", strings.Join(starts, ", "))
 		b.WriteString("    try:\n")
 		b.WriteString("        yield\n")
 		b.WriteString("    finally:\n")
+		b.WriteString("        bp_jobs.cancel()\n")
+		b.WriteString("        with suppress(asyncio.CancelledError):\n")
+		b.WriteString("            await bp_jobs\n")
 		if hasWorkers {
 			b.WriteString("        await workers.stop()\n")
 		}

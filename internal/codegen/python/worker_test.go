@@ -134,6 +134,43 @@ worker process_job {
 	}
 }
 
+// An unreachable Redis at boot must not keep the app from serving: the lifespan
+// starts the workers in a background task that waits for Redis.
+func TestPython_WorkersStartInBackgroundOnceRedisAnswers(t *testing.T) {
+	out := buildPython(t, workerHead+`POST /api/jobs {
+  |> enqueue "jobs" { id: "1" }
+  -> 202 { ok: true }
+}
+worker process_job {
+  trigger queue("jobs")
+  |> log "x"
+}
+`)
+	app := readPy(t, out, "src/app.py")
+	for _, want := range []string{
+		"bp_jobs = asyncio.create_task(bp_queue.start_when_reachable(workers.start))\n",
+		"        bp_jobs.cancel()\n",
+		"        await workers.stop()\n",
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.py missing %q:\n%s", want, app)
+		}
+	}
+	if strings.Contains(app, "await workers.start()") {
+		t.Errorf("the lifespan must not await workers.start() before serving:\n%s", app)
+	}
+	queue := readPy(t, out, "src/lib/queue.py")
+	for _, want := range []string{
+		"async def start_when_reachable(*starts: Callable[[], Awaitable[None]]) -> None:",
+		"            await _ping()\n",
+		"            await asyncio.sleep(REDIS_RETRY_SECONDS)\n",
+	} {
+		if !strings.Contains(queue, want) {
+			t.Errorf("queue.py missing %q:\n%s", want, queue)
+		}
+	}
+}
+
 func TestPython_WorkerRejectsResponseOutputAndUnboundUpdate(t *testing.T) {
 	cases := map[string]string{
 		"worker response output": workerHead + `worker process_job {

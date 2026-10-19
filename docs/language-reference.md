@@ -1491,6 +1491,12 @@ Under pytest, workers and schedules do not start, and `enqueue_job` raises
 instead of waiting for a Redis connection, so the generated contract tests omit
 endpoints that enqueue.
 
+Startup does not wait for Redis on either target. Node workers reconnect on
+their own; on Python the app lifespan starts the workers once Redis answers
+`PING`, logging a warning and retrying every 5s while it does not. While Redis
+is down, a Node `enqueue` waits for the connection to come back, and a Python
+`enqueue` answers `500` after 30s.
+
 The generated timeout rejects the worker wait after the declared duration but
 does not cancel work already in progress.
 
@@ -1549,14 +1555,16 @@ Redis, as on Node. The body runs the same statements as an endpoint body, minus
 the request: `->` responses, `<-` inputs, `header` reads, and `emit` are
 rejected at build time. A failing run is retried by BullMQ 3 times with
 exponential backoff from 1s, as on Node. Both targets use the process-local
-timezone. The scheduler does not start under pytest.
+timezone. The scheduler starts once Redis answers; until then the app serves
+requests and logs a warning every 5s. It does not start under pytest.
 
 **On the Node target** (`--target node`), each schedule is a BullMQ 6 job
 scheduler on the `__bp_scheduler` Redis queue, whose id and job name are the
 schedule name. Startup upserts one scheduler per declared schedule and removes
 any scheduler whose name is no longer declared, so deleting or renaming a
 schedule stops its old runs. A failing run is retried with 3 attempts and
-exponential backoff from 1s.
+exponential backoff from 1s. Registration runs in the background and retries
+every 5s, so the HTTP server starts while Redis is down.
 
 ---
 

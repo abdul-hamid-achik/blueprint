@@ -68,8 +68,8 @@ func TestPython_ScheduleEmitsBodyRunnerAndLifespan(t *testing.T) {
 	app := readPy(t, out, "src/app.py")
 	for _, want := range []string{
 		"from src.lib import scheduler\n",
-		"async def lifespan(app: FastAPI):\n    bp_queue.bind_loop()\n    await scheduler.start()\n",
-		"        await scheduler.stop()\n",
+		"async def lifespan(app: FastAPI):\n    bp_queue.bind_loop()\n    bp_jobs = asyncio.create_task(bp_queue.start_when_reachable(scheduler.start))\n",
+		"        bp_jobs.cancel()\n        with suppress(asyncio.CancelledError):\n            await bp_jobs\n        await scheduler.stop()\n",
 		`app = FastAPI(title="x", version="1.0", lifespan=lifespan)`,
 	} {
 		if !strings.Contains(app, want) {

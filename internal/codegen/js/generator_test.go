@@ -2779,15 +2779,24 @@ func TestGenScheduleBasicFixtureRunsScheduledJobs(t *testing.T) {
 		"return cleanup();",
 		"Unknown scheduled job",
 		// BullMQ v6 job scheduler registration: id == job name == schedule name.
-		"await schedulerQueue.upsertJobScheduler('cleanup', { pattern: cleanupCron }, { name: 'cleanup', data: {}, opts: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } } });",
+		"    await schedulerQueue.upsertJobScheduler('cleanup', { pattern: cleanupCron }, { name: 'cleanup', data: {}, opts: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } } });",
 		// Stale scheduler cleanup: schedulers whose id is not a declared schedule are removed.
 		"const knownSchedules = new Set(['cleanup']);",
 		"for (const scheduler of await schedulerQueue.getJobSchedulers()) {",
 		"if (!knownSchedules.has(scheduler.key)) await schedulerQueue.removeJobScheduler(scheduler.key);",
+		// Registration retries in the background instead of blocking serve().
+		"  const registerSchedules = async () => {\n",
+		"  void (async () => {\n    for (;;) {\n      try {\n        await registerSchedules();\n        return;\n",
+		"console.error('Schedule registration failed; retrying in 5s:', err);",
 	} {
 		if !strings.Contains(indexStr, expected) {
 			t.Errorf("expected scheduler consumer wiring %q, got:\n%s", expected, indexStr)
 		}
+	}
+	// Nothing awaits Redis at the top level, so an unreachable Redis cannot keep
+	// the HTTP server from starting.
+	if strings.Contains(indexStr, "\n  await ") {
+		t.Errorf("startup must not await Redis before serve(), got:\n%s", indexStr)
 	}
 	if strings.Contains(indexStr, "repeat:") || strings.Contains(indexStr, "schedulerQueue.add(") {
 		t.Errorf("legacy BullMQ v5 repeatable registration must not be emitted, got:\n%s", indexStr)

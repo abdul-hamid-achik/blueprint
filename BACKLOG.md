@@ -428,6 +428,20 @@ Prep work (must precede the Python generator):
   - [ ] Python generated tests import `starlette.testclient` through httpx,
     which Starlette now deprecates in favor of `httpx2`; move the dev
     dependency before a Starlette release drops httpx.
+  - [x] Startup does not wait for Redis: Node registers schedules in a
+    background retry loop, Python starts schedules and workers once Redis
+    answers `PING`. Verified both apps serve HTTP with Redis stopped, register
+    within seconds of Redis starting, and exit on SIGTERM in 2 s (Python used
+    to hang in lifespan startup and ignore SIGTERM). _(2026-10-19)_
+  - [ ] While Redis is down, a Node `enqueue` waits for the connection with no
+    bound (BullMQ waits for it; `enableOfflineQueue: false` does not change
+    that), while Python answers `500` after 30 s. Decide whether Node gets a
+    bounded wait; a timeout there leaves the add pending, so the job can still
+    land after the `500`.
+  - [ ] Python worker idle stall seen once in early testing: a worker stopped
+    picking jobs after a long idle. Mitigated with a 30 s socket timeout on
+    every BullMQ connection (a 150 s idle test then passed); root cause not
+    proven.
 
 ## Later
 
