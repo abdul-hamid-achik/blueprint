@@ -202,7 +202,9 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
-	b.WriteString("from fastapi import FastAPI\n")
+	b.WriteString("from fastapi import FastAPI, Request\n")
+	b.WriteString("from fastapi.responses import JSONResponse\n")
+	b.WriteString("from starlette.exceptions import HTTPException as StarletteHTTPException\n")
 	guarded := g.withRealtimeEndpoints(endpoints)
 	if hasEnforcedAuth(guarded) {
 		b.WriteString("from src.lib.auth import Unauthorized, unauthorized_handler\n")
@@ -230,6 +232,12 @@ func (g *Generator) genAppPy(bp *ast.Blueprint, endpoints []*ast.Endpoint) codeg
 		version = "0.1.0"
 	}
 	fmt.Fprintf(&b, "app = FastAPI(title=%q, version=%q)\n\n", bp.Name, version)
+	// Guards raise HTTPException. Answer {"error": ...} as Node does instead of
+	// FastAPI's {"detail": ...}; registering on Starlette's class also covers
+	// the framework's own 404 and 405.
+	b.WriteString("\n@app.exception_handler(StarletteHTTPException)\n")
+	b.WriteString("async def http_error_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:\n")
+	b.WriteString("    return JSONResponse({\"error\": exc.detail}, status_code=exc.status_code, headers=exc.headers)\n\n\n")
 	if hasEnforcedAuth(guarded) {
 		// Auth failures raise Unauthorized so the body is exactly {"error": ...}
 		// rather than FastAPI's {"detail": ...}.

@@ -532,6 +532,22 @@ GET /api/x { -> 200 { origin: env.API_ORIGIN } }
 	}
 }
 
+func TestPython_HTTPExceptionAnswersErrorBody(t *testing.T) {
+	src := `blueprint "x" { version "1.0" port 3000 runtime node }
+GET /api/x { -> 200 { ok: true } }
+`
+	app := readPy(t, buildPython(t, src), "src/app.py")
+	for _, want := range []string{
+		"from starlette.exceptions import HTTPException as StarletteHTTPException\n",
+		"@app.exception_handler(StarletteHTTPException)\n",
+		`return JSONResponse({"error": exc.detail}, status_code=exc.status_code, headers=exc.headers)`,
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.py missing %q:\n%s", want, app)
+		}
+	}
+}
+
 func TestPython_RequiredSecretRejectsEmpty(t *testing.T) {
 	src := `blueprint "x" { version "1.0" port 3000 runtime node }
 secret WEBHOOK_KEY required
