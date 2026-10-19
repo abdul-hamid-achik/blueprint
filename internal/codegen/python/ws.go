@@ -649,7 +649,8 @@ func (g *Generator) wsExprFeatures(e ast.Expr, handler string, add func(string))
 
 // wsMessageChainPy renders a field chain rooted at the client's message as
 // ws_get lookups. The message is parsed JSON, so attribute access would fail
-// on a dict; .length maps to js_length.
+// on a dict; .length maps to js_length. Field names are camel-cased, as on
+// Node (message.sent_by reads the "sentBy" key).
 func wsMessageChainPy(v *ast.FieldAccess) string {
 	base := "message"
 	if inner, ok := v.Base.(*ast.FieldAccess); ok {
@@ -658,7 +659,7 @@ func wsMessageChainPy(v *ast.FieldAccess) string {
 	if v.Field == "length" {
 		return "js_length(" + base + ")"
 	}
-	return "ws_get(" + base + ", " + pyStringLiteral(v.Field) + ")"
+	return "ws_get(" + base + ", " + pyStringLiteral(common.CamelCase(v.Field)) + ")"
 }
 
 // emitWsStep translates the WS-only steps (join, leave, broadcast, whisper,
@@ -686,7 +687,7 @@ func emitWsStep(b *strings.Builder, s *ast.StepStmt, ctx *bodyCtx, indent string
 			}
 			data := "\"{}\""
 			if len(v.Args) >= 2 {
-				data = "ws_dumps(" + exprToPyWithCtx(v.Args[1], ctx) + ")"
+				data = "ws_dumps(" + exprToPyWithCtx(v.Args[1], eventPayloadCtx(ctx)) + ")"
 			}
 			fmt.Fprintf(b, "%s_fx.append((\"broadcast\", js_str(%s), %s))\n", indent, exprToPyWithCtx(wsTargetArg(v.Args[0]), ctx), data)
 		case "whisper":
@@ -694,7 +695,7 @@ func emitWsStep(b *strings.Builder, s *ast.StepStmt, ctx *bodyCtx, indent string
 				return false
 			}
 			fmt.Fprintf(b, "%s_fx.append((\"whisper\", %s, ws_dumps(%s)))\n", indent,
-				exprToPyWithCtx(wsTargetArg(v.Args[0]), ctx), exprToPyWithCtx(v.Args[1], ctx))
+				exprToPyWithCtx(wsTargetArg(v.Args[0]), ctx), exprToPyWithCtx(v.Args[1], eventPayloadCtx(ctx)))
 		case "emit":
 			if len(v.Args) < 1 {
 				return false

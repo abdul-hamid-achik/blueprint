@@ -305,16 +305,17 @@ func streamOutputOf(h *ast.StreamHandler) *ast.BlockExpr {
 	return &ast.BlockExpr{}
 }
 
-// streamOutputPy renders a handler's object literal. Direct event-field
-// entries use MISSING as the default, so an absent field is dropped from the
-// frame, as JSON.stringify drops undefined on Node.
+// streamOutputPy renders a handler's object literal. Keys are camel-cased as on
+// Node (room_id -> "roomId"). Direct event-field entries use MISSING as the
+// default, so an absent field is dropped from the frame, as JSON.stringify
+// drops undefined on Node.
 func streamOutputPy(blk *ast.BlockExpr, ctx *bodyCtx, scope map[string]bool, where bool) string {
 	if len(blk.Entries) == 0 {
 		return "{}"
 	}
 	parts := make([]string, 0, len(blk.Entries))
 	for _, kv := range blk.Entries {
-		parts = append(parts, fmt.Sprintf("%q: %s", kv.Key, streamExprPy(kv.Value, ctx, scope, where)))
+		parts = append(parts, fmt.Sprintf("%q: %s", common.CamelCase(kv.Key), streamExprPy(kv.Value, ctx, scope, where)))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }
@@ -338,13 +339,13 @@ func streamExprPy(e ast.Expr, ctx *bodyCtx, scope map[string]bool, where bool) s
 			}
 			return v.Name
 		}
-		return "event.get(" + pyStringLiteral(v.Name) + ", MISSING)"
+		return "event.get(" + pyStringLiteral(common.CamelCase(v.Name)) + ", MISSING)"
 	case *ast.FieldAccess:
 		if base, ok := v.Base.(*ast.Ident); ok && base.Name == "event" {
-			return "event.get(" + pyStringLiteral(v.Field) + ", MISSING)"
+			return "event.get(" + pyStringLiteral(common.CamelCase(v.Field)) + ", MISSING)"
 		}
 		if isFieldChainRootedAt(v, "event") {
-			return dictFieldChainPy("event", v)
+			return eventFieldChainPy(v)
 		}
 		if ctx.jwtClaims && isClaimsAccess(v) {
 			return claimsFieldPy(v)
@@ -360,10 +361,32 @@ func streamExprPy(e ast.Expr, ctx *bodyCtx, scope map[string]bool, where bool) s
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
 	case *ast.BlockExpr:
-		return streamOutputPy(v, ctx, scope, where)
+		// A nested object drops its absent fields too, as JSON.stringify does on Node.
+		return "frame_data(" + streamOutputPy(v, ctx, scope, where) + ")"
 	default:
 		return exprToPyWithCtx(e, ctx)
 	}
+}
+
+// eventFieldChainPy renders a field chain rooted at event (event.a.b) as .get
+// lookups on camel-cased keys, the way Node reads eventData.a.b. Nested access
+// stays safe when an object field is missing.
+func eventFieldChainPy(v *ast.FieldAccess) string {
+	return eventLookupPy(v, true)
+}
+
+// eventLookupPy renders one link of an event field chain. Only the outermost
+// lookup defaults to MISSING, so an absent field is dropped from the frame.
+func eventLookupPy(v *ast.FieldAccess, outer bool) string {
+	base := "event"
+	if inner, ok := v.Base.(*ast.FieldAccess); ok {
+		base = "(" + eventLookupPy(inner, false) + " or {})"
+	}
+	def := ""
+	if outer {
+		def = ", MISSING"
+	}
+	return base + ".get(" + pyStringLiteral(common.CamelCase(v.Field)) + def + ")"
 }
 
 // streamExprFeatures reports the expression forms a STREAM handler cannot

@@ -61,6 +61,12 @@ type bodyCtx struct {
 	// only within this scope.
 	inRecover bool
 
+	// eventKeys is set while rendering an object literal that leaves the
+	// process as an event or room payload (emit, broadcast, whisper). Node
+	// camel-cases those keys, so the Python payload uses the same keys
+	// (see eventPayloadCtx). REST and WS direct replies keep .bp spelling.
+	eventKeys bool
+
 	// jwtClaims is set on an auth jwt endpoint, where `claims` is the handler's
 	// verified payload (see claimsFieldPy).
 	jwtClaims bool
@@ -1162,10 +1168,20 @@ func emitGuard(b *strings.Builder, s *ast.GuardStmt, ctx *bodyCtx, indent string
 		indent, status, pyStringLiteral(s.Message))
 }
 
+// eventPayloadCtx returns a copy of ctx whose object literals camel-case their
+// keys, the way the Node target renders emit, broadcast and whisper payloads.
+// Values that are not object literals render the same as under ctx.
+func eventPayloadCtx(ctx *bodyCtx) *bodyCtx {
+	c := *ctx
+	c.eventKeys = true
+	return &c
+}
+
 // emitEmit translates `|> emit <event> { ... }` into a call to the events
 // module. emit is safe from sync handlers (threadpool) and from the event loop:
 // it queues delivery onto each listener's loop and never awaits. The payload
-// keys keep their .bp spelling on both the local and the Redis path.
+// keys are camel-cased on both the local and the Redis path, as on Node, so a
+// Node and a Python instance sharing Redis exchange the same payload.
 func emitEmit(b *strings.Builder, fn *ast.FnCall, ctx *bodyCtx, indent string) {
 	name := identOrStringName(fn.Args[0])
 	payload := "{}"
@@ -1197,15 +1213,17 @@ func emitStepFeatures(fn *ast.FnCall) []string {
 	return nil
 }
 
-// blockExprToPyDictWithCtx renders an object literal whose values may reference
-// bound variables, claims, or event fields through the body context.
+// blockExprToPyDictWithCtx renders an event payload object literal whose values
+// may reference bound variables, claims, or event fields through the body
+// context. Keys are camel-cased as on Node (room_id -> "roomId").
 func blockExprToPyDictWithCtx(blk *ast.BlockExpr, ctx *bodyCtx) string {
 	if len(blk.Entries) == 0 {
 		return "{}"
 	}
+	ctx = eventPayloadCtx(ctx)
 	parts := make([]string, 0, len(blk.Entries))
 	for _, kv := range blk.Entries {
-		parts = append(parts, fmt.Sprintf("%q: %s", kv.Key, exprToPyWithCtx(kv.Value, ctx)))
+		parts = append(parts, fmt.Sprintf("%q: %s", common.CamelCase(kv.Key), exprToPyWithCtx(kv.Value, ctx)))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }
@@ -1354,7 +1372,11 @@ func exprToPyWithCtx(e ast.Expr, ctx *bodyCtx) string {
 	case *ast.BlockExpr:
 		parts := make([]string, 0, len(v.Entries))
 		for _, kv := range v.Entries {
-			parts = append(parts, fmt.Sprintf("%q: %s", kv.Key, exprToPyWithCtx(kv.Value, ctx)))
+			key := kv.Key
+			if ctx != nil && ctx.eventKeys {
+				key = common.CamelCase(key)
+			}
+			parts = append(parts, fmt.Sprintf("%q: %s", key, exprToPyWithCtx(kv.Value, ctx)))
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
 	case *ast.FnCall:

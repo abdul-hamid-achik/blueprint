@@ -59,8 +59,8 @@ func TestPython_StreamRouteShape(t *testing.T) {
 		`claims: Annotated[dict[str, Any], Depends(_bp_require_auth("jwt", "JWT_SECRET", "chat", allow_query=True))]`,
 		// Rate limit runs before the stream starts.
 		"rate_limit.check(bp_request, 60, 60000)",
-		// Filter and render per subscriber; event fields keep their .bp names.
-		`if not ((event.get("room_id", MISSING) == wire(id))):`,
+		// Filter and render per subscriber; event fields are read by their Node key (room_id -> roomId).
+		`if not ((event.get("roomId", MISSING) == wire(id))):`,
 		`return ("new_message", frame_data({"body": event.get("body", MISSING), "sender": claims.get("username")}))`,
 		// Timeout: named ping, rendered object, first send after the interval.
 		`stream.every("ping", 2, _tick_1)`,
@@ -106,7 +106,7 @@ func TestPython_StreamRouteShape(t *testing.T) {
 	routes := readPy(t, outDir, "src/routes/rooms.py")
 	for _, want := range []string{
 		"from src.lib.events import emit as bp_emit",
-		`bp_emit("new_message", {"room_id": id, "body": body})`,
+		`bp_emit("new_message", {"roomId": id, "body": body})`,
 	} {
 		if !strings.Contains(routes, want) {
 			t.Errorf("rooms.py missing %q, got:\n%s", want, routes)

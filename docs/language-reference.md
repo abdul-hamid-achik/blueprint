@@ -1166,8 +1166,10 @@ keep-alive`. Differences:
 - Credentials are verified as on REST, with the same `401` body. On STREAM only,
   `?token=` (bearer, jwt) and `?api_key=` (api_key) are accepted when the header
   is absent. Basic stays header-only.
-- Payload keys keep their `.bp` spelling: `emit new_message { room_id: id }`
-  is read as `event.room_id` and `where(room_id == id)`. Node camel-cases them.
+- Payload keys are camel-cased, as on Node: `emit new_message { room_id: id }`
+  sends the `roomId` key, `event.room_id` and `where(room_id == id)` read
+  `roomId`, and STREAM frame keys are camel-cased too. REST JSON responses and
+  WS direct replies keep the `.bp` spelling on both targets.
 - An event field that is missing from the payload drops its key from the
   frame, as Node does. A field that is present with a null value sends `null`.
 - Timestamps in frames use FastAPI's encoding (`2026-10-19T12:00:00.123456`),
@@ -1888,7 +1890,8 @@ explicit external HTTP `call` when that is the intended transport.
 
 Python generates `emit` in REST handlers and in STREAM pre-stream statements. It
 delivers to in-process STREAM listeners and, with `REDIS_URL` set, to other
-instances. Payload keys keep their `.bp` spelling. `emit` in WS handlers is
+instances. Payload keys are camel-cased, as on Node, so the two targets share
+one Redis without a key mismatch. `emit` in WS handlers is
 generated on Python too, and it uses the same bus as STREAM listeners.
 
 ### Utility
