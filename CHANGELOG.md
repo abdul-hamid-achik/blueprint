@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Endpoints with `auth jwt using(secret.NAME)` expose the verified token
+  payload as `claims` in REST, STREAM, and WS handlers (`claims.sub`, nested
+  `claims.org.id`). Claim keys are read verbatim, and a missing one is
+  `undefined` on Node and `None` on Python. It works for STREAM and WS
+  clients that send `?token=`, which before could not read their claims in
+  `on_connect`. Elsewhere `claims` is unbound (C035) and the hint names the
+  declaration it needs.
+- Checker code C055: on an auth jwt endpoint, `claims` is reserved. A path
+  parameter, input, step binding, `inject` alias, or `use` middleware
+  injection named `claims` is rejected.
+- Python target: `auth webhook_sig using(secret.NAME)` is enforced by
+  `src/lib/webhook.py`. It checks an HMAC-SHA256 hex digest of the raw body,
+  sent in `X-Webhook-Signature`, and answers with the same 401
+  `{"error": "Invalid signature"}` and 400 `{"error": "Invalid payload"}`
+  bodies as Node. The parsed body is bound to `data`. Bare `auth webhook_sig`
+  still fails the build.
+- Python target: `min` and `max` on model fields become pydantic `Field`
+  bounds in `src/models/pydantic.py`. They bound the length of `string`,
+  `text`, lists, and maps, and the value of `int`, `float`, and `money`. Node
+  does not carry inline model-field bounds into its model schemas.
+
+### Changed
+
+- **Breaking behind a remote reverse proxy:** endpoint `limit` now keys on
+  the client address and path, not on the raw `X-Forwarded-For` header.
+  `X-Forwarded-For` is honored only when the TCP peer is listed in
+  `FORWARDED_ALLOW_IPS`, using uvicorn's format and rules. The default is
+  `127.0.0.1,::1`, and the same variable works on Node
+  (`src/lib/client-ip.ts`) and Python (uvicorn). Behind a proxy on another
+  host, set `FORWARDED_ALLOW_IPS` to the proxy's address, or every client
+  shares the proxy's bucket.
+- Python target: an auth jwt endpoint receives the payload as its first
+  handler parameter, `claims`, instead of through a route-level dependency.
+  Status codes and the order of checks are unchanged.
+- `examples/realtime-chat.bp` reads `claims.username` instead of decoding
+  `header.Authorization` with a function.
+
+### Security
+
+- Node: `auth webhook_sig using(secret.NAME)` fails closed when the secret is
+  unset or empty. Before, a signature computed with the empty key verified,
+  so an unconfigured webhook accepted forged requests. It now answers 401
+  `{"error": "Invalid signature"}`. Python behaves the same.
+- Endpoint `limit` could be bypassed on Node and Python by sending a
+  different `X-Forwarded-For` value on each request. Without a proxy, every
+  client also shared one `unknown` bucket, so a single client could exhaust
+  the limit for everyone.
+
 ### Fixed
 
 - The generated Python pytest suite (`bp test --target python`, `--gen-tests`)
