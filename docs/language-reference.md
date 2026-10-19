@@ -1994,6 +1994,11 @@ Inside `recover`, `error` is implicitly bound with:
 
 `try/recover` cannot be nested.
 
+A `guard` inside `try` on a REST endpoint answers its own status and message;
+`recover` does not run. In WS handlers and before a STREAM block, a failing
+`guard` inside `try` goes to `recover`, like any other failure. Both targets
+behave this way.
+
 ### `on_error`
 
 Default error handler for the entire endpoint:
