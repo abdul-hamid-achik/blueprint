@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-10-19
+
 ### Added
 
 - `bp lint` rule `optional-auth-secret` (warning): an `auth <strategy>
