@@ -305,12 +305,18 @@ def _ensure_whisper_subscription() -> None:
 
 async def _ensure_pubsub() -> Any:
     # The subscriber connection is created on the first subscription, when REDIS_URL is set.
-    global _pubsub, _pubsub_task
+    global _pubsub
     if _pubsub is None:
         client = redis_async.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
         _pubsub = client.pubsub()
-        _pubsub_task = asyncio.get_running_loop().create_task(_reader())
     return _pubsub
+
+
+def _start_reader() -> None:
+    # The reader starts after the first subscribe, so it never polls a connection that does not exist yet.
+    global _pubsub_task
+    if _pubsub_task is None:
+        _pubsub_task = asyncio.get_running_loop().create_task(_reader())
 
 
 async def _subscribe(channel: str) -> None:
@@ -328,6 +334,7 @@ async def _subscribe(channel: str) -> None:
         event.clear()
         _subscribed.add(channel)
         await pubsub.subscribe(channel)
+        _start_reader()
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(event.wait(), WS_SUBSCRIBE_WAIT_S)
     except Exception as exc:
@@ -346,6 +353,9 @@ async def _unsubscribe(channel: str) -> None:
 async def _reader() -> None:
     while True:
         try:
+            if not _subscribed:
+                await asyncio.sleep(0.2)
+                continue
             message = await _pubsub.get_message(timeout=1.0)
             if message is None:
                 continue

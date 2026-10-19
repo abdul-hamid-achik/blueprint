@@ -1342,7 +1342,8 @@ with these differences:
   Node each WS route file keeps its own room map.
 - A room broadcast or whisper sends the same JSON text as Node, on the same
   `room:<id>` and `bp:ws:whisper` channels, with the same `{to, data}` whisper
-  envelope. With `REDIS_URL` set, each instance receives a publish through its own
+  envelope. With `REDIS_URL` set in the process environment (a value only in `.env`
+  is not read on Python, as with STREAM), each instance receives a publish through its own
   subscription, so a message reaches each socket once, including on the sender's
   instance. A join waits for Redis to confirm the room subscription before it
   publishes, so the joiner's own `joined` frame always arrives. Node does not wait:
