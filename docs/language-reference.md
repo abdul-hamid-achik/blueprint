@@ -75,6 +75,32 @@ fixture "sample.png" from "..."      # test fixtures
 include "other-file.bp"              # file splitting
 ```
 
+**Intent annotations.** A `@ "..."` line can precede any top-level declaration,
+including the `blueprint` block, `secret`, `env`, `locale`, `translation`,
+`include`, `type`, `alias`, `enum`, `external`, and `fixture`. The string is
+the declaration's intent: `bp fmt` keeps it in place, and the language server
+shows it on hover.
+
+```bp
+blueprint "intent-demo" {
+  version  "0.1.0"
+  port     3000
+  runtime  node
+}
+
+@ "Log verbosity for the service"
+env LOG_LEVEL "info"
+
+@ "Email address alias"
+alias Email = string format(email)
+
+@ "Users who can sign in"
+model user {
+  id    uuid  primary
+  email Email required
+}
+```
+
 ---
 
 ## 2. Primitives and Literals
@@ -364,6 +390,48 @@ emits an importable empty schema/Base so migration tooling remains valid.
 | `min(value)` | Min value or length | Zod `.min()` |
 | `max(value)` | Max value or length | Zod `.max()` |
 | `format(kind)` | Format validation on `string` (`email`, `url`, `uuid`, `ip`, `date`) | Zod `.email()`, `.url()`, `.uuid()`, `.ip()`, `.date()` |
+
+### Constraint Values
+
+The checker validates each `default`, `min`, `max`, and `format` value against
+the declared type. A value that cannot apply fails `bp check` with error
+[C052](./error-codes.md#c052--constraint-value-does-not-fit-the-type), and no
+files are generated. The rules are:
+
+| Constraint | Accepted | Rejected |
+|------------|----------|----------|
+| `default` on `int` | `default(-1)` | `default("abc")` |
+| `default` on `float`, `money` | `default(0.5)`, `default(1)` | `default("1")` |
+| `default` on `bool` | `default(true)` | `default(1)` |
+| `default` on `string` | `default("x")`, `default(center)` (bare word) | `default(5)` |
+| `default` on `uuid` | `default("123e4567-e89b-12d3-a456-426614174000")` | `default("not-a-uuid")` |
+| `default` on `timestamp` | `default(now)`, `default("2026-01-01")` | `default("notadate")` |
+| `default` on an enum | one of its variants, bare or quoted | `default(c)` for `enum(a, b)` |
+| `min`, `max` on `int`, `float`, `money` | `min(0) max(150)`, `min(0.0) max(1.0)` | `min("1")` |
+| `min`, `max` on `string`, `uuid`, lists | a whole, non-negative length: `max(255)` | `min(1.5)`, `min(1kb)` |
+| `min`, `max` on `bool`, enum, `timestamp` | not allowed | `max(3)` on `bool`, `min(1)` on `timestamp` |
+| `min` with `max` | `min(1) max(50)` | `min(5) max(1)` |
+| `format` | `string format(email)` | `bool format(email)`, `uuid format(ip)` |
+| `format` kind | `email`, `url`, `uuid`, `ip`, `date` | `format(phone)` |
+
+When both bounds are literals, `min` must not be greater than `max`. Size and
+duration literals such as `100mb` or `5s` are accepted on numeric fields only.
+
+How `format` is enforced depends on the target:
+
+| `format` | Node (Zod) | Python (`src/lib/formats.py`) |
+|----------|------------|-------------------------------|
+| `email` | `.email()` | `formats.Email` |
+| `url` | `.url()` | `formats.Url` |
+| `uuid` | `.uuid()` | `formats.Uuid` |
+| `ip` | `.ip()` | `formats.IpAddress` |
+| `date` | `.date()` | `formats.Date` |
+
+On Python, each of these is a `str` subclass, so the parsed value is still a
+plain `str`. A value that fails the check answers `422`, FastAPI's validation
+status. The generated module is stdlib only. Python applies `format` to endpoint
+inputs and model fields. Its model fields carry the format type but not the
+`min`/`max` bounds; endpoint inputs keep their bounds.
 
 ### Computed Fields
 
@@ -877,23 +945,42 @@ Do not rely on a bare `auth` line as a security boundary.
 | Any | `:param` in path for path params |
 
 On the Node target, every declared REST path input is validated at runtime
-against its type and constraints (for example `max(50)`, `min(1)`, an enum's
-variants, or a named enum). A segment that fails answers `400` with the
-`{ success: false, error }` body before the handler runs. `optional` and
-`default` have no effect on a path input, since a matched segment is always
-present.
+against its declared type and constraints. Numbers, booleans, and enums are
+parsed from the segment text (`int`, `float`, `bool`, inline enums, and named
+enums), and `min`/`max` apply to the parsed value or the string length. A
+segment that fails answers `400` with the `{ success: false, error }` body
+before the handler runs, so `GET /api/items/abc` for `<- id int` answers `400`.
+`optional` and `default` have no effect on a REST path input, since a matched
+segment is always present.
 
 On the Python target, GET/DELETE inputs become FastAPI `Query(...)` parameters,
 POST/PUT/PATCH inputs become embedded `Body(...)` parameters, and supported
 `min`/`max` constraints are preserved. Path inputs keep `min`/`max` as FastAPI
-`Path(...)` bounds, so an over-long segment answers `422` rather than Node's
-`400`. `format(email|url|uuid|ip|date)` is enforced on endpoint inputs and on
-model fields through the generated `src/lib/formats.py` (stdlib only; no
-`email-validator` dependency). A violating value answers `422`. Direct header references, including
-hyphenated names such as `header.X-API-Key`, become valid
+`Path(...)` bounds, so an out-of-range segment answers `422` rather than Node's
+`400`. A path input with `optional` or `default` fails the Python build, because
+the target does not support those constraints on path parameters.
+
+STREAM and WS path inputs are validated the same way on the Node target (see
+[STREAM Endpoints](#14-stream-endpoints) and [WS Endpoints](#15-ws-endpoints)).
+Unlike REST, those endpoints reject `optional` and `default` on a path input
+with `bp check` (C022).
+
+On the Python target, `format(email|url|uuid|ip|date)` is enforced on endpoint
+inputs and on model fields through the generated `src/lib/formats.py` (stdlib
+only; no `email-validator` dependency), and a violating value answers `422`. See
+[Constraint Values](#constraint-values) for the mapping. Direct header
+references, including hyphenated names such as `header.X-API-Key`, become valid
 `Header(..., alias="X-API-Key")` parameters. An `env.FIELD` reference must be
 backed by a declared `secret FIELD` or by an infrastructure setting Blueprint
 generates (for example `DATABASE_URL`); otherwise Python codegen fails.
+
+### Route Conflicts
+
+Two endpoints cannot register the same route. A GET, STREAM, and WS endpoint
+are all GET routes, and path parameter names do not make a route distinct, so
+`GET /rooms/:id`, `STREAM /rooms/:room_id`, and `WS /rooms/:x` conflict with
+each other. Each duplicate fails `bp check` with C005. Change the path to keep
+both endpoints.
 
 ### Output Syntax
 
@@ -928,17 +1015,16 @@ STREAM /api/jobs/:id/progress {
     }
     |> on event(job_done) where(job_id == id) {
       -> { percent: 100, stage: "done", url: event.url }
-      |> close
     }
     |> on timeout(5min) {
       -> { error: "Timed out" }
-      |> close
     }
   }
 }
 ```
 
-`close` terminates the SSE stream.
+`|> close` is only valid in WS handlers; using it in a STREAM handler fails
+`bp check` with C035.
 
 When the service runs on more than one instance, set `REDIS_URL`. A STREAM
 listener then receives events that `emit` publishes on any instance: each
@@ -951,9 +1037,14 @@ payloads cross instances as JSON, so `Date` values arrive as strings.
 
 `<-` inputs on a STREAM must name a `:param` segment of the path, be a primitive
 or inline enum type, and not be `optional` or `default`. Each one is validated
-(e.g. `<- id uuid required`, `<- page int min(1)`) before the stream opens; an
-invalid value returns `400` with the `{ success: false, error }` body that REST
-body and query validation returns. Other `<-` inputs are rejected by `bp check`.
+(e.g. `<- id uuid required` for `/api/jobs/:id/progress`) before the stream
+opens; an invalid value returns `400` with the `{ success: false, error }` body
+that REST body and query validation returns. Other `<-` inputs are rejected by
+`bp check`.
+
+A STREAM can use `use` middleware. As on REST routes, the variable that
+middleware injects keeps its declared type: `auth` from `|> inject key as auth`
+has the injected model's row type, not `any`.
 
 In OpenAPI output: exposed as `GET` with `text/event-stream` content type.
 
@@ -1015,9 +1106,31 @@ broadcast room(name) { data }              # send to all in room
 close                                      # close this connection
 ```
 
-`close` closes the current connection and ends the handler; it is only valid
-inside `on_connect`, `on_message`, and `on_disconnect`. Sending to one specific
-connection (`whisper`) is not implemented: the checker rejects it.
+`join`, `leave`, and `broadcast` take a room name as a value, so a WS endpoint
+needs no `model room` declaration.
+
+`|> close` closes the current connection. It is only valid inside `on_connect`,
+`on_message`, and `on_disconnect`; anywhere else, including STREAM and REST
+handlers, `bp check` reports C035:
+
+```bp
+WS /ws/chat/:channel {
+  <- channel string required
+
+  on_message {
+    |> when message.type == "leave" {
+      |> leave room(channel)
+      |> close
+    }
+  }
+}
+```
+
+Sending to one specific connection (`whisper`) is not implemented. `bp check`
+rejects it as an unknown function (C006).
+
+A WS endpoint can use `use` middleware too. The variables it injects are typed
+inside the handlers as they are on REST routes.
 
 In OpenAPI output: exposed as `GET` with `101` response and `x-websocket: true`.
 
@@ -1370,7 +1483,8 @@ Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`
 The operands must be compatible: numbers (`int`, `float`, `money`) compare with
 each other, strings with strings, and bools with bools. The checker reports
 `C050` when both sides have a known type and the pair is incompatible, for
-example `name > 3` with a string `name`. Values of unknown type are not checked.
+example `name > 3` with a string `name`. Arithmetic (`+`, `-`, `*`, `/`) and
+unary `-` are checked the same way. Values of unknown type are not checked.
 
 ### Logical
 
@@ -1528,6 +1642,10 @@ clock()                           # current timestamp in ms
 hash(value)                       # SHA-256 hash
 track("event", payload)          # analytics event dispatch
 ```
+
+`level(...)` accepts `debug`, `info`, `warn`, or `error`. Any other name, such as
+`level(warning)`, fails `bp check` with C051 (see
+[C051](./error-codes.md#c051--unknown-log-level)).
 
 ---
 
