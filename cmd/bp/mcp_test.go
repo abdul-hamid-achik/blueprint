@@ -101,7 +101,7 @@ func TestMCPStdioSession(t *testing.T) {
 	root := getProjectRoot()
 	hello := filepath.Join(root, "examples", "hello-world.bp")
 	todo := filepath.Join(root, "examples", "todo-api.bp")
-	realtime := filepath.Join(root, "examples", "realtime-chat.bp")
+	unsupportedPy := filepath.Join(root, "examples", "auth-service.bp")
 	outDir := filepath.Join(t.TempDir(), "out")
 	pyDir := filepath.Join(t.TempDir(), "py")
 
@@ -127,7 +127,7 @@ func TestMCPStdioSession(t *testing.T) {
 		{name: "context unknown", id: 9, line: mcpCall(t, 9, "context", map[string]any{"topic": "nope"})},
 		{name: "build", id: 10, line: mcpCall(t, 10, "build", map[string]any{"path": hello, "out": outDir})},
 		{name: "diff", id: 11, line: mcpCall(t, 11, "diff", map[string]any{"path": hello, "out": outDir})},
-		{name: "build python", id: 12, line: mcpCall(t, 12, "build", map[string]any{"path": realtime, "out": pyDir, "target": "python"})},
+		{name: "build python", id: 12, line: mcpCall(t, 12, "build", map[string]any{"path": unsupportedPy, "out": pyDir, "target": "python"})},
 		{name: "malformed", id: nil, line: `{"jsonrpc":"2.0","id":`},
 		{name: "unknown method", id: 13, line: mcpRPC(t, 13, "no/such", nil)},
 		{name: "modern tools/list", id: 14, line: mcpRPC(t, 14, "tools/list", modernMeta)},
@@ -250,7 +250,7 @@ func TestMCPStdioSession(t *testing.T) {
 
 	pyBuild := toolResultOf(t, byName["build python"])
 	if pyBuild["isError"] != true {
-		t.Errorf("python build of realtime-chat should be isError: %v", pyBuild)
+		t.Errorf("python build of auth-service should be isError: %v", pyBuild)
 	}
 	if got := pyBuild["structuredContent"].(map[string]any)["exit_code"]; got != float64(4) {
 		t.Errorf("python build exit_code = %v, want 4", got)
