@@ -261,8 +261,8 @@ func (g *Generator) generateAll() ([]codegen.OutputFile, error) {
 		out = append(out, g.genMiddlewares(mws)...)
 	}
 	// Phase 5b: schedule declarations. Each body becomes src/schedules/<name>.py;
-	// src/lib/scheduler.py registers them on APScheduler and the app lifespan
-	// starts and stops it.
+	// src/lib/scheduler.py registers them as BullMQ job schedulers on the
+	// __bp_scheduler queue, and the app lifespan starts and stops its worker.
 	if len(schedules) > 0 {
 		out = append(out, emptyInit("src/schedules/__init__.py", g.sourceFile))
 		out = append(out, g.genSchedulerPy(schedules))
