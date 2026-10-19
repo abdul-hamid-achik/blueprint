@@ -192,14 +192,22 @@ func TestPython_StreamRejections(t *testing.T) {
 		src  string
 		want string
 	}{
-		"use middleware": {
+		"use middleware with configuration": {
 			src: `middleware audit { before { |> log "x" } }
 STREAM /api/x {
-  use audit
+  use audit { level: "debug" }
   stream { |> on timeout(1s) { -> { type: "t" } } }
 }
 `,
-			want: `STREAM endpoint metadata "use"`,
+			want: `configured endpoint middleware use "audit"`,
+		},
+		"use of an undeclared middleware": {
+			src: `STREAM /api/x {
+  use missing
+  stream { |> on timeout(1s) { -> { type: "t" } } }
+}
+`,
+			want: `endpoint use of non-generated middleware "missing"`,
 		},
 		"cache metadata": {
 			src: `STREAM /api/x {

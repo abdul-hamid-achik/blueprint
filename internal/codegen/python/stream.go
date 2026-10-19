@@ -54,14 +54,18 @@ func streamBindings(se *ast.StreamEndpoint) []string {
 }
 
 // streamScope is the set of names a STREAM body may reference besides event
-// fields: its inputs, its pre-stream bindings and, on jwt endpoints, claims.
-func streamScope(se *ast.StreamEndpoint) map[string]bool {
+// fields: its inputs, its pre-stream bindings, the values its `use` middleware
+// injects and, on jwt endpoints, claims.
+func (g *Generator) streamScope(se *ast.StreamEndpoint) map[string]bool {
 	scope := map[string]bool{}
 	for _, in := range streamInputs(se) {
 		scope[in.Name] = true
 	}
 	for _, name := range streamBindings(se) {
 		scope[name] = true
+	}
+	for _, u := range g.useBindings(se.Meta) {
+		scope[u.alias] = true
 	}
 	if endpointJwtClaims(se.Meta) {
 		scope["claims"] = true
@@ -77,6 +81,7 @@ func (g *Generator) genStreamRouteFile(resource string, ses []*ast.StreamEndpoin
 	var eps []*ast.Endpoint
 	anyDB := false
 	anyGuard := false
+	anyUse, anyUseDB, anyUseHeaders, anyLimit := false, false, false, false
 	for _, se := range ses {
 		ep := streamAsEndpoint(se)
 		eps = append(eps, ep)
@@ -86,17 +91,33 @@ func (g *Generator) genStreamRouteFile(resource string, ses []*ast.StreamEndpoin
 		if endpointHasGuards(ep) {
 			anyGuard = true
 		}
+		if _, _, ok := endpointRateLimit(ep); ok {
+			anyLimit = true
+		}
+		for _, u := range g.useBindings(se.Meta) {
+			anyUse = true
+			anyUseDB = anyUseDB || u.touchesDB
+			anyUseHeaders = anyUseHeaders || len(u.headers) > 0
+		}
 	}
 
 	var b strings.Builder
 	b.WriteString(fileHeader(g.sourceFile))
 	g.writeRouteImports(&b, eps)
 	b.WriteString("from fastapi.concurrency import run_in_threadpool\n")
-	if anyDB {
+	if anyDB || anyUseDB {
 		b.WriteString("from src.lib.db import SessionLocal\n")
 	}
+	// writeRouteImports imports HTTPException and Request only for guards and rate
+	// limits; a `use` helper needs both on its own.
+	if anyUse && !anyGuard {
+		b.WriteString("from fastapi import HTTPException\n")
+	}
+	if anyUseHeaders && !anyLimit {
+		b.WriteString("from fastapi import Request\n")
+	}
 	imports := []string{"MISSING", "EventStream", "Stream", "frame_data", "wire"}
-	if anyGuard {
+	if anyGuard || anyUse {
 		imports = append(imports, "StreamError")
 	}
 	fmt.Fprintf(&b, "from src.lib.events import %s\n", strings.Join(imports, ", "))
@@ -123,7 +144,8 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 	}
 	ea, hasEnforced := endpointEnforcedAuthMeta(se.Meta)
 	jwt := hasEnforced && ea.Strategy == "jwt"
-	scope := streamScope(se)
+	scope := g.streamScope(se)
+	uses := g.useBindings(se.Meta)
 
 	// Pre-stream helper: a sync function on its own session, run in a threadpool.
 	ctx := g.newBodyCtx(ep)
@@ -133,7 +155,14 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 	if jwt {
 		helperArgs = append(helperArgs, "claims")
 	}
+	// `use` values are computed before the pre-stream helper and passed into it.
+	for _, u := range uses {
+		helperArgs = append(helperArgs, u.alias)
+	}
 	var pre strings.Builder
+	for i, u := range uses {
+		writeUseHelper(&pre, fmt.Sprintf("_use_%s_%d", fnName, i), u, "StreamError")
+	}
 	var preNames []string
 	if hasPreStatements(se) {
 		preNames = streamBindings(se)
@@ -154,12 +183,21 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 		}
 	}
 	limitPreamble := ""
-	if limit, window, ok := endpointRateLimit(ep); ok {
+	limit, window, hasLimit := endpointRateLimit(ep)
+	readsHeaders := false
+	for _, u := range uses {
+		if len(u.headers) > 0 {
+			readsHeaders = true
+		}
+	}
+	if hasLimit || readsHeaders {
 		if params != "" {
 			params = "bp_request: Request, " + params
 		} else {
 			params = "bp_request: Request"
 		}
+	}
+	if hasLimit {
 		limitPreamble = fmt.Sprintf(
 			"    if (_limited := rate_limit.check(bp_request, %d, %d)) is not None:\n        return _limited\n",
 			limit, window)
@@ -193,9 +231,18 @@ func (g *Generator) emitStreamEndpoint(b *strings.Builder, se *ast.StreamEndpoin
 	}
 	fmt.Fprintf(b, "@router.get(%q%s)\n", pathBpToFastapi(se.Path), suffix)
 	fmt.Fprintf(b, "async def %s(%s):\n", fnName, params)
+	// `use` middleware runs first, as on Node, so a refused request never reaches
+	// the rate limit or the pre-stream statements.
+	for i, u := range uses {
+		call := []string{fmt.Sprintf("_use_%s_%d", fnName, i)}
+		for _, h := range u.headers {
+			call = append(call, fmt.Sprintf("bp_request.headers.get(%q)", h))
+		}
+		fmt.Fprintf(b, "    %s = await run_in_threadpool(%s)\n", u.alias, strings.Join(call, ", "))
+	}
 	b.WriteString(limitPreamble)
 
-	if len(preNames) > 0 || pre.Len() > 0 {
+	if hasPreStatements(se) {
 		fmt.Fprintf(b, "    _pre = await run_in_threadpool(%s)\n", strings.Join(append([]string{"_pre_" + fnName}, helperArgs...), ", "))
 		for _, name := range preNames {
 			fmt.Fprintf(b, "    %s = _pre[%q]\n", name, name)
@@ -470,7 +517,7 @@ func (g *Generator) streamFeatures(se *ast.StreamEndpoint) []string {
 				continue
 			}
 			add(pythonAuthFeature(m))
-		case "tags", "limit":
+		case "tags", "limit", "use":
 			// Validated with the REST metadata rules by complexEndpointFeatures below.
 		default:
 			add(fmt.Sprintf("STREAM endpoint metadata %q", m.Kind))
@@ -480,6 +527,11 @@ func (g *Generator) streamFeatures(se *ast.StreamEndpoint) []string {
 	for _, r := range g.complexEndpointFeatures(ep) {
 		add(r)
 	}
+	for _, u := range g.useBindings(se.Meta) {
+		if !validPythonIdentifier(u.alias) {
+			add(fmt.Sprintf("STREAM `use %s` that injects a name Python cannot use (%q)", u.name, u.alias))
+		}
+	}
 	for _, s := range se.Stmts {
 		switch s.(type) {
 		case *ast.InputStmt, *ast.StepStmt, *ast.GuardStmt, *ast.IntentStep:
@@ -487,7 +539,7 @@ func (g *Generator) streamFeatures(se *ast.StreamEndpoint) []string {
 			add(fmt.Sprintf("STREAM statement %T before the stream block", s))
 		}
 	}
-	scope := streamScope(se)
+	scope := g.streamScope(se)
 	for _, h := range se.Handlers {
 		switch {
 		case h.Timeout != "":

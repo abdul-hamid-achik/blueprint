@@ -1,0 +1,57 @@
+blueprint "python-stream-ws-use" {
+  version  "1.0.0"
+  port     3000
+  runtime  node
+  database postgres
+}
+
+secret DATABASE_URL required
+
+model account {
+  id   string primary
+  name string required
+}
+
+middleware require_account {
+  before {
+    |> guard header.Authorization -> 401 "Missing token"
+    |> acct = fetch account(header.Authorization)
+    |> guard acct -> 401 "Unknown token"
+    |> inject acct as current_user
+  }
+}
+
+@ "Post a note to the live feed"
+POST /api/notes {
+  <- text string required
+  |> emit note { text: text }
+  -> 200 { ok: true }
+}
+
+@ "Stream notes, as the account that opened the stream"
+STREAM /api/notes/live {
+  use require_account
+  |> guard current_user.name -> 403 "Nameless account"
+
+  stream {
+    |> on event(note) {
+      -> { text: event.text, by: current_user.name }
+    }
+    |> on timeout(1s) {
+      -> { type: "ping" }
+    }
+  }
+}
+
+@ "Socket for one account, as the account that connects"
+WS /ws/accounts/:id {
+  use require_account
+  <- id uuid required
+
+  on_connect {
+    -> { type: "welcome", id: id, name: current_user.name }
+  }
+  on_message {
+    -> { echo: message.body, by: current_user.name }
+  }
+}

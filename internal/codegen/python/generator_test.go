@@ -239,13 +239,20 @@ STREAM /events {
   }
 }
 `,
-		"stream use middleware": `blueprint "x" { version "1.0" port 3000 runtime node }
+		"stream use middleware with configuration": `blueprint "x" { version "1.0" port 3000 runtime node }
 middleware audit { before { |> log "x" } }
 STREAM /events {
-  use audit
+  use audit { level: "debug" }
   stream {
     |> on event(created) { -> { id: event.id } }
   }
+}
+`,
+		"ws use middleware with configuration": `blueprint "x" { version "1.0" port 3000 runtime node }
+middleware audit { before { |> log "x" } }
+WS /ws/events {
+  use audit { level: "debug" }
+  on_message { |> log "x" }
 }
 `,
 		"stream handler without output object": `blueprint "x" { version "1.0" port 3000 runtime node }

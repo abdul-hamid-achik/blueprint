@@ -60,11 +60,17 @@ type wsPlan struct {
 	auth      *enforcedAuth    // set when the endpoint has enforced auth
 	limit     [2]int           // rate limit (count, window ms) when set
 	hasLimit  bool
+	uses      []useBinding // `use` middleware, run in the handshake before the path inputs
+	injected  []string     // the names those middleware inject, passed to every handler
 }
 
 func (g *Generator) newWsPlan(we *ast.WsEndpoint) wsPlan {
 	p := wsPlan{we: we, name: wsHandlerName(we.Path), pathNames: common.ExtractPathParams(we.Path)}
 	p.jwt = endpointJwtClaims(we.Meta)
+	p.uses = g.useBindings(we.Meta)
+	for _, u := range p.uses {
+		p.injected = append(p.injected, u.alias)
+	}
 	for _, s := range we.Stmts {
 		if in, ok := s.(*ast.InputStmt); ok {
 			p.inputs = append(p.inputs, in)
@@ -146,7 +152,8 @@ func (p wsPlan) bindingsExpr(connect bool) string {
 func (g *Generator) genWsRouteFile(resource string, wes []*ast.WsEndpoint) codegen.OutputFile {
 	module := pyModuleName(resource) + "_ws"
 	var eps []*ast.Endpoint
-	needsDB, needsAuth, needsLimit, needsUUID := false, false, false, false
+	needsDB, needsAuth, needsLimit, needsUUID, needsUse := false, false, false, false, false
+	middlewares := map[string]bool{}
 	for _, we := range wes {
 		p := g.newWsPlan(we)
 		if stmtsTouchDB(p.allStmts) {
@@ -157,6 +164,11 @@ func (g *Generator) genWsRouteFile(resource string, wes []*ast.WsEndpoint) codeg
 		}
 		if p.hasLimit {
 			needsLimit = true
+		}
+		for _, u := range p.uses {
+			needsUse = true
+			needsDB = needsDB || u.touchesDB
+			middlewares[u.name] = true
 		}
 		for _, in := range p.inputs {
 			if pt, ok := in.Type.(*ast.PrimitiveType); ok && pt.Name == "uuid" {
@@ -173,6 +185,9 @@ func (g *Generator) genWsRouteFile(resource string, wes []*ast.WsEndpoint) codeg
 	}
 	b.WriteString("from datetime import datetime, timezone\n")
 	b.WriteString("from fastapi import APIRouter, WebSocket, WebSocketDisconnect\n")
+	if needsUse {
+		b.WriteString("from fastapi import HTTPException\n")
+	}
 	b.WriteString("from fastapi.concurrency import run_in_threadpool\n")
 	if needsAuth {
 		b.WriteString("from src.lib.auth import authenticate\n")
@@ -184,6 +199,14 @@ func (g *Generator) genWsRouteFile(resource string, wes []*ast.WsEndpoint) codeg
 	}
 	if needsLimit {
 		b.WriteString("from src.lib import rate_limit\n")
+	}
+	mwNames := make([]string, 0, len(middlewares))
+	for name := range middlewares {
+		mwNames = append(mwNames, name)
+	}
+	sort.Strings(mwNames)
+	for _, name := range mwNames {
+		fmt.Fprintf(&b, "from src.middleware.%s import %s\n", name, name)
 	}
 	b.WriteString("from src.lib.log import logger\n")
 	b.WriteString("from src.lib.realtime import (\n")
@@ -203,10 +226,13 @@ func (g *Generator) genWsRouteFile(resource string, wes []*ast.WsEndpoint) codeg
 // emitWsEndpoint writes one WS endpoint: its three helpers, then the route.
 func (g *Generator) emitWsEndpoint(b *strings.Builder, p wsPlan) {
 	we := p.we
+	ep := wsAsEndpoint(we, p.allStmts)
+	for i, u := range p.uses {
+		writeUseHelper(b, fmt.Sprintf("_use_%s_%d", p.name, i), u, "WsGuardError")
+	}
 	if we.Intent != nil {
 		fmt.Fprintf(b, "# %s\n", we.Intent.Text)
 	}
-	ep := wsAsEndpoint(we, p.allStmts)
 	g.writeWsHelper(b, p, ep, "connect", we.OnConnect)
 	b.WriteString("\n\n")
 	g.writeWsHelper(b, p, ep, "message", we.OnMessage)
@@ -226,9 +252,15 @@ func (g *Generator) writeWsHelper(b *strings.Builder, p wsPlan, ep *ast.Endpoint
 	}
 	params = append(params, p.handlerArgs()...)
 	params = append(params, "connection")
-	if !connect && len(p.hoisted) > 0 {
+	// Keyword-only: the `use` values (every handler) and, after connect, the
+	// on_connect bindings. Connect itself binds the hoisted names.
+	kwNames := append([]string{}, p.injected...)
+	if !connect {
+		kwNames = append(kwNames, p.hoisted...)
+	}
+	if len(kwNames) > 0 {
 		params = append(params, "*")
-		for _, name := range p.hoisted {
+		for _, name := range kwNames {
 			params = append(params, name+"=None")
 		}
 	}
@@ -305,6 +337,19 @@ func (g *Generator) writeWsRoute(b *strings.Builder, p wsPlan) {
 			p.auth.Strategy, p.auth.Secret)
 		b.WriteString("    if claims is None:\n        await refuse(websocket, 401)\n        return\n")
 	}
+	// `use` middleware runs after auth and before the path inputs and the limit,
+	// so a guard refuses the handshake with its own status and no body.
+	if len(p.uses) > 0 {
+		b.WriteString("    try:\n")
+		for i, u := range p.uses {
+			call := []string{fmt.Sprintf("_use_%s_%d", p.name, i)}
+			for _, h := range u.headers {
+				call = append(call, fmt.Sprintf("websocket.headers.get(%q)", h))
+			}
+			fmt.Fprintf(b, "        %s = await run_in_threadpool(%s)\n", u.alias, strings.Join(call, ", "))
+		}
+		b.WriteString("    except WsGuardError as exc:\n        await refuse(websocket, exc.status_code)\n        return\n")
+	}
 	for _, in := range p.inputs {
 		if in.Name == "" || !common.IsPathParam(in.Name, we.Path) {
 			continue
@@ -332,14 +377,20 @@ func (g *Generator) writeWsRoute(b *strings.Builder, p wsPlan) {
 
 	args := p.handlerArgs()
 	argList := strings.Join(args, ", ")
-	kw := ""
-	if len(p.hoisted) > 0 {
-		parts := make([]string, len(p.hoisted))
-		for i, name := range p.hoisted {
+	keywords := func(names []string) string {
+		if len(names) == 0 {
+			return ""
+		}
+		parts := make([]string, len(names))
+		for i, name := range names {
 			parts[i] = name + "=" + name
 		}
-		kw = ", " + strings.Join(parts, ", ")
+		return ", " + strings.Join(parts, ", ")
 	}
+	// The `use` values reach every handler; the on_connect bindings reach the
+	// handlers after connect.
+	connectKW := keywords(p.injected)
+	kw := keywords(append(append([]string{}, p.injected...), p.hoisted...))
 	connectArgs := argList
 	if connectArgs != "" {
 		connectArgs += ", "
@@ -353,7 +404,7 @@ func (g *Generator) writeWsRoute(b *strings.Builder, p wsPlan) {
 		fmt.Fprintf(b, "    %s = None\n", name)
 	}
 	b.WriteString("    try:\n")
-	fmt.Fprintf(b, "        result = await run_in_threadpool(_%s_connect, %s)\n", p.name, connectArgs)
+	fmt.Fprintf(b, "        result = await run_in_threadpool(_%s_connect, %s%s)\n", p.name, connectArgs, connectKW)
 	for _, name := range p.hoisted {
 		fmt.Fprintf(b, "        %s = result.bindings.get(%q)\n", name, name)
 	}
@@ -397,9 +448,9 @@ func (g *Generator) wsFeatures(we *ast.WsEndpoint) []string {
 			seen[reason] = true
 		}
 	}
-	// Meta: enforced auth (no webhook_sig), and limit. Other kinds, including
-	// `use` middleware, have no WS translation yet.
-	var limitMeta []*ast.EndpointMeta
+	// Meta: enforced auth (no webhook_sig), limit, and `use` middleware, which
+	// the REST rules validate (a generated middleware, no arguments or body).
+	var restMeta []*ast.EndpointMeta
 	for _, m := range we.Meta {
 		switch m.Kind {
 		case "auth":
@@ -408,16 +459,14 @@ func (g *Generator) wsFeatures(we *ast.WsEndpoint) []string {
 				continue
 			}
 			add(pythonAuthFeature(m))
-		case "limit":
-			limitMeta = append(limitMeta, m)
-		case "use":
-			add(fmt.Sprintf("WS endpoint middleware `use %s`", m.Use.Name))
+		case "limit", "use":
+			restMeta = append(restMeta, m)
 		default:
 			add(fmt.Sprintf("WS endpoint metadata %q", m.Kind))
 		}
 	}
-	if len(limitMeta) > 0 {
-		view := &ast.Endpoint{Loc: we.Loc, Method: "GET", Path: we.Path, Meta: limitMeta}
+	if len(restMeta) > 0 {
+		view := &ast.Endpoint{Loc: we.Loc, Method: "GET", Path: we.Path, Meta: restMeta}
 		for _, r := range g.complexEndpointFeatures(view) {
 			add(r)
 		}
@@ -462,6 +511,11 @@ func (g *Generator) wsFeatures(we *ast.WsEndpoint) []string {
 	for _, name := range wsConnectBindings(we.OnConnect) {
 		if !validPythonIdentifier(name) || bindingReserved[name] {
 			add(fmt.Sprintf("WS binding %q (a name the handler reserves or Python cannot use)", name))
+		}
+	}
+	for _, u := range g.useBindings(we.Meta) {
+		if !validPythonIdentifier(u.alias) || bindingReserved[u.alias] {
+			add(fmt.Sprintf("WS `use %s` that injects %q (a name the handler reserves or Python cannot use)", u.name, u.alias))
 		}
 	}
 	for _, body := range []struct {

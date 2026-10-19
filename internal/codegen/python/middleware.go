@@ -369,3 +369,73 @@ func pythonHeaderParamName(header string) string {
 	}
 	return name
 }
+
+// useBinding is one `use <middleware>` marker on a STREAM or WS endpoint. The
+// middleware runs before the stream opens or the handshake completes, on a
+// short-lived session (see writeUseHelper), and the value it injects is read by
+// the endpoint body under alias.
+type useBinding struct {
+	mw        *ast.Middleware
+	name      string   // the middleware's function and module name
+	alias     string   // the variable the endpoint body reads
+	model     string   // the injected model, "" when the value is untyped
+	headers   []string // request headers the middleware reads, in its parameter order
+	touchesDB bool
+}
+
+// useBindings lists the endpoint's `use` markers whose middleware is generated,
+// in source order. Markers that do not resolve are rejected by the feature checks.
+func (g *Generator) useBindings(meta []*ast.EndpointMeta) []useBinding {
+	var out []useBinding
+	for _, m := range meta {
+		if m.Kind != "use" || m.Use == nil {
+			continue
+		}
+		mw := g.findMiddleware(m.Use.Name)
+		if mw == nil {
+			continue
+		}
+		alias := findInjectedAlias(mw)
+		if alias == "" {
+			alias = m.Use.Name
+		}
+		usage := scanMiddlewareUsage(mw, g.userFnNames(), g.models())
+		out = append(out, useBinding{
+			mw:        mw,
+			name:      m.Use.Name,
+			alias:     alias,
+			model:     findInjectedModel(mw),
+			headers:   usage.headerFields,
+			touchesDB: usage.touchesDB,
+		})
+	}
+	return out
+}
+
+// writeUseHelper emits the sync function that runs one `use` middleware for a
+// STREAM or WS endpoint. It takes the middleware's header values as arguments,
+// opens a short-lived session when the middleware touches the database, and
+// returns the value the middleware injects. A guard failure is an
+// HTTPException inside the middleware; it leaves as errType(status, message),
+// so the caller answers the guard's status with the {"error": ...} body a
+// pre-stream guard gets, not FastAPI's {"detail": ...}.
+func writeUseHelper(b *strings.Builder, fn string, u useBinding, errType string) {
+	params := make([]string, 0, len(u.headers))
+	for _, h := range u.headers {
+		params = append(params, pythonHeaderParamName(h))
+	}
+	fmt.Fprintf(b, "def %s(%s):\n", fn, strings.Join(params, ", "))
+	call := append([]string{}, params...)
+	if u.touchesDB {
+		call = append(call, "db=db")
+		b.WriteString("    db = SessionLocal()\n")
+	}
+	b.WriteString("    try:\n")
+	fmt.Fprintf(b, "        return %s(%s)\n", u.name, strings.Join(call, ", "))
+	b.WriteString("    except HTTPException as exc:\n")
+	fmt.Fprintf(b, "        raise %s(exc.status_code, exc.detail) from None\n", errType)
+	if u.touchesDB {
+		b.WriteString("    finally:\n        db.close()\n")
+	}
+	b.WriteString("\n\n")
+}
